@@ -4,7 +4,7 @@ import {
   Palette, LogOut, Search, Bell, Menu, X
 } from 'lucide-react';
 import { MOCK_PROJECTS, MOCK_USERS } from './constants';
-import { Project, Role } from './types';
+import { Project, Role, User } from './types';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { NotificationProvider, useNotifications } from './contexts/NotificationContext';
 
@@ -14,6 +14,7 @@ import ProjectDetail from './components/ProjectDetail';
 import PeopleList from './components/PeopleList';
 import Login from './components/Login';
 import NotificationPanel from './components/NotificationPanel';
+import NewProjectModal from './components/NewProjectModal';
 
 // Helper for project list
 const ProjectList = ({ projects, onSelect }: { projects: Project[], onSelect: (p: Project) => void }) => (
@@ -35,8 +36,12 @@ const ProjectList = ({ projects, onSelect }: { projects: Project[], onSelect: (p
           <p className="text-sm text-gray-500 mb-4 line-clamp-2">{project.description}</p>
           <div className="flex justify-between items-center border-t border-gray-100 pt-4">
             <div className="flex -space-x-2">
-              <img className="w-8 h-8 rounded-full border-2 border-white" src={MOCK_USERS.find(u=>u.id === project.leadDesignerId)?.avatar} title="Lead" alt="" />
-              <img className="w-8 h-8 rounded-full border-2 border-white" src={MOCK_USERS.find(u=>u.id === project.clientId)?.avatar} title="Client" alt="" />
+              <span className="w-8 h-8 rounded-full border-2 border-white bg-gray-200 flex items-center justify-center text-xs font-bold text-gray-500">
+                {project.leadDesignerId ? 'D' : '?'}
+              </span>
+              <span className="w-8 h-8 rounded-full border-2 border-white bg-gray-200 flex items-center justify-center text-xs font-bold text-gray-500">
+                 {project.clientId ? 'C' : '?'}
+              </span>
             </div>
             <span className="text-xs font-medium text-gray-400">Due {new Date(project.deadline).toLocaleDateString()}</span>
           </div>
@@ -69,13 +74,18 @@ function AppContent() {
   
   const [currentView, setCurrentView] = useState<ViewState>('dashboard');
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
+  
+  // Lifted state to allow Creation
   const [projects, setProjects] = useState<Project[]>(MOCK_PROJECTS);
+  const [users, setUsers] = useState<User[]>(MOCK_USERS);
+
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isNotifOpen, setIsNotifOpen] = useState(false);
+  const [isNewProjectModalOpen, setIsNewProjectModalOpen] = useState(false);
 
   // If not logged in, show login screen
   if (!user) {
-    return <Login />;
+    return <Login users={users} />;
   }
 
   // Permission Logic for Views
@@ -88,6 +98,14 @@ function AppContent() {
   const handleUpdateProject = (updated: Project) => {
     setProjects(prev => prev.map(p => p.id === updated.id ? updated : p));
     setSelectedProject(updated);
+  };
+
+  const handleAddUser = (newUser: User) => {
+    setUsers(prev => [...prev, newUser]);
+  };
+
+  const handleAddProject = (newProject: Project) => {
+    setProjects(prev => [newProject, ...prev]);
   };
 
   // Filter Projects for List View based on Role
@@ -222,20 +240,23 @@ function AppContent() {
           {selectedProject ? (
              <ProjectDetail 
                project={selectedProject} 
-               users={MOCK_USERS} 
+               users={users} 
                onUpdateProject={handleUpdateProject}
                onBack={() => setSelectedProject(null)} 
              />
           ) : (
             <>
-              {currentView === 'dashboard' && <Dashboard projects={projects} users={MOCK_USERS} />}
+              {currentView === 'dashboard' && <Dashboard projects={projects} users={users} />}
               
               {currentView === 'projects' && (
                 <div className="space-y-6">
                   <div className="flex justify-between items-center">
                     <h2 className="text-2xl font-bold text-gray-800">Projects</h2>
                     {(user.role === Role.ADMIN || user.role === Role.DESIGNER) && (
-                      <button className="bg-gray-900 text-white px-4 py-2 rounded-lg font-medium hover:bg-gray-800 transition-colors shadow-sm flex items-center gap-2">
+                      <button 
+                        onClick={() => setIsNewProjectModalOpen(true)}
+                        className="bg-gray-900 text-white px-4 py-2 rounded-lg font-medium hover:bg-gray-800 transition-colors shadow-sm flex items-center gap-2"
+                      >
                          <Palette className="w-4 h-4" /> New Project
                       </button>
                     )}
@@ -250,13 +271,21 @@ function AppContent() {
                 </div>
               )}
 
-              {currentView === 'clients' && <PeopleList users={MOCK_USERS} roleFilter={Role.CLIENT} />}
-              {currentView === 'vendors' && <PeopleList users={MOCK_USERS} roleFilter={Role.VENDOR} />}
-              {currentView === 'designers' && <PeopleList users={MOCK_USERS} roleFilter={Role.DESIGNER} />}
+              {currentView === 'clients' && <PeopleList users={users} roleFilter={Role.CLIENT} onAddUser={handleAddUser} />}
+              {currentView === 'vendors' && <PeopleList users={users} roleFilter={Role.VENDOR} onAddUser={handleAddUser} />}
+              {currentView === 'designers' && <PeopleList users={users} roleFilter={Role.DESIGNER} onAddUser={handleAddUser} />}
             </>
           )}
         </main>
       </div>
+
+      {isNewProjectModalOpen && (
+        <NewProjectModal 
+          users={users}
+          onClose={() => setIsNewProjectModalOpen(false)}
+          onSave={handleAddProject}
+        />
+      )}
     </div>
   );
 }

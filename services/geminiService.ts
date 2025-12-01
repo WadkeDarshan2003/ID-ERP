@@ -56,7 +56,21 @@ export const generateProjectTasks = async (projectDescription: string, projectId
         status: TaskStatus.TODO,
         assigneeId: '', // Unassigned by default
         dueDate: dueDate.toISOString().split('T')[0],
-        priority: item.priority as 'low' | 'medium' | 'high'
+        startDate: new Date().toISOString().split('T')[0], // Default start today
+        priority: item.priority as 'low' | 'medium' | 'high',
+        dependencies: [],
+        subtasks: [],
+        comments: [],
+        approvals: {
+          start: {
+            client: { status: 'pending' },
+            designer: { status: 'pending' }
+          },
+          completion: {
+            client: { status: 'pending' },
+            designer: { status: 'pending' }
+          }
+        }
       };
     });
 
