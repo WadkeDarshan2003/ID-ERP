@@ -17,7 +17,10 @@ export enum TaskStatus {
   TODO = 'To Do',
   IN_PROGRESS = 'In Progress',
   REVIEW = 'Review',
-  DONE = 'Done'
+  DONE = 'Done',
+  OVERDUE = 'Overdue',
+  ABORTED = 'Aborted',
+  ON_HOLD = 'On Hold'
 }
 
 export interface User {
@@ -74,6 +77,7 @@ export interface Task {
   title: string;
   description?: string;
   status: TaskStatus;
+  category: string; // e.g. Civil, Electrical, Painting
   assigneeId: string; // ID of Designer or Vendor
   startDate: string; // YYYY-MM-DD
   dueDate: string;   // YYYY-MM-DD (End Date)
@@ -105,6 +109,16 @@ export interface ActivityLog {
   type: 'info' | 'success' | 'warning' | 'creation';
 }
 
+export interface ProjectDocument {
+  id: string;
+  name: string;
+  type: 'image' | 'pdf' | 'cad' | 'other';
+  url: string;
+  uploadedBy: string;
+  uploadDate: string;
+  sharedWith: Role[]; // Roles that can see this file
+}
+
 export interface Project {
   id: string;
   name: string;
@@ -120,10 +134,13 @@ export interface Project {
   financials: FinancialRecord[];
   meetings: Meeting[];
   activityLog: ActivityLog[];
+  documents: ProjectDocument[];
 }
 
 export interface Notification {
   id: string;
+  recipientId?: string; // Optional: If null, global/system notification
+  projectId?: string; // Context
   title: string;
   message: string;
   type: 'info' | 'success' | 'warning' | 'error';

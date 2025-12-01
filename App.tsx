@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   LayoutDashboard, FolderKanban, Users, ShoppingBag, 
   Palette, LogOut, Search, Bell, Menu, X
@@ -30,6 +30,13 @@ const ProjectList = ({ projects, onSelect }: { projects: Project[], onSelect: (p
           <div className="absolute top-3 right-3 bg-white/90 backdrop-blur-sm px-2 py-1 rounded text-xs font-bold text-gray-800 shadow-sm">
             {project.status}
           </div>
+          {/* Activity Dot */}
+          {project.activityLog && project.activityLog.length > 0 && (
+             // Simple logic: if latest activity is < 24h
+             (new Date().getTime() - new Date(project.activityLog[0].timestamp).getTime()) < 86400000 && (
+                <div className="absolute bottom-3 right-3 w-3 h-3 bg-blue-500 rounded-full border-2 border-white animate-pulse" title="New Activity"></div>
+             )
+          )}
         </div>
         <div className="p-5">
           <h3 className="font-bold text-gray-900 text-lg mb-1">{project.name}</h3>
@@ -82,6 +89,14 @@ function AppContent() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isNotifOpen, setIsNotifOpen] = useState(false);
   const [isNewProjectModalOpen, setIsNewProjectModalOpen] = useState(false);
+
+  // Reset view to dashboard on login
+  useEffect(() => {
+    if (user) {
+      setCurrentView('dashboard');
+      setSelectedProject(null);
+    }
+  }, [user]);
 
   // If not logged in, show login screen
   if (!user) {
@@ -193,7 +208,8 @@ function AppContent() {
       {/* Main Content */}
       <div className="flex-1 flex flex-col h-screen overflow-hidden relative">
         {/* Top Navbar */}
-        <header className="h-16 bg-white border-b border-gray-200 flex items-center justify-between px-4 sm:px-6 z-10">
+        {/* Added relative and z-20 to ensure dropdowns overlap sticky content in main */}
+        <header className="h-16 bg-white border-b border-gray-200 flex items-center justify-between px-4 sm:px-6 relative z-20">
           <div className="flex items-center gap-4">
             <button onClick={() => setIsSidebarOpen(true)} className="md:hidden p-2 text-gray-500 hover:bg-gray-100 rounded-lg">
               <Menu className="w-6 h-6" />
@@ -234,7 +250,7 @@ function AppContent() {
 
         {/* View Content */}
         <main 
-          className="flex-1 overflow-x-hidden overflow-y-auto bg-gray-50 p-4 sm:p-6 lg:p-8" 
+          className="flex-1 overflow-x-hidden overflow-y-auto bg-gray-50 p-4 sm:p-6 lg:p-8 relative z-0" 
           onClick={() => isNotifOpen && setIsNotifOpen(false)}
         >
           {selectedProject ? (

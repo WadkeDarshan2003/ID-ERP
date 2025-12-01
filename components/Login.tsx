@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { MOCK_USERS } from '../constants';
-import { User, Role } from '../types';
-import { Lock, User as UserIcon, ArrowRight } from 'lucide-react';
+import { User } from '../types';
+import { Lock, ArrowRight } from 'lucide-react';
+import { useNotifications } from '../contexts/NotificationContext';
 
 interface LoginProps {
   users?: User[];
@@ -10,12 +11,21 @@ interface LoginProps {
 
 const Login: React.FC<LoginProps> = ({ users = MOCK_USERS }) => {
   const { login } = useAuth();
+  const { addNotification } = useNotifications();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [attemptedSubmit, setAttemptedSubmit] = useState(false);
 
   const handleCredentialsLogin = (e: React.FormEvent) => {
     e.preventDefault();
+    setAttemptedSubmit(true);
+
+    if (!email || !password) {
+      addNotification('Validation Error', 'Please fill in all required fields.', 'error');
+      return;
+    }
+
     const user = users.find(u => u.email.toLowerCase() === email.toLowerCase() && u.password === password);
     
     if (user) {
@@ -23,12 +33,19 @@ const Login: React.FC<LoginProps> = ({ users = MOCK_USERS }) => {
       setError('');
     } else {
       setError('Invalid credentials. Check email or password (Aadhar).');
+      addNotification('Login Failed', 'Invalid credentials.', 'error');
     }
   };
 
   const handleDemoLogin = (user: User) => {
     login(user);
   };
+
+  const getInputClass = (value: string) => `
+    w-full px-4 py-2 border rounded-lg focus:outline-none transition-all 
+    bg-white text-gray-900 placeholder-gray-400
+    ${attemptedSubmit && !value ? 'border-red-500 ring-1 ring-red-500' : 'border-gray-300 focus:ring-2 focus:ring-gray-900 focus:border-transparent'}
+  `;
 
   return (
     <div className="min-h-screen bg-gray-100 flex items-center justify-center p-4">
@@ -55,29 +72,29 @@ const Login: React.FC<LoginProps> = ({ users = MOCK_USERS }) => {
           
           {/* Credential Login Form */}
           <div className="mb-10">
-             <h2 className="text-2xl font-bold text-gray-800 mb-6">Sign In</h2>
+             <h2 className="text-2xl font-bold text-gray-900 mb-6">Sign In</h2>
              <form onSubmit={handleCredentialsLogin} className="space-y-4">
                 <div>
-                   <label className="block text-sm font-medium text-gray-700 mb-1">Login ID (Email)</label>
+                   <label className="block text-sm font-medium text-gray-700 mb-1">Login ID (Email) <span className="text-red-500">*</span></label>
                    <input 
                      type="email" 
-                     className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-900 focus:border-transparent outline-none"
+                     className={getInputClass(email)}
                      placeholder="Enter your email"
                      value={email}
                      onChange={e => setEmail(e.target.value)}
                    />
                 </div>
                 <div>
-                   <label className="block text-sm font-medium text-gray-700 mb-1">Password (Aadhar Number)</label>
+                   <label className="block text-sm font-medium text-gray-700 mb-1">Password (Aadhar Number) <span className="text-red-500">*</span></label>
                    <input 
                      type="password" 
-                     className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-900 focus:border-transparent outline-none"
+                     className={getInputClass(password)}
                      placeholder="Enter password"
                      value={password}
                      onChange={e => setPassword(e.target.value)}
                    />
                 </div>
-                {error && <p className="text-sm text-red-500">{error}</p>}
+                {error && <p className="text-sm text-red-500 font-medium">{error}</p>}
                 <button type="submit" className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 rounded-lg transition-colors flex items-center justify-center gap-2">
                    Login <ArrowRight className="w-4 h-4" />
                 </button>
@@ -99,7 +116,7 @@ const Login: React.FC<LoginProps> = ({ users = MOCK_USERS }) => {
                <button 
                 key={user.id}
                 onClick={() => handleDemoLogin(user)}
-                className="w-full flex items-center gap-3 p-2 rounded-lg border border-gray-200 hover:border-gray-900 hover:bg-gray-50 transition-all text-left group"
+                className="w-full flex items-center gap-3 p-2 rounded-lg border border-gray-200 hover:border-gray-900 hover:bg-gray-50 transition-all text-left group bg-white"
               >
                 <img src={user.avatar} alt="" className="w-8 h-8 rounded-full bg-gray-200" />
                 <div className="flex-1 min-w-0">

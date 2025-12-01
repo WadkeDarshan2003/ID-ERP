@@ -1,9 +1,9 @@
 import React from 'react';
 import { Project, User, ProjectStatus, Role, Task, TaskStatus } from '../types';
 import { 
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, PieChart, Pie
+  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, PieChart, Pie
 } from 'recharts';
-import { DollarSign, Briefcase, CheckCircle, Clock, AlertTriangle, List } from 'lucide-react';
+import { DollarSign, Briefcase, CheckCircle, Clock, List } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 
 interface DashboardProps {
@@ -11,7 +11,7 @@ interface DashboardProps {
   users: User[];
 }
 
-const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042'];
+const COLORS = ['#0f172a', '#334155', '#64748b', '#94a3b8', '#cbd5e1']; // Slate minimalist theme
 
 const Dashboard: React.FC<DashboardProps> = ({ projects, users }) => {
   const { user } = useAuth();
@@ -27,10 +27,7 @@ const Dashboard: React.FC<DashboardProps> = ({ projects, users }) => {
   } else if (user.role === Role.DESIGNER) {
     filteredProjects = projects.filter(p => p.leadDesignerId === user.id);
   } else if (user.role === Role.VENDOR) {
-    // Vendors might not see full project lists, but for dashboard stats we might show projects they are involved in
-    // Or primarily show their tasks.
     assignedTasks = projects.flatMap(p => p.tasks.map(t => ({ task: t, project: p }))).filter(item => item.task.assigneeId === user.id);
-    // Filter projects to only those where they have tasks for chart purposes if needed
     const projectIds = new Set(assignedTasks.map(t => t.project.id));
     filteredProjects = projects.filter(p => projectIds.has(p.id));
   }
@@ -39,7 +36,6 @@ const Dashboard: React.FC<DashboardProps> = ({ projects, users }) => {
   const totalBudget = filteredProjects.reduce((acc, p) => acc + p.budget, 0);
   const activeProjectsCount = filteredProjects.filter(p => p.status === ProjectStatus.IN_PROGRESS).length;
   
-  // Specific stats
   const pendingTasksCount = user.role === Role.VENDOR 
     ? assignedTasks.filter(t => t.task.status !== TaskStatus.DONE).length 
     : filteredProjects.reduce((acc, p) => acc + p.tasks.filter(t => t.status !== TaskStatus.DONE).length, 0);
@@ -51,14 +47,14 @@ const Dashboard: React.FC<DashboardProps> = ({ projects, users }) => {
 
   // --- Chart Data ---
   const statusData = [
-    { name: 'Planning', value: filteredProjects.filter(p => p.status === ProjectStatus.PLANNING).length },
-    { name: 'In Progress', value: filteredProjects.filter(p => p.status === ProjectStatus.IN_PROGRESS).length },
-    { name: 'Procurement', value: filteredProjects.filter(p => p.status === ProjectStatus.PROCUREMENT).length },
-    { name: 'On Hold', value: filteredProjects.filter(p => p.status === ProjectStatus.ON_HOLD).length },
+    { name: 'Plan', value: filteredProjects.filter(p => p.status === ProjectStatus.PLANNING).length },
+    { name: 'Active', value: filteredProjects.filter(p => p.status === ProjectStatus.IN_PROGRESS).length },
+    { name: 'Hold', value: filteredProjects.filter(p => p.status === ProjectStatus.ON_HOLD).length },
+    { name: 'Done', value: filteredProjects.filter(p => p.status === ProjectStatus.COMPLETED).length },
   ].filter(d => d.value > 0);
 
-  const financialData = filteredProjects.map(p => ({
-    name: p.name.length > 15 ? p.name.substring(0, 15) + '...' : p.name,
+  const financialData = filteredProjects.slice(0, 10).map(p => ({
+    name: p.name.length > 10 ? p.name.substring(0, 8) + '..' : p.name,
     budget: p.budget,
     spent: p.financials
       .filter(f => f.type === 'expense')
@@ -66,47 +62,49 @@ const Dashboard: React.FC<DashboardProps> = ({ projects, users }) => {
   }));
 
   const StatCard = ({ title, value, icon: Icon, color }: any) => (
-    <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 flex items-center justify-between hover:shadow-md transition-shadow">
+    <div className="bg-white p-5 rounded-xl border border-gray-100 flex items-center justify-between hover:shadow-sm transition-shadow">
       <div>
-        <p className="text-sm font-medium text-gray-500 mb-1">{title}</p>
-        <h3 className="text-2xl font-bold text-gray-800">{value}</h3>
+        <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">{title}</p>
+        <h3 className="text-xl font-bold text-gray-800">{value}</h3>
       </div>
-      <div className={`p-3 rounded-full ${color} bg-opacity-10`}>
-        <Icon className={`w-6 h-6 ${color.replace('bg-', 'text-')}`} />
+      <div className={`p-2.5 rounded-lg ${color} bg-opacity-10`}>
+        <Icon className={`w-5 h-5 ${color.replace('bg-', 'text-')}`} />
       </div>
     </div>
   );
 
   return (
-    <div className="space-y-6 animate-fade-in">
-      <div className="flex justify-between items-center">
-        <h2 className="text-2xl font-bold text-gray-800">
-          {user.role === Role.ADMIN ? 'Global Overview' : 'My Dashboard'}
+    <div className="space-y-6 animate-fade-in max-w-7xl mx-auto">
+      <div className="flex justify-between items-center mb-2">
+        <h2 className="text-xl font-bold text-gray-800">
+          {user.role === Role.ADMIN ? 'Global Overview' : 'Dashboard'}
         </h2>
-        <span className="text-sm text-gray-500">Welcome back, {user.name}</span>
+        <span className="text-xs text-gray-500 font-medium px-3 py-1 bg-white rounded-full border border-gray-200">
+          {filteredProjects.length} Projects Loaded
+        </span>
       </div>
 
-      {/* Stats Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+      {/* Stats Grid - Compact */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         {user.role !== Role.VENDOR && (
           <StatCard 
-            title={user.role === Role.CLIENT ? "Total Budget" : "Budget Volume"} 
-            value={`$${totalBudget.toLocaleString()}`} 
+            title={user.role === Role.CLIENT ? "Total Budget" : "Volume"} 
+            value={`$${(totalBudget/1000).toFixed(0)}k`} 
             icon={DollarSign} 
-            color="bg-green-500" 
+            color="bg-emerald-500" 
           />
         )}
         
         {user.role === Role.VENDOR ? (
            <StatCard 
-            title="Assigned Tasks" 
+            title="My Tasks" 
             value={assignedTasks.length} 
             icon={List} 
             color="bg-blue-500" 
           />
         ) : (
           <StatCard 
-            title="Active Projects" 
+            title="Active Jobs" 
             value={activeProjectsCount} 
             icon={Briefcase} 
             color="bg-blue-500" 
@@ -114,54 +112,47 @@ const Dashboard: React.FC<DashboardProps> = ({ projects, users }) => {
         )}
         
         <StatCard 
-          title={user.role === Role.VENDOR ? "Completed Tasks" : "Completed Projects"} 
+          title="Completed" 
           value={completedCount} 
           icon={CheckCircle} 
-          color="bg-purple-500" 
+          color="bg-indigo-500" 
         />
         
         <StatCard 
-          title={user.role === Role.VENDOR ? "Pending Tasks" : "Total Pending Tasks"} 
+          title="Pending Items" 
           value={pendingTasksCount} 
           icon={Clock} 
-          color="bg-orange-500" 
+          color="bg-amber-500" 
         />
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         
-        {/* VENDOR: Task List View instead of Financials */}
+        {/* VENDOR: Task List View */}
         {user.role === Role.VENDOR ? (
-          <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 lg:col-span-2">
-            <h3 className="text-lg font-semibold text-gray-800 mb-4">Your Active Tasks</h3>
+          <div className="bg-white p-6 rounded-xl border border-gray-100 lg:col-span-3">
+            <h3 className="text-sm font-bold text-gray-800 mb-4">Your Active Tasks</h3>
             <div className="overflow-x-auto">
               <table className="w-full text-sm text-left">
                 <thead className="bg-gray-50 text-gray-500">
                    <tr>
-                     <th className="px-4 py-3 rounded-l-lg">Task</th>
-                     <th className="px-4 py-3">Project</th>
-                     <th className="px-4 py-3">Due Date</th>
-                     <th className="px-4 py-3">Priority</th>
-                     <th className="px-4 py-3 rounded-r-lg">Status</th>
+                     <th className="px-4 py-2 rounded-l-lg">Task</th>
+                     <th className="px-4 py-2">Project</th>
+                     <th className="px-4 py-2">Due</th>
+                     <th className="px-4 py-2 rounded-r-lg">Status</th>
                    </tr>
                 </thead>
-                <tbody className="divide-y divide-gray-100">
+                <tbody className="divide-y divide-gray-50">
                   {assignedTasks.filter(t => t.task.status !== TaskStatus.DONE).map(({ task, project }) => (
                     <tr key={task.id} className="hover:bg-gray-50">
                       <td className="px-4 py-3 font-medium text-gray-900">{task.title}</td>
                       <td className="px-4 py-3 text-gray-600">{project.name}</td>
-                      <td className="px-4 py-3 text-gray-600">
+                      <td className="px-4 py-3 text-gray-500 text-xs">
                         {new Date(task.dueDate).toLocaleDateString()}
-                        {new Date(task.dueDate) < new Date() && <span className="ml-2 text-xs text-red-500 font-bold">Overdue</span>}
                       </td>
                       <td className="px-4 py-3">
-                         <span className={`px-2 py-0.5 rounded text-xs font-bold uppercase
-                          ${task.priority === 'high' ? 'bg-red-100 text-red-600' : 'bg-blue-100 text-blue-600'}`}>
-                          {task.priority}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3">
-                        <span className="bg-gray-100 text-gray-800 px-2 py-1 rounded text-xs">
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase
+                          ${task.status === 'In Progress' ? 'bg-blue-50 text-blue-600' : 'bg-gray-100 text-gray-600'}`}>
                           {task.status}
                         </span>
                       </td>
@@ -169,7 +160,7 @@ const Dashboard: React.FC<DashboardProps> = ({ projects, users }) => {
                   ))}
                   {assignedTasks.filter(t => t.task.status !== TaskStatus.DONE).length === 0 && (
                     <tr>
-                      <td colSpan={5} className="text-center py-6 text-gray-400">No active tasks. Good job!</td>
+                      <td colSpan={4} className="text-center py-8 text-gray-400">All caught up!</td>
                     </tr>
                   )}
                 </tbody>
@@ -177,73 +168,76 @@ const Dashboard: React.FC<DashboardProps> = ({ projects, users }) => {
             </div>
           </div>
         ) : (
-          /* OTHERS: Financial Chart */
-          <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
-            <h3 className="text-lg font-semibold text-gray-800 mb-4">
-              {user.role === Role.CLIENT ? 'Project Budget' : 'Budget vs Spent'}
-            </h3>
-            <div className="h-80 w-full">
-              {financialData.length > 0 ? (
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={financialData} margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                    <XAxis dataKey="name" axisLine={false} tickLine={false} />
-                    <YAxis axisLine={false} tickLine={false} />
-                    <Tooltip 
-                      contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}
-                      cursor={{ fill: '#f3f4f6' }}
-                    />
-                    <Bar dataKey="budget" name="Budget" fill="#3b82f6" radius={[4, 4, 0, 0]} />
-                    <Bar dataKey="spent" name="Spent" fill="#ef4444" radius={[4, 4, 0, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-              ) : (
-                <div className="flex items-center justify-center h-full text-gray-400">No financial data available</div>
-              )}
+          /* OTHERS: Minimalist Charts */
+          <>
+            <div className="bg-white p-5 rounded-xl border border-gray-100 lg:col-span-2 flex flex-col">
+              <div className="flex justify-between items-center mb-6">
+                <h3 className="text-sm font-bold text-gray-700">Financial Overview</h3>
+              </div>
+              <div className="flex-1 w-full min-h-[200px]">
+                {financialData.length > 0 ? (
+                  <ResponsiveContainer width="100%" height={220}>
+                    <BarChart data={financialData} barGap={4}>
+                      <XAxis 
+                        dataKey="name" 
+                        axisLine={false} 
+                        tickLine={false} 
+                        tick={{fill: '#94a3b8', fontSize: 10}} 
+                        interval={0}
+                      />
+                      <Tooltip 
+                        contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)', fontSize: '12px' }}
+                        cursor={{ fill: '#f8fafc' }}
+                      />
+                      <Bar dataKey="budget" fill="#0f172a" radius={[2, 2, 0, 0]} barSize={20} />
+                      <Bar dataKey="spent" fill="#cbd5e1" radius={[2, 2, 0, 0]} barSize={20} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div className="flex items-center justify-center h-full text-gray-300 text-sm">No data</div>
+                )}
+              </div>
             </div>
-          </div>
-        )}
 
-        {/* Project Status Chart - All roles except Vendor */}
-        {user.role !== Role.VENDOR && (
-          <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
-            <h3 className="text-lg font-semibold text-gray-800 mb-4">
-              {user.role === Role.CLIENT ? 'Project State' : 'Project Status Distribution'}
-            </h3>
-            <div className="h-80 w-full flex justify-center">
-              {statusData.length > 0 ? (
-                <ResponsiveContainer width="100%" height="100%">
-                  <PieChart>
-                    <Pie
-                      data={statusData}
-                      cx="50%"
-                      cy="50%"
-                      innerRadius={60}
-                      outerRadius={100}
-                      fill="#8884d8"
-                      paddingAngle={5}
-                      dataKey="value"
-                    >
-                      {statusData.map((entry, index) => (
-                        <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                      ))}
-                    </Pie>
-                    <Tooltip />
-                  </PieChart>
-                </ResponsiveContainer>
-              ) : (
-                 <div className="flex items-center justify-center h-full text-gray-400">No projects found</div>
-              )}
+            <div className="bg-white p-5 rounded-xl border border-gray-100 flex flex-col">
+              <h3 className="text-sm font-bold text-gray-700 mb-6">Project Status</h3>
+              <div className="flex-1 w-full min-h-[180px] flex justify-center items-center">
+                {statusData.length > 0 ? (
+                  <ResponsiveContainer width="100%" height={200}>
+                    <PieChart>
+                      <Pie
+                        data={statusData}
+                        cx="50%"
+                        cy="50%"
+                        innerRadius={50}
+                        outerRadius={70}
+                        paddingAngle={4}
+                        dataKey="value"
+                        stroke="none"
+                      >
+                        {statusData.map((entry, index) => (
+                          <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                        ))}
+                      </Pie>
+                      <Tooltip 
+                        contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)', fontSize: '12px' }}
+                      />
+                    </PieChart>
+                  </ResponsiveContainer>
+                ) : (
+                   <div className="text-gray-300 text-sm">No projects</div>
+                )}
+              </div>
+              <div className="flex justify-center gap-3 mt-2 flex-wrap">
+                {statusData.map((entry, index) => (
+                  <div key={entry.name} className="flex items-center gap-1.5">
+                    <div className="w-2 h-2 rounded-full" style={{ backgroundColor: COLORS[index % COLORS.length] }} />
+                    <span className="text-[10px] font-medium text-gray-500 uppercase">{entry.name}</span>
+                  </div>
+                ))}
+              </div>
             </div>
-            <div className="flex justify-center gap-4 mt-4 flex-wrap">
-              {statusData.map((entry, index) => (
-                <div key={entry.name} className="flex items-center gap-2">
-                  <div className="w-3 h-3 rounded-full" style={{ backgroundColor: COLORS[index % COLORS.length] }} />
-                  <span className="text-sm text-gray-600">{entry.name} ({entry.value})</span>
-                </div>
-              ))}
-            </div>
-          </div>
+          </>
         )}
       </div>
     </div>

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { User, Role, Project, ProjectStatus } from '../types';
 import { X, Calendar, DollarSign, Image as ImageIcon } from 'lucide-react';
+import { useNotifications } from '../contexts/NotificationContext';
 
 interface NewProjectModalProps {
   users: User[];
@@ -9,35 +10,47 @@ interface NewProjectModalProps {
 }
 
 const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSave }) => {
+  const { addNotification } = useNotifications();
   const [formData, setFormData] = useState<Partial<Project>>({
     name: '',
     status: ProjectStatus.PLANNING,
     description: '',
-    budget: 0,
+    budget: undefined, // undefined to trigger validation check
     startDate: new Date().toISOString().split('T')[0],
     deadline: '',
     clientId: '',
     leadDesignerId: ''
   });
+  const [showErrors, setShowErrors] = useState(false);
+
+  const validate = () => {
+    if (!formData.name || !formData.clientId || !formData.leadDesignerId || !formData.startDate || !formData.deadline || !formData.budget) {
+      setShowErrors(true);
+      addNotification('Validation Error', 'Please complete all required fields marked in red.', 'error');
+      return false;
+    }
+    return true;
+  };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!formData.name || !formData.clientId || !formData.leadDesignerId) return;
+    if (!validate()) return;
 
     const newProject: Project = {
       id: `p_${Date.now()}`,
-      name: formData.name,
-      clientId: formData.clientId,
-      leadDesignerId: formData.leadDesignerId,
+      name: formData.name!,
+      clientId: formData.clientId!,
+      leadDesignerId: formData.leadDesignerId!,
       status: formData.status || ProjectStatus.PLANNING,
-      startDate: formData.startDate || '',
-      deadline: formData.deadline || '',
+      startDate: formData.startDate!,
+      deadline: formData.deadline!,
       budget: Number(formData.budget),
       thumbnail: `https://picsum.photos/seed/${formData.name}/800/600`, // Auto-generate random image based on name seed
       description: formData.description || '',
       tasks: [],
       financials: [],
       meetings: [],
+      documents: [],
       activityLog: [
         {
           id: `log_${Date.now()}`,
@@ -52,31 +65,37 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
 
     onSave(newProject);
     onClose();
+    addNotification('Project Created', 'New project has been successfully initialized.', 'success');
   };
 
   const clients = users.filter(u => u.role === Role.CLIENT);
   const designers = users.filter(u => u.role === Role.DESIGNER);
 
+  const getInputClass = (value: any) => `
+    w-full px-4 py-2 border rounded-lg focus:outline-none transition-all
+    bg-white text-gray-900 placeholder-gray-400
+    ${showErrors && !value ? 'border-red-500 ring-1 ring-red-500' : 'border-gray-200 focus:ring-2 focus:ring-gray-900 focus:border-transparent'}
+  `;
+
   return (
     <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
       <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto animate-fade-in">
-        <div className="flex justify-between items-center p-6 border-b border-gray-100 bg-gray-50 sticky top-0">
-          <h2 className="text-xl font-bold text-gray-800">Create New Project</h2>
+        <div className="flex justify-between items-center p-6 border-b border-gray-100 bg-white sticky top-0 z-10">
+          <h2 className="text-xl font-bold text-gray-900">Create New Project</h2>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600 transition-colors">
             <X className="w-6 h-6" />
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="p-8 space-y-6">
+        <form onSubmit={handleSubmit} className="p-8 space-y-6 bg-white">
           
           {/* Basic Info */}
           <div className="space-y-4">
             <div>
-              <label className="block text-sm font-bold text-gray-700 mb-1">Project Name</label>
+              <label className="block text-sm font-bold text-gray-700 mb-1">Project Name <span className="text-red-500">*</span></label>
               <input 
-                required
                 type="text" 
-                className="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-gray-900 focus:border-transparent outline-none transition-all"
+                className={getInputClass(formData.name)}
                 placeholder="e.g. Victorian Manor Renovation"
                 value={formData.name}
                 onChange={e => setFormData({...formData, name: e.target.value})}
@@ -86,7 +105,7 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
             <div>
               <label className="block text-sm font-bold text-gray-700 mb-1">Description</label>
               <textarea 
-                className="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-gray-900 focus:border-transparent outline-none h-24 resize-none"
+                className="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-gray-900 focus:border-transparent outline-none h-24 resize-none bg-white text-gray-900 placeholder-gray-400"
                 placeholder="Briefly describe the scope of work..."
                 value={formData.description}
                 onChange={e => setFormData({...formData, description: e.target.value})}
@@ -97,10 +116,9 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
           {/* People */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div>
-              <label className="block text-sm font-bold text-gray-700 mb-1">Client</label>
+              <label className="block text-sm font-bold text-gray-700 mb-1">Client <span className="text-red-500">*</span></label>
               <select 
-                required
-                className="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-gray-900 outline-none"
+                className={getInputClass(formData.clientId)}
                 value={formData.clientId}
                 onChange={e => setFormData({...formData, clientId: e.target.value})}
               >
@@ -109,10 +127,9 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
               </select>
             </div>
             <div>
-              <label className="block text-sm font-bold text-gray-700 mb-1">Lead Designer</label>
+              <label className="block text-sm font-bold text-gray-700 mb-1">Lead Designer <span className="text-red-500">*</span></label>
               <select 
-                required
-                className="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-gray-900 outline-none"
+                className={getInputClass(formData.leadDesignerId)}
                 value={formData.leadDesignerId}
                 onChange={e => setFormData({...formData, leadDesignerId: e.target.value})}
               >
@@ -126,38 +143,35 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
              <div>
                <label className="block text-sm font-bold text-gray-700 mb-1 flex items-center gap-1">
-                 <Calendar className="w-4 h-4 text-gray-400"/> Start Date
+                 <Calendar className="w-4 h-4 text-gray-400"/> Start Date <span className="text-red-500">*</span>
                </label>
                <input 
-                 required
                  type="date" 
-                 className="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-gray-900 outline-none"
+                 className={getInputClass(formData.startDate)}
                  value={formData.startDate}
                  onChange={e => setFormData({...formData, startDate: e.target.value})}
                />
              </div>
              <div>
                <label className="block text-sm font-bold text-gray-700 mb-1 flex items-center gap-1">
-                 <Calendar className="w-4 h-4 text-gray-400"/> Deadline
+                 <Calendar className="w-4 h-4 text-gray-400"/> Deadline <span className="text-red-500">*</span>
                </label>
                <input 
-                 required
                  type="date" 
-                 className="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-gray-900 outline-none"
+                 className={getInputClass(formData.deadline)}
                  value={formData.deadline}
                  onChange={e => setFormData({...formData, deadline: e.target.value})}
                />
              </div>
              <div>
                <label className="block text-sm font-bold text-gray-700 mb-1 flex items-center gap-1">
-                 <DollarSign className="w-4 h-4 text-gray-400"/> Budget
+                 <DollarSign className="w-4 h-4 text-gray-400"/> Budget <span className="text-red-500">*</span>
                </label>
                <input 
-                 required
                  type="number" 
-                 className="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-gray-900 outline-none"
+                 className={getInputClass(formData.budget)}
                  placeholder="0.00"
-                 value={formData.budget}
+                 value={formData.budget || ''}
                  onChange={e => setFormData({...formData, budget: Number(e.target.value)})}
                />
              </div>

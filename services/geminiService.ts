@@ -20,6 +20,7 @@ export const generateProjectTasks = async (projectDescription: string, projectId
       Return the tasks in a JSON format compatible with the following schema structure. 
       Assign generic placeholder IDs for assignees if not known, or leave blank if unsure.
       Estimate due dates as relative days from now (e.g. "+7 days").
+      Assign a category to each task (e.g., "Design & Planning", "Civil Works", "Electrical", "Plumbing", "Painting", "Carpentry", "Procurement").
     `;
 
     const response = await ai.models.generateContent({
@@ -35,9 +36,10 @@ export const generateProjectTasks = async (projectDescription: string, projectId
               title: { type: Type.STRING },
               description: { type: Type.STRING },
               priority: { type: Type.STRING, enum: ["low", "medium", "high"] },
+              category: { type: Type.STRING },
               estimatedDaysFromNow: { type: Type.NUMBER }
             },
-            required: ["title", "priority", "estimatedDaysFromNow"]
+            required: ["title", "priority", "category", "estimatedDaysFromNow"]
           }
         }
       }
@@ -58,6 +60,7 @@ export const generateProjectTasks = async (projectDescription: string, projectId
         dueDate: dueDate.toISOString().split('T')[0],
         startDate: new Date().toISOString().split('T')[0], // Default start today
         priority: item.priority as 'low' | 'medium' | 'high',
+        category: item.category || 'General',
         dependencies: [],
         subtasks: [],
         comments: [],
