@@ -10,7 +10,7 @@ import {
   ChevronRight, Wand2, Lock, Clock, FileText,
   Layout, ListChecks, ArrowRight, User as UserIcon, X,
   MessageSquare, ThumbsUp, ThumbsDown, Send, Shield, History, Layers, Link2, AlertCircle, Tag, Upload, Ban, PauseCircle, PlayCircle,
-  File as FileIcon
+  File as FileIcon, Eye, Download, Pencil
 } from 'lucide-react';
 import { useNotifications } from '../contexts/NotificationContext';
 
@@ -45,10 +45,13 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
   // Documents State
   const [isDocModalOpen, setIsDocModalOpen] = useState(false);
   const [newDoc, setNewDoc] = useState<{name: string, sharedWith: Role[]}>({ name: '', sharedWith: [] });
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [showDocErrors, setShowDocErrors] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Financials State
   const [isTransactionModalOpen, setIsTransactionModalOpen] = useState(false);
+  const [editingTransactionId, setEditingTransactionId] = useState<string | null>(null);
   const [newTransaction, setNewTransaction] = useState<Partial<FinancialRecord>>({
       date: new Date().toISOString().split('T')[0],
       type: 'expense',
@@ -79,6 +82,8 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
   const isLeadDesigner = user.role === Role.DESIGNER && project.leadDesignerId === user.id;
 
   const canEditProject = isAdmin || isLeadDesigner;
+  // Documents: Everyone can upload/view if shared with them.
+  const canUploadDocs = true; 
   const canViewFinancials = !isVendor; 
   const canUseAI = canEditProject;
 
@@ -230,16 +235,31 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
   };
 
   const handleUploadDocument = () => {
-      if (!newDoc.name) {
+      // Allow upload if either a file is selected OR just a name is provided (for mock/link purposes)
+      if (!newDoc.name && !selectedFile) {
         setShowDocErrors(true);
-        addNotification('Validation Error', 'Document name is required.', 'error');
+        addNotification('Validation Error', 'Please select a file or enter a name.', 'error');
         return;
       }
+      
+      const fileName = selectedFile ? selectedFile.name : newDoc.name;
+      // Determine type
+      let docType: 'image' | 'pdf' | 'other' = 'other';
+      if (selectedFile) {
+          if (selectedFile.type.startsWith('image/')) docType = 'image';
+          else if (selectedFile.type === 'application/pdf') docType = 'pdf';
+      }
+
+      // Generate URL: Use Blob URL for real file, or Mock URL for name-only
+      const fileUrl = selectedFile 
+        ? URL.createObjectURL(selectedFile) 
+        : `https://picsum.photos/seed/${fileName}/800/600`;
+
       const doc: ProjectDocument = {
           id: Math.random().toString(36).substr(2,9),
-          name: newDoc.name,
-          type: 'image', // Mock default
-          url: `https://picsum.photos/seed/${newDoc.name}/800/600`,
+          name: fileName,
+          type: docType, 
+          url: fileUrl,
           uploadedBy: user.id,
           uploadDate: new Date().toISOString(),
           sharedWith: newDoc.sharedWith.length > 0 ? newDoc.sharedWith : [Role.ADMIN, Role.DESIGNER, Role.CLIENT]
@@ -253,42 +273,83 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       });
       setIsDocModalOpen(false);
       setNewDoc({ name: '', sharedWith: [] });
+      setSelectedFile(null);
       setShowDocErrors(false);
+      addNotification("Success", "Document uploaded successfully", "success");
   };
 
-  const handleAddTransaction = () => {
+  const handleDownloadDocument = (doc: ProjectDocument) => {
+      const link = document.createElement('a');
+      link.href = doc.url;
+      link.download = doc.name;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      addNotification("Download Started", `Downloading ${doc.name}...`, "success");
+  };
+
+  const openTransactionModal = (existingId?: string) => {
+    if (existingId) {
+      const txn = project.financials.find(f => f.id === existingId);
+      if (txn) {
+        setNewTransaction(txn);
+        setEditingTransactionId(existingId);
+      }
+    } else {
+      setNewTransaction({
+        date: new Date().toISOString().split('T')[0],
+        type: 'expense',
+        status: 'pending',
+        amount: undefined
+      });
+      setEditingTransactionId(null);
+    }
+    setIsTransactionModalOpen(true);
+    setShowTransactionErrors(false);
+  };
+
+  const handleSaveTransaction = () => {
      if (!newTransaction.amount || !newTransaction.description || !newTransaction.category || !newTransaction.date) {
         setShowTransactionErrors(true);
         addNotification("Validation Error", "Please fill all required fields", "error");
         return;
      }
 
-     const record: FinancialRecord = {
-        id: Math.random().toString(36).substr(2, 9),
-        date: newTransaction.date,
-        description: newTransaction.description,
-        amount: Number(newTransaction.amount),
-        type: newTransaction.type as 'income' | 'expense',
-        status: newTransaction.status as any,
-        category: newTransaction.category
-     };
-     
-     const log = logActivity('Financial', `Added ${record.type}: $${record.amount} for ${record.description}`);
+     let updatedFinancials = [...project.financials];
+     let log: ActivityLog;
+
+     if (editingTransactionId) {
+       // Update existing
+       updatedFinancials = updatedFinancials.map(f => f.id === editingTransactionId ? {
+         ...f,
+         ...newTransaction,
+         amount: Number(newTransaction.amount)
+       } as FinancialRecord : f);
+       log = logActivity('Financial', `Updated transaction: ${newTransaction.description}`);
+     } else {
+       // Create new
+        const record: FinancialRecord = {
+          id: Math.random().toString(36).substr(2, 9),
+          date: newTransaction.date,
+          description: newTransaction.description,
+          amount: Number(newTransaction.amount),
+          type: newTransaction.type as 'income' | 'expense',
+          status: newTransaction.status as any,
+          category: newTransaction.category
+       };
+       updatedFinancials.push(record);
+       log = logActivity('Financial', `Added ${record.type}: $${record.amount} for ${record.description}`);
+     }
+
      onUpdateProject({
         ...project,
-        financials: [...project.financials, record],
+        financials: updatedFinancials,
         activityLog: [log, ...(project.activityLog || [])]
      });
      
      setIsTransactionModalOpen(false);
-     setNewTransaction({
-        date: new Date().toISOString().split('T')[0],
-        type: 'expense',
-        status: 'pending',
-        amount: undefined
-     });
-     setShowTransactionErrors(false);
-     addNotification("Success", "Transaction recorded successfully", "success");
+     setEditingTransactionId(null);
+     addNotification("Success", editingTransactionId ? "Transaction updated" : "Transaction added", "success");
   };
 
   const handleDependencyChange = (dependencyId: string, isChecked: boolean) => {
@@ -768,12 +829,21 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
               onClick={() => {
                 if(activeTab === 'discovery') setIsMeetingModalOpen(true);
                 if(activeTab === 'plan') { setEditingTask({}); setIsTaskModalOpen(true); setShowTaskErrors(false); }
-                if(activeTab === 'documents') setIsDocModalOpen(true);
+                if(activeTab === 'documents') { setIsDocModalOpen(true); setSelectedFile(null); }
               }}
               className="flex items-center gap-2 px-4 py-2 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors text-sm font-medium"
             >
               <Plus className="w-4 h-4" />
               Add {activeTab === 'discovery' ? 'Meeting' : activeTab === 'plan' ? 'Task' : activeTab === 'documents' ? 'Document' : 'Item'}
+            </button>
+          )}
+          {/* Allow non-admins to upload docs too if active tab is docs */}
+          {!canEditProject && activeTab === 'documents' && canUploadDocs && (
+             <button 
+              onClick={() => { setIsDocModalOpen(true); setSelectedFile(null); }}
+              className="flex items-center gap-2 px-4 py-2 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors text-sm font-medium"
+            >
+              <Upload className="w-4 h-4" /> Upload
             </button>
           )}
         </div>
@@ -888,6 +958,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
             {/* GANTT VIEW (Detailed) */}
             {planView === 'gantt' && ganttConfig && (
               <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden flex-1 flex flex-col">
+                 {/* ... Gantt SVG Logic ... */}
                  <div className="p-4 border-b border-gray-200 bg-gray-50 flex justify-between items-center">
                    <h3 className="font-bold text-gray-800">Timeline & Dependencies</h3>
                    <div className="flex items-center gap-6 text-xs text-gray-500">
@@ -1146,10 +1217,10 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
 
               {/* Docs Grid */}
               <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-6">
-                 {/* Upload Button */}
-                 {canEditProject && (
+                 {/* Upload Button - Available to all authorized roles */}
+                 {canUploadDocs && (
                    <button 
-                     onClick={() => setIsDocModalOpen(true)}
+                     onClick={() => { setIsDocModalOpen(true); setSelectedFile(null); }}
                      className="border-2 border-dashed border-gray-300 rounded-xl flex flex-col items-center justify-center p-6 hover:bg-gray-50 hover:border-gray-400 transition-all text-gray-400 hover:text-gray-600 bg-white"
                    >
                       <Upload className="w-8 h-8 mb-2" />
@@ -1162,9 +1233,27 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                     .filter(doc => doc.sharedWith.includes(user.role as any) || user.role === Role.ADMIN)
                     .map(doc => (
                     <div key={doc.id} className="group relative bg-white border border-gray-200 rounded-xl overflow-hidden hover:shadow-lg transition-shadow">
+                       {/* Overlay Actions */}
+                       <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2 z-10">
+                          <button 
+                            className="p-2 bg-white rounded-full text-gray-900 hover:bg-gray-100" 
+                            title="View"
+                            onClick={() => window.open(doc.url, '_blank')}
+                          >
+                             <Eye className="w-4 h-4" />
+                          </button>
+                          <button 
+                            className="p-2 bg-white rounded-full text-gray-900 hover:bg-gray-100" 
+                            title="Download"
+                            onClick={() => handleDownloadDocument(doc)}
+                          >
+                             <Download className="w-4 h-4" />
+                          </button>
+                       </div>
+                       
                        <div className="h-32 bg-gray-100 flex items-center justify-center overflow-hidden">
                           {doc.type === 'image' ? (
-                              <img src={doc.url} alt={doc.name} className="w-full h-full object-cover group-hover:scale-105 transition-transform" />
+                              <img src={doc.url} alt={doc.name} className="w-full h-full object-cover" />
                           ) : (
                               <FileText className="w-12 h-12 text-gray-400" />
                           )}
@@ -1234,7 +1323,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                     <button className="text-xs bg-white border border-gray-300 px-3 py-1 rounded hover:bg-gray-50 text-gray-700">Filter</button>
                     {canEditProject && (
                         <button 
-                            onClick={() => setIsTransactionModalOpen(true)}
+                            onClick={() => openTransactionModal()}
                             className="text-xs bg-gray-900 text-white px-3 py-1 rounded hover:bg-gray-800 font-bold"
                         >
                             New Entry
@@ -1250,16 +1339,17 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                     <th className="px-6 py-3 font-medium">Flow</th>
                     <th className="px-6 py-3 font-medium">Status</th>
                     <th className="px-6 py-3 font-medium text-right">Amount</th>
+                    <th className="px-6 py-3 font-medium"></th>
                     </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-50">
                     {project.financials.length === 0 && (
                         <tr>
-                            <td colSpan={5} className="text-center py-6 text-gray-400">No transactions recorded.</td>
+                            <td colSpan={6} className="text-center py-6 text-gray-400">No transactions recorded.</td>
                         </tr>
                     )}
                     {project.financials.map(fin => (
-                    <tr key={fin.id} className="hover:bg-gray-50">
+                    <tr key={fin.id} className="hover:bg-gray-50 group">
                         <td className="px-6 py-4 text-gray-600">{fin.date}</td>
                         <td className="px-6 py-4 font-medium text-gray-900">{fin.description}</td>
                         <td className="px-6 py-4">
@@ -1278,6 +1368,17 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                         </td>
                         <td className={`px-6 py-4 text-right font-bold ${fin.type === 'income' ? 'text-green-600' : 'text-gray-900'}`}>
                         ${fin.amount.toLocaleString()}
+                        </td>
+                        <td className="px-6 py-4 text-right">
+                          {canEditProject && (
+                             <button 
+                               onClick={() => openTransactionModal(fin.id)}
+                               className="text-gray-400 hover:text-blue-600 opacity-0 group-hover:opacity-100 transition-opacity"
+                               title="Edit Transaction"
+                             >
+                                <Pencil className="w-4 h-4" />
+                             </button>
+                          )}
                         </td>
                     </tr>
                     ))}
@@ -1386,7 +1487,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
            {/* ... (Same as before) ... */}
            <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6 animate-fade-in">
               <h3 className="text-lg font-bold mb-4 text-gray-900 flex items-center gap-2">
-                <DollarSign className="w-5 h-5"/> Record Transaction
+                <DollarSign className="w-5 h-5"/> {editingTransactionId ? 'Edit Transaction' : 'Record Transaction'}
               </h3>
               <div className="space-y-4">
                  <div>
@@ -1482,7 +1583,9 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
 
                  <div className="pt-2 flex gap-3">
                     <button onClick={() => setIsTransactionModalOpen(false)} className="flex-1 py-2 text-gray-500 hover:bg-gray-100 rounded">Cancel</button>
-                    <button onClick={handleAddTransaction} className="flex-1 py-2 bg-gray-900 text-white rounded font-bold hover:bg-gray-800">Add Entry</button>
+                    <button onClick={handleSaveTransaction} className="flex-1 py-2 bg-gray-900 text-white rounded font-bold hover:bg-gray-800">
+                      {editingTransactionId ? 'Update Entry' : 'Add Entry'}
+                    </button>
                  </div>
               </div>
            </div>
@@ -1490,15 +1593,15 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
         document.body
       )}
 
-      {/* Document Upload Modal (Same as before) */}
+      {/* Document Upload Modal */}
       {isDocModalOpen && createPortal(
          <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
             <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6 animate-fade-in">
                <h3 className="text-lg font-bold mb-4 flex items-center gap-2 text-gray-900"><Upload className="w-5 h-5"/> Upload Document</h3>
                <div className="space-y-4">
                   <input 
-                    type="text" placeholder="File Name (e.g. FloorPlan.pdf)" 
-                    className={getInputClass(showDocErrors && !newDoc.name)}
+                    type="text" placeholder="Document Name (e.g. FloorPlan.pdf)" 
+                    className={getInputClass(showDocErrors && !newDoc.name && !selectedFile)}
                     value={newDoc.name} onChange={e => setNewDoc({...newDoc, name: e.target.value})}
                   />
                   {/* ... rest of doc modal ... */}
@@ -1521,8 +1624,32 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                      </div>
                   </div>
 
-                  <div className="bg-gray-50 p-4 rounded-lg border-2 border-dashed border-gray-300 text-center text-sm text-gray-500">
-                     <p>Drag and drop file here (Mock)</p>
+                  <div 
+                    className="bg-gray-50 p-6 rounded-lg border-2 border-dashed border-gray-300 text-center text-sm text-gray-500 hover:bg-gray-100 hover:border-gray-400 transition-colors cursor-pointer relative"
+                    onClick={() => fileInputRef.current?.click()}
+                  >
+                     {selectedFile ? (
+                       <div className="flex flex-col items-center">
+                          <FileIcon className="w-8 h-8 text-blue-500 mb-2" />
+                          <p className="font-bold text-gray-800">{selectedFile.name}</p>
+                          <p className="text-xs text-gray-400">{(selectedFile.size / 1024).toFixed(1)} KB</p>
+                       </div>
+                     ) : (
+                       <div className="flex flex-col items-center">
+                          <Upload className="w-8 h-8 text-gray-300 mb-2" />
+                          <p>Click to select file</p>
+                          <p className="text-xs text-gray-400 mt-1">or drag and drop here</p>
+                       </div>
+                     )}
+                     <input 
+                       type="file" 
+                       ref={fileInputRef}
+                       onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (file) setSelectedFile(file);
+                       }}
+                       className="hidden" 
+                     />
                   </div>
 
                   <div className="flex gap-2 pt-2">
@@ -1957,6 +2084,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                <div key={comment.id} className={`flex gap-2 ${isMe ? 'flex-row-reverse' : ''}`}>
                                   <img src={getAssigneeAvatar(comment.userId)} className="w-6 h-6 rounded-full bg-gray-200 flex-shrink-0" alt=""/>
                                   <div className={`p-2 rounded-lg max-w-[85%] text-sm ${isMe ? 'bg-blue-100 text-blue-900' : 'bg-white border border-gray-200 text-gray-700'}`}>
+                                     <p className="text-[10px] font-bold opacity-70 mb-1">{getAssigneeName(comment.userId)}</p>
                                      <p>{comment.text}</p>
                                      <p className="text-[10px] opacity-60 mt-1 text-right">{new Date(comment.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</p>
                                   </div>
