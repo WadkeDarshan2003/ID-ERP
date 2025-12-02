@@ -4,7 +4,7 @@ import {
   Palette, LogOut, Search, Bell, Menu, X
 } from 'lucide-react';
 import { MOCK_PROJECTS, MOCK_USERS } from './constants';
-import { Project, Role, User } from './types';
+import { Project, Role, User, ProjectStatus } from './types';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { NotificationProvider, useNotifications } from './contexts/NotificationContext';
 
@@ -17,61 +17,73 @@ import NotificationPanel from './components/NotificationPanel';
 import NewProjectModal from './components/NewProjectModal';
 
 // Helper for project list
-const ProjectList = ({ projects, onSelect }: { projects: Project[], onSelect: (p: Project) => void }) => (
-  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 animate-fade-in">
-    {projects.map(project => (
-      <div 
-        key={project.id} 
-        onClick={() => onSelect(project)}
-        className="group bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden cursor-pointer hover:shadow-lg hover:-translate-y-1 transition-all duration-300"
-      >
-        <div className="h-40 overflow-hidden relative">
-          <img src={project.thumbnail} alt={project.name} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" />
-          <div className="absolute top-3 right-3 bg-white/90 backdrop-blur-sm px-2 py-1 rounded text-xs font-bold text-gray-800 shadow-sm">
-            {project.status}
-          </div>
-          {/* Activity Dot */}
-          {project.activityLog && project.activityLog.length > 0 && (
-             // Simple logic: if latest activity is < 24h
-             (new Date().getTime() - new Date(project.activityLog[0].timestamp).getTime()) < 86400000 && (
-                <div className="absolute bottom-3 right-3 w-3 h-3 bg-blue-500 rounded-full border-2 border-white animate-pulse" title="New Activity"></div>
-             )
-          )}
-        </div>
-        <div className="p-5">
-          <h3 className="font-bold text-gray-900 text-lg mb-1">{project.name}</h3>
-          <p className="text-sm text-gray-500 mb-4 line-clamp-2">{project.description}</p>
-          <div className="flex justify-between items-center border-t border-gray-100 pt-4">
-            <div className="flex -space-x-2">
-              <span className="w-8 h-8 rounded-full border-2 border-white bg-gray-200 flex items-center justify-center text-xs font-bold text-gray-500">
-                {project.leadDesignerId ? 'D' : '?'}
-              </span>
-              <span className="w-8 h-8 rounded-full border-2 border-white bg-gray-200 flex items-center justify-center text-xs font-bold text-gray-500">
-                 {project.clientId ? 'C' : '?'}
-              </span>
+const ProjectList = ({ projects, onSelect }: { projects: Project[], onSelect: (p: Project) => void }) => {
+  const getStatusColor = (status: ProjectStatus) => {
+    switch (status) {
+      case ProjectStatus.PLANNING: return 'bg-purple-100 text-purple-700';
+      case ProjectStatus.IN_PROGRESS: return 'bg-blue-100 text-blue-700';
+      case ProjectStatus.COMPLETED: return 'bg-green-100 text-green-700';
+      case ProjectStatus.ON_HOLD: return 'bg-orange-100 text-orange-700';
+      default: return 'bg-gray-100 text-gray-700';
+    }
+  };
+
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 animate-fade-in">
+      {projects.map(project => (
+        <div 
+          key={project.id} 
+          onClick={() => onSelect(project)}
+          className="group bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden cursor-pointer hover:shadow-lg hover:-translate-y-1 transition-all duration-300"
+        >
+          <div className="h-40 overflow-hidden relative">
+            <img src={project.thumbnail} alt={project.name} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" />
+            <div className={`absolute top-3 right-3 backdrop-blur-md px-2 py-1 rounded text-xs font-bold shadow-sm border border-white/20 ${getStatusColor(project.status)}`}>
+              {project.status}
             </div>
-            <span className="text-xs font-medium text-gray-400">Due {new Date(project.deadline).toLocaleDateString()}</span>
+            {/* Activity Dot */}
+            {project.activityLog && project.activityLog.length > 0 && (
+               // Simple logic: if latest activity is < 24h
+               (new Date().getTime() - new Date(project.activityLog[0].timestamp).getTime()) < 86400000 && (
+                  <div className="absolute bottom-3 right-3 w-3 h-3 bg-blue-500 rounded-full border-2 border-white animate-pulse" title="New Activity"></div>
+               )
+            )}
           </div>
-          {/* Progress Bar */}
-          <div className="mt-4">
-             <div className="flex justify-between text-xs mb-1">
-               <span className="text-gray-500">Progress</span>
-               <span className="text-gray-900 font-bold">
-                 {Math.round((project.tasks.filter(t => t.status === 'Done').length / (project.tasks.length || 1)) * 100)}%
-               </span>
-             </div>
-             <div className="w-full bg-gray-100 rounded-full h-1.5">
-               <div 
-                 className="bg-gray-900 h-1.5 rounded-full transition-all duration-1000" 
-                 style={{ width: `${(project.tasks.filter(t => t.status === 'Done').length / (project.tasks.length || 1)) * 100}%` }} 
-               />
-             </div>
+          <div className="p-5">
+            <h3 className="font-bold text-gray-900 text-lg mb-1">{project.name}</h3>
+            <p className="text-sm text-gray-500 mb-4 line-clamp-2">{project.description}</p>
+            <div className="flex justify-between items-center border-t border-gray-100 pt-4">
+              <div className="flex -space-x-2">
+                <span className="w-8 h-8 rounded-full border-2 border-white bg-gray-200 flex items-center justify-center text-xs font-bold text-gray-500">
+                  {project.leadDesignerId ? 'D' : '?'}
+                </span>
+                <span className="w-8 h-8 rounded-full border-2 border-white bg-gray-200 flex items-center justify-center text-xs font-bold text-gray-500">
+                   {project.clientId ? 'C' : '?'}
+                </span>
+              </div>
+              <span className="text-xs font-medium text-gray-400">Due {new Date(project.deadline).toLocaleDateString()}</span>
+            </div>
+            {/* Progress Bar */}
+            <div className="mt-4">
+               <div className="flex justify-between text-xs mb-1">
+                 <span className="text-gray-500">Progress</span>
+                 <span className="text-gray-900 font-bold">
+                   {Math.round((project.tasks.filter(t => t.status === 'Done').length / (project.tasks.length || 1)) * 100)}%
+                 </span>
+               </div>
+               <div className="w-full bg-gray-100 rounded-full h-1.5">
+                 <div 
+                   className="bg-gray-900 h-1.5 rounded-full transition-all duration-1000" 
+                   style={{ width: `${(project.tasks.filter(t => t.status === 'Done').length / (project.tasks.length || 1)) * 100}%` }} 
+                 />
+               </div>
+            </div>
           </div>
         </div>
-      </div>
-    ))}
-  </div>
-);
+      ))}
+    </div>
+  );
+};
 
 type ViewState = 'dashboard' | 'projects' | 'clients' | 'vendors' | 'designers';
 

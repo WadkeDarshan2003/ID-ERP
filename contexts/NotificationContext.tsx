@@ -6,7 +6,7 @@ import { useAuth } from './AuthContext';
 interface NotificationContextType {
   notifications: Notification[];
   unreadCount: number;
-  addNotification: (title: string, message: string, type?: Notification['type'], recipientId?: string, projectId?: string) => void;
+  addNotification: (title: string, message: string, type?: Notification['type'], recipientId?: string, projectId?: string, targetTab?: string) => void;
   markAsRead: (id: string) => void;
   markAllAsRead: () => void;
   clearNotifications: () => void;
@@ -23,7 +23,7 @@ export const NotificationProvider: React.FC<{ children: ReactNode }> = ({ childr
   const visibleNotifications = notifications.filter(n => !n.recipientId || n.recipientId === user?.id);
   const unreadCount = visibleNotifications.filter(n => !n.read).length;
 
-  const addNotification = (title: string, message: string, type: Notification['type'] = 'info', recipientId?: string, projectId?: string) => {
+  const addNotification = (title: string, message: string, type: Notification['type'] = 'info', recipientId?: string, projectId?: string, targetTab?: string) => {
     const newNotification: Notification = {
       id: Math.random().toString(36).substr(2, 9),
       title,
@@ -33,6 +33,7 @@ export const NotificationProvider: React.FC<{ children: ReactNode }> = ({ childr
       projectId,
       timestamp: new Date(),
       read: false,
+      targetTab,
     };
     
     // Add to persistent store

@@ -124,6 +124,7 @@ export interface Project {
   name: string;
   clientId: string;
   leadDesignerId: string;
+  teamMembers?: string[]; // IDs of explicitly added members
   status: ProjectStatus;
   startDate: string;
   deadline: string;
@@ -146,4 +147,5 @@ export interface Notification {
   type: 'info' | 'success' | 'warning' | 'error';
   timestamp: Date;
   read: boolean;
+  targetTab?: string;
 }

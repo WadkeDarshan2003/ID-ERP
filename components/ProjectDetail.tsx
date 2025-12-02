@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { Project, User, Task, TaskStatus, Role, Meeting, SubTask, Comment, ApprovalStatus, ActivityLog, ProjectDocument, FinancialRecord } from '../types';
+import { Project, User, Task, TaskStatus, Role, Meeting, SubTask, Comment, ApprovalStatus, ActivityLog, ProjectDocument, FinancialRecord, ProjectStatus } from '../types';
 import { generateProjectTasks } from '../services/geminiService';
 import { useAuth } from '../contexts/AuthContext';
 import { CATEGORY_ORDER } from '../constants'; // Imported from constants
@@ -19,11 +19,12 @@ interface ProjectDetailProps {
   users: User[];
   onUpdateProject: (updatedProject: Project) => void;
   onBack: () => void;
+  initialTab?: 'discovery' | 'plan' | 'financials' | 'team' | 'timeline' | 'documents';
 }
 
 const ROW_HEIGHT = 48; // Fixed height for Gantt rows
 
-const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateProject, onBack }) => {
+const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateProject, onBack, initialTab }) => {
   const { user } = useAuth();
   const { addNotification } = useNotifications();
   const [activeTab, setActiveTab] = useState<'discovery' | 'plan' | 'financials' | 'team' | 'timeline' | 'documents'>('plan');
@@ -72,6 +73,13 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
     }
   }, [editingTask?.comments]);
 
+  // Initial Tab / Deep Linking
+  useEffect(() => {
+    if (initialTab) {
+        setActiveTab(initialTab);
+    }
+  }, [initialTab]);
+
   // If Vendor, default to 'plan' tab if they try to access others, or initial load
   useEffect(() => {
     if (user?.role === Role.VENDOR && (activeTab === 'discovery' || activeTab === 'timeline' || activeTab === 'financials')) {
@@ -96,24 +104,59 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
   const getAssigneeName = (id: string) => users.find(u => u.id === id)?.name || 'Unassigned';
   const getAssigneeAvatar = (id: string) => users.find(u => u.id === id)?.avatar || '';
 
+  // --- Helper: Project Team (for Meetings/Visibility) ---
+  const projectTeam = useMemo(() => {
+    const teamIds = new Set<string>();
+    
+    // Core Roles
+    if (project.clientId) teamIds.add(project.clientId);
+    if (project.leadDesignerId) teamIds.add(project.leadDesignerId);
+
+    // Admins (always available)
+    users.filter(u => u.role === Role.ADMIN).forEach(u => teamIds.add(u.id));
+
+    // Task Assignees
+    project.tasks.forEach(t => {
+      if (t.assigneeId) teamIds.add(t.assigneeId);
+    });
+
+    // Explicitly Invited Members
+    if (project.teamMembers) {
+      project.teamMembers.forEach(id => teamIds.add(id));
+    }
+
+    return users.filter(u => teamIds.has(u.id));
+  }, [project, users]);
+
   // --- Helper: Notifications ---
-  const notifyStakeholders = (title: string, message: string, excludeUserId?: string) => {
+  const notifyProjectTeam = (title: string, message: string, excludeUserId?: string, targetTab?: string) => {
       // Find all Admins
       const admins = users.filter(u => u.role === Role.ADMIN);
       // Find Lead Designer
       const designer = users.find(u => u.id === project.leadDesignerId);
+      // Find Client
+      const client = users.find(u => u.id === project.clientId);
       
-      const recipients = [...admins, designer].filter((u): u is User => !!u && u.id !== excludeUserId);
-      const uniqueRecipients = Array.from(new Set(recipients.map(u => u.id)));
+      const recipients = [...admins, designer, client];
       
-      uniqueRecipients.forEach(id => {
-          addNotification(title, message, 'info', id, project.id);
+      // Also include explicitly added Team Members (BUT EXCLUDE VENDORS)
+      if (project.teamMembers) {
+          project.teamMembers.forEach(mid => {
+             const m = users.find(u => u.id === mid);
+             if (m && m.role !== Role.VENDOR) recipients.push(m);
+          });
+      }
+
+      const uniqueRecipients = Array.from(new Set(recipients.filter((u): u is User => !!u && u.id !== excludeUserId && u.role !== Role.VENDOR)));
+      
+      uniqueRecipients.forEach(u => {
+          addNotification(title, message, 'info', u.id, project.id, targetTab);
       });
   };
 
-  const notifyUser = (userId: string, title: string, message: string, type: 'info' | 'success' | 'warning' | 'error' = 'info') => {
+  const notifyUser = (userId: string, title: string, message: string, type: 'info' | 'success' | 'warning' | 'error' = 'info', targetTab?: string) => {
       if (userId && userId !== user.id) {
-          addNotification(title, message, type, userId, project.id);
+          addNotification(title, message, type, userId, project.id, targetTab);
       }
   };
 
@@ -198,6 +241,17 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
   `;
 
   // --- Handlers ---
+  
+  const handleOpenTask = (task: Task) => {
+    // Permission Check for Vendors
+    if (user.role === Role.VENDOR && task.assigneeId !== user.id) {
+        addNotification('Access Restricted', 'You can only view details of tasks assigned to you.', 'warning');
+        return;
+    }
+    setEditingTask(task);
+    setIsTaskModalOpen(true);
+    setShowTaskErrors(false);
+  };
 
   const handleGenerateTasks = async () => {
     if (!canUseAI) return;
@@ -210,7 +264,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
         tasks: [...project.tasks, ...newTasks],
         activityLog: [log, ...(project.activityLog || [])]
       });
-      addNotification('Tasks Generated', 'AI successfully created initial project tasks.', 'success');
+      notifyProjectTeam('AI Suggestion', `AI generated ${newTasks.length} tasks for "${project.name}".`, user.id, 'plan');
     }
     setIsGenerating(false);
   };
@@ -235,6 +289,9 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       meetings: [...project.meetings, meeting],
       activityLog: [log, ...(project.activityLog || [])]
     });
+    
+    notifyProjectTeam('New Meeting', `"${meeting.title}" scheduled in "${project.name}" for ${meeting.date}`, user.id, 'discovery');
+    
     setIsMeetingModalOpen(false);
     setNewMeeting({});
     setShowMeetingErrors(false);
@@ -249,11 +306,15 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
     if (!member) return;
 
     const log = logActivity('Team Update', `Added ${member.name} (${member.role}) to project team`);
+    
     onUpdateProject({
         ...project,
+        teamMembers: [...(project.teamMembers || []), selectedMemberId],
         activityLog: [log, ...(project.activityLog || [])]
     });
-    addNotification("Member Added", `${member.name} added to team successfully`, "success");
+    
+    notifyUser(member.id, 'Welcome to Project', `You have been added to the team for "${project.name}"`, 'success', 'dashboard');
+    notifyProjectTeam('Team Update', `${member.name} joined the team for "${project.name}"`, user.id, 'team');
     setIsMemberModalOpen(false);
     setSelectedMemberId('');
   };
@@ -295,6 +356,9 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
           documents: [...(project.documents || []), doc],
           activityLog: [log, ...(project.activityLog || [])]
       });
+      
+      notifyProjectTeam('File Added', `${user.name} uploaded "${doc.name}" to "${project.name}"`, user.id, 'documents');
+      
       setIsDocModalOpen(false);
       setNewDoc({ name: '', sharedWith: [] });
       setSelectedFile(null);
@@ -371,9 +435,12 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
         activityLog: [log, ...(project.activityLog || [])]
      });
      
+     // Notify team about financial update
+     notifyProjectTeam('Budget Update', `${editingTransactionId ? 'Updated' : 'New'} transaction "${newTransaction.description}" in "${project.name}"`, user.id, 'financials');
+
      setIsTransactionModalOpen(false);
      setEditingTransactionId(null);
-     addNotification("Success", editingTransactionId ? "Transaction updated" : "Transaction added", "success");
+     addNotification("Success", editingTransactionId ? "Transaction updated" : "Transaction added", "success", undefined, 'financials');
   };
 
   const handleDependencyChange = (dependencyId: string, isChecked: boolean) => {
@@ -462,6 +529,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
     let log: ActivityLog;
 
     const oldTask = project.tasks.find(t => t.id === taskData.id);
+    const isNew = index < 0;
 
     if (index >= 0) {
       updatedTasks[index] = taskData;
@@ -469,16 +537,20 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       
       // Notify Assignee if changed
       if (oldTask && oldTask.assigneeId !== taskData.assigneeId && taskData.assigneeId) {
-          notifyUser(taskData.assigneeId, 'New Task Assignment', `You have been assigned to task '${taskData.title}' in ${project.name}`);
+          notifyUser(taskData.assigneeId, 'New Task Assignment', `You have been assigned to task "${taskData.title}" in "${project.name}"`, 'info', 'plan');
       }
     } else {
       updatedTasks.push(taskData);
       log = logActivity('Task Created', `Created new task "${taskData.title}"`, 'creation');
       // Notify Assignee
       if (taskData.assigneeId) {
-          notifyUser(taskData.assigneeId, 'New Task Assignment', `You have been assigned to task '${taskData.title}' in ${project.name}`);
+          notifyUser(taskData.assigneeId, 'New Task Assignment', `You have been assigned to task "${taskData.title}" in "${project.name}"`, 'info', 'plan');
       }
     }
+
+    // General Notification for Team (Visibility)
+    // Vendors excluded via notifyProjectTeam logic
+    notifyProjectTeam('Task Update', `Task "${taskData.title}" ${isNew ? 'created' : 'updated'} in "${project.name}"`, user.id, 'plan');
 
     onUpdateProject({ 
       ...project, 
@@ -529,9 +601,11 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
     
     // NOTIFICATION LOGIC
     if (newStatus === TaskStatus.DONE && user.role === Role.VENDOR) {
-        notifyStakeholders('Task Completed', `${user.name} marked '${task.title}' as Done.`, user.id);
+        notifyProjectTeam('Task Completed', `"${task.title}" marked as DONE by ${user.name} in "${project.name}"`, user.id, 'plan');
     } else if (newStatus === TaskStatus.REVIEW && user.role === Role.VENDOR) {
-        notifyStakeholders('Review Request', `${user.name} submitted '${task.title}' for review.`, user.id);
+        notifyProjectTeam('Review Request', `"${task.title}" submitted for review by ${user.name} in "${project.name}"`, user.id, 'plan');
+    } else if (newStatus !== task.status) {
+         notifyProjectTeam('Status Update', `"${task.title}" moved to ${newStatus} in "${project.name}"`, user.id, 'plan');
     }
 
     onUpdateProject({
@@ -584,7 +658,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
     
     // Notification if status changed automatically
     if (newStatus !== task.status && newStatus === TaskStatus.REVIEW && user.role === Role.VENDOR) {
-       notifyStakeholders('Task Ready for Review', `All items checked for '${task.title}' by ${user.name}`, user.id);
+       notifyProjectTeam('Review Ready', `All items checked for "${task.title}" by ${user.name} in "${project.name}"`, user.id, 'plan');
     }
 
     onUpdateProject({ ...project, tasks: updatedTasks });
@@ -681,7 +755,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       
       // Notify Assignee
       if (editingTask.assigneeId) {
-          notifyUser(editingTask.assigneeId, 'Work Rejected', `${user.name} rejected ${stage} approval for '${editingTask.title}'. Please review notes.`, 'warning');
+          notifyUser(editingTask.assigneeId, 'Work Rejected', `${user.name} rejected ${stage} approval for "${editingTask.title}".`, 'warning', 'plan');
       }
 
     } else {
@@ -694,7 +768,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                  updatedTaskStatus = TaskStatus.DONE;
                  addNotification('Task Approved', "Task fully approved and marked as DONE.", 'success');
                  if (editingTask.assigneeId) {
-                     notifyUser(editingTask.assigneeId, 'Work Approved', `Great job! '${editingTask.title}' is officially approved and done.`, 'success');
+                     notifyUser(editingTask.assigneeId, 'Work Approved', `Great job! "${editingTask.title}" is officially approved and done in "${project.name}".`, 'success', 'plan');
                  }
              } else {
                  addNotification('Approved', `Task completion approved by ${roleKey}. Waiting for others.`, 'success');
@@ -827,6 +901,16 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
   // Derived state for Task Modal
   const isEditingFrozen = editingTask ? isTaskFrozen(editingTask.status) : false;
 
+  const getStatusColor = (status: ProjectStatus) => {
+    switch (status) {
+      case ProjectStatus.PLANNING: return 'bg-purple-100 text-purple-700';
+      case ProjectStatus.IN_PROGRESS: return 'bg-blue-100 text-blue-700';
+      case ProjectStatus.COMPLETED: return 'bg-green-100 text-green-700';
+      case ProjectStatus.ON_HOLD: return 'bg-orange-100 text-orange-700';
+      default: return 'bg-gray-100 text-gray-700';
+    }
+  };
+
   return (
     <div className="h-full flex flex-col animate-fade-in relative">
       {/* ... (Header and Tabs code remains unchanged until activeTab === 'plan') ... */}
@@ -838,8 +922,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
           <div>
             <h1 className="text-2xl font-bold text-gray-900">{project.name}</h1>
             <div className="flex items-center gap-4 text-sm text-gray-500 mt-1">
-              <span className={`px-2 py-0.5 rounded-full text-xs font-medium 
-                ${project.status === 'In Progress' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-700'}`}>
+              <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${getStatusColor(project.status)}`}>
                 {project.status}
               </span>
               <span className="flex items-center gap-1"><Calendar className="w-4 h-4" /> Due: {project.deadline}</span>
@@ -872,13 +955,11 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
               className="flex items-center gap-2 px-4 py-2 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors text-sm font-medium"
             >
               <Plus className="w-4 h-4" />
-              Add {
-                  activeTab === 'discovery' ? 'Meeting' : 
-                  activeTab === 'plan' ? 'Task' : 
-                  activeTab === 'documents' ? 'Document' : 
-                  activeTab === 'financials' ? 'Transaction' :
-                  activeTab === 'team' ? 'Member' : 'Item'
-              }
+              {activeTab === 'discovery' ? 'Add Meeting' : 
+               activeTab === 'plan' ? 'Add Task' : 
+               activeTab === 'documents' ? 'Add Document' : 
+               activeTab === 'financials' ? 'Add Transaction' :
+               activeTab === 'team' ? 'Add Member' : 'Add Item'}
             </button>
           )}
           {/* Allow non-admins to upload docs too if active tab is docs */}
@@ -994,7 +1075,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                   users={users} 
                   onUpdateTaskStatus={handleKanbanStatusUpdate}
                   onUpdateTaskPriority={handleKanbanPriorityUpdate}
-                  onEditTask={(task) => { setEditingTask(task); setIsTaskModalOpen(true); setShowTaskErrors(false); }}
+                  onEditTask={handleOpenTask}
                 />
               </div>
             )}
@@ -1090,7 +1171,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                >
                                  <div className="w-[30%] pr-4 pl-2 flex flex-col justify-center border-r border-transparent group-hover:border-gray-100">
                                    <div 
-                                     onClick={() => { setEditingTask(task); setIsTaskModalOpen(true); setShowTaskErrors(false); }}
+                                     onClick={() => handleOpenTask(task)}
                                      className="text-sm font-medium text-gray-800 truncate cursor-pointer hover:text-blue-600 flex items-center gap-2"
                                    >
                                      {task.title}
@@ -1113,7 +1194,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                         hover:opacity-100 transition-opacity z-20
                                       `}
                                       style={{ left: `${task.left}%`, width: `${task.width}%` }}
-                                      onClick={() => { setEditingTask(task); setIsTaskModalOpen(true); setShowTaskErrors(false); }}
+                                      onClick={() => handleOpenTask(task)}
                                     >
                                       {/* Progress overlay in bar */}
                                       <div 
@@ -1186,12 +1267,12 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                             {task.status === TaskStatus.REVIEW && <Clock className="w-3.5 h-3.5 text-white" />}
                                         </button>
                                         )}
-                                        <button onClick={() => { setEditingTask(task); setIsTaskModalOpen(true); setShowTaskErrors(false); }} className="text-xs text-gray-400 hover:text-gray-900 ml-2">View</button>
+                                        <button onClick={() => handleOpenTask(task)} className="text-xs text-gray-400 hover:text-gray-900 ml-2">View</button>
                                     </>
                                 )}
                               </div>
                             </div>
-                            <h4 className="font-bold text-gray-800 mb-1 cursor-pointer hover:text-blue-600" onClick={() => { setEditingTask(task); setIsTaskModalOpen(true); setShowTaskErrors(false); }}>{task.title}</h4>
+                            <h4 className="font-bold text-gray-800 mb-1 cursor-pointer hover:text-blue-600" onClick={() => handleOpenTask(task)}>{task.title}</h4>
                             <p className="text-xs text-gray-500 mb-4">
                                 {new Date(task.startDate).toLocaleDateString()} - {new Date(task.dueDate).toLocaleDateString()}
                             </p>
@@ -1526,6 +1607,26 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                      </div>
                   </div>
                   
+                  {/* Explicitly Added Members */}
+                  {project.teamMembers && project.teamMembers.length > 0 && (
+                     <div className="pt-2 space-y-3">
+                         <h4 className="text-xs font-bold text-gray-500 uppercase mb-2">Team Members</h4>
+                         {project.teamMembers.map(memberId => {
+                            const member = users.find(u => u.id === memberId);
+                            if (!member) return null;
+                            return (
+                                <div key={member.id} className="flex items-center gap-3 p-2 hover:bg-gray-50 rounded-lg transition-colors border border-transparent hover:border-gray-100">
+                                    <img src={member.avatar} className="w-10 h-10 rounded-full border border-gray-200" alt="" />
+                                    <div>
+                                        <p className="font-bold text-gray-800 text-sm">{member.name}</p>
+                                        <p className="text-xs text-gray-500">{member.role}</p>
+                                    </div>
+                                </div>
+                            );
+                         })}
+                     </div>
+                  )}
+
                   {sortedVendorCategories.length > 0 && (
                      <>
                         <div className="pt-4 space-y-6">
@@ -1582,10 +1683,8 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                       (u.role === Role.CLIENT || u.role === Role.VENDOR || u.role === Role.DESIGNER) &&
                                       u.id !== project.clientId &&
                                       u.id !== project.leadDesignerId &&
-                                      // Optional: Filter out existing task assignees if desired, but user might want to re-add/promote them.
-                                      // For now, filtering out main Client/Lead Designer is crucial.
-                                      // We can also filter out users who are vendors already assigned tasks to avoid clutter.
-                                      !project.tasks.some(t => t.assigneeId === u.id)
+                                      // Filter out already added team members
+                                      !project.teamMembers?.includes(u.id)
                                   )
                                   .map(u => (
                                       <option key={u.id} value={u.id}>
@@ -1790,12 +1889,12 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
          document.body
       )}
 
-      {/* Meeting Modal (Same as before) */}
+      {/* Meeting Modal */}
       {isMeetingModalOpen && createPortal(
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-           <div className="bg-white rounded-xl shadow-xl w-full max-w-lg p-6 animate-fade-in">
+           <div className="bg-white rounded-xl shadow-xl w-full max-w-lg p-6 animate-fade-in flex flex-col max-h-[90vh]">
               <h3 className="text-lg font-bold mb-4 text-gray-900">Log New Meeting</h3>
-              <div className="space-y-4">
+              <div className="space-y-4 overflow-y-auto pr-1">
                  <input 
                    type="text" placeholder="Meeting Title" 
                    className={getInputClass(showMeetingErrors && !newMeeting.title)}
@@ -1815,12 +1914,43 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                    <option>Progress</option>
                    <option>Vendor Meet</option>
                  </select>
+                 
+                 {/* Attendees Checklist - FILTERED BY PROJECT TEAM */}
+                 <div>
+                    <label className="text-xs font-bold text-gray-500 uppercase mb-2 block">Select Attendees (Project Team Only)</label>
+                    <div className="border border-gray-200 rounded-lg max-h-40 overflow-y-auto p-2 bg-gray-50 space-y-1">
+                        {projectTeam.map(u => (
+                            <label key={u.id} className="flex items-center gap-2 p-1.5 hover:bg-white rounded cursor-pointer transition-colors">
+                                <input 
+                                    type="checkbox" 
+                                    className="rounded text-gray-900 focus:ring-gray-900"
+                                    checked={(newMeeting.attendees || []).includes(u.name)}
+                                    onChange={(e) => {
+                                        const current = newMeeting.attendees || [];
+                                        if (e.target.checked) {
+                                            setNewMeeting({...newMeeting, attendees: [...current, u.name]});
+                                        } else {
+                                            setNewMeeting({...newMeeting, attendees: current.filter(a => a !== u.name)});
+                                        }
+                                    }}
+                                />
+                                <span className="text-sm text-gray-700">{u.name}</span>
+                                <span className="text-[10px] uppercase bg-gray-200 text-gray-600 px-1 rounded ml-auto">{u.role}</span>
+                            </label>
+                        ))}
+                        {projectTeam.length === 0 && <p className="text-xs text-gray-400 p-2">No team members available.</p>}
+                    </div>
+                    <p className="text-[10px] text-gray-400 mt-1">Selected: {(newMeeting.attendees || []).join(', ') || 'None'}</p>
+                 </div>
+
                  <textarea 
                    placeholder="Meeting Notes..." className="w-full p-2 border rounded h-32 bg-white text-gray-900 border-gray-300"
                    value={newMeeting.notes || ''} onChange={e => setNewMeeting({...newMeeting, notes: e.target.value})}
                  />
-                 <button onClick={handleAddMeeting} className="w-full bg-gray-900 text-white py-2 rounded font-bold">Save Meeting Record</button>
-                 <button onClick={() => setIsMeetingModalOpen(false)} className="w-full text-gray-500 py-2">Cancel</button>
+                 <div className="flex gap-3 pt-2">
+                    <button onClick={() => setIsMeetingModalOpen(false)} className="w-full text-gray-500 py-2 hover:bg-gray-100 rounded">Cancel</button>
+                    <button onClick={handleAddMeeting} className="w-full bg-gray-900 text-white py-2 rounded font-bold hover:bg-gray-800">Save Meeting Record</button>
+                 </div>
               </div>
            </div>
         </div>,
@@ -1872,7 +2002,14 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                            <div className="bg-gray-900 p-3 rounded-lg pointer-events-auto">
                                <p className="text-xs font-bold text-gray-400 uppercase mb-2 flex items-center gap-1"><Shield className="w-3 h-3"/> Admin Actions</p>
                                <div className="flex gap-2">
-                                   {editingTask.status !== TaskStatus.ON_HOLD && (
+                                   {editingTask.status === TaskStatus.ON_HOLD ? (
+                                       <button 
+                                           onClick={() => setEditingTask({...editingTask, status: deriveStatus(editingTask, TaskStatus.IN_PROGRESS)})}
+                                           className="flex-1 bg-green-600 hover:bg-green-700 text-white text-xs font-bold py-2 rounded flex items-center justify-center gap-1"
+                                       >
+                                           <PlayCircle className="w-3 h-3"/> Resume Task
+                                       </button>
+                                   ) : (
                                        <button 
                                            onClick={() => setEditingTask({...editingTask, status: TaskStatus.ON_HOLD})}
                                            className="flex-1 bg-yellow-600 hover:bg-yellow-700 text-white text-xs font-bold py-2 rounded flex items-center justify-center gap-1"
@@ -1880,29 +2017,20 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                            <PauseCircle className="w-3 h-3"/> Put On Hold
                                        </button>
                                    )}
-                                   {editingTask.status === TaskStatus.ON_HOLD && (
-                                       <button 
-                                           onClick={() => setEditingTask({...editingTask, status: deriveStatus(editingTask, editingTask.status)})}
-                                           className="flex-1 bg-green-600 hover:bg-green-700 text-white text-xs font-bold py-2 rounded flex items-center justify-center gap-1"
-                                       >
-                                           <PlayCircle className="w-3 h-3"/> Resume Task
-                                       </button>
-                                   )}
 
-                                   {editingTask.status !== TaskStatus.ABORTED && (
+                                   {editingTask.status === TaskStatus.ABORTED ? (
+                                       <button 
+                                           onClick={() => setEditingTask({...editingTask, status: deriveStatus(editingTask, TaskStatus.IN_PROGRESS)})}
+                                           className="flex-1 bg-gray-700 hover:bg-gray-600 text-white text-xs font-bold py-2 rounded flex items-center justify-center gap-1"
+                                       >
+                                           <History className="w-3 h-3"/> Restore
+                                       </button>
+                                   ) : (
                                        <button 
                                            onClick={() => setEditingTask({...editingTask, status: TaskStatus.ABORTED})}
                                            className="flex-1 bg-red-600 hover:bg-red-700 text-white text-xs font-bold py-2 rounded flex items-center justify-center gap-1"
                                        >
                                            <Ban className="w-3 h-3"/> Abort Task
-                                       </button>
-                                   )}
-                                   {editingTask.status === TaskStatus.ABORTED && (
-                                       <button 
-                                           onClick={() => setEditingTask({...editingTask, status: deriveStatus(editingTask, editingTask.status)})}
-                                           className="flex-1 bg-gray-700 hover:bg-gray-600 text-white text-xs font-bold py-2 rounded flex items-center justify-center gap-1"
-                                       >
-                                           <History className="w-3 h-3"/> Restore
                                        </button>
                                    )}
                                </div>
