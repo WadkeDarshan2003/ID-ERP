@@ -10,7 +10,7 @@ import {
   ChevronRight, Wand2, Lock, Clock, FileText,
   Layout, ListChecks, ArrowRight, User as UserIcon, X,
   MessageSquare, ThumbsUp, ThumbsDown, Send, Shield, History, Layers, Link2, AlertCircle, Tag, Upload, Ban, PauseCircle, PlayCircle,
-  File as FileIcon, Eye, Download, Pencil
+  File as FileIcon, Eye, Download, Pencil, Mail, Filter
 } from 'lucide-react';
 import { useNotifications } from '../contexts/NotificationContext';
 
@@ -59,6 +59,12 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       amount: undefined
   });
   const [showTransactionErrors, setShowTransactionErrors] = useState(false);
+  const [transactionFilter, setTransactionFilter] = useState<'all' | 'income' | 'expense' | 'pending' | 'overdue'>('all');
+  const [isFilterOpen, setIsFilterOpen] = useState(false);
+
+  // Team State
+  const [isMemberModalOpen, setIsMemberModalOpen] = useState(false);
+  const [selectedMemberId, setSelectedMemberId] = useState('');
 
   useEffect(() => {
     if (commentsEndRef.current) {
@@ -232,6 +238,24 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
     setIsMeetingModalOpen(false);
     setNewMeeting({});
     setShowMeetingErrors(false);
+  };
+
+  const handleInviteMember = () => {
+    if (!selectedMemberId) {
+        addNotification("Validation Error", "Please select a user", "error");
+        return;
+    }
+    const member = users.find(u => u.id === selectedMemberId);
+    if (!member) return;
+
+    const log = logActivity('Team Update', `Added ${member.name} (${member.role}) to project team`);
+    onUpdateProject({
+        ...project,
+        activityLog: [log, ...(project.activityLog || [])]
+    });
+    addNotification("Member Added", `${member.name} added to team successfully`, "success");
+    setIsMemberModalOpen(false);
+    setSelectedMemberId('');
   };
 
   const handleUploadDocument = () => {
@@ -710,6 +734,18 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
 
   const { received, pendingIncome, paidOut, pendingExpenses } = calculateFinancials();
 
+  // Financial Filter Logic
+  const filteredFinancials = useMemo(() => {
+     return project.financials.filter(f => {
+         if (transactionFilter === 'all') return true;
+         if (transactionFilter === 'income') return f.type === 'income';
+         if (transactionFilter === 'expense') return f.type === 'expense';
+         if (transactionFilter === 'pending') return f.status === 'pending';
+         if (transactionFilter === 'overdue') return f.status === 'overdue';
+         return true;
+     }).sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  }, [project.financials, transactionFilter]);
+
   // Helper sort function based on CATEGORY_ORDER
   const getCategorySortIndex = (cat: string) => {
     const index = CATEGORY_ORDER.indexOf(cat);
@@ -824,17 +860,25 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
               {isGenerating ? 'Thinking...' : 'AI Suggest Tasks'}
             </button>
           )}
-          {canEditProject && (
+          {canEditProject && activeTab !== 'timeline' && (
             <button 
               onClick={() => {
                 if(activeTab === 'discovery') setIsMeetingModalOpen(true);
                 if(activeTab === 'plan') { setEditingTask({}); setIsTaskModalOpen(true); setShowTaskErrors(false); }
                 if(activeTab === 'documents') { setIsDocModalOpen(true); setSelectedFile(null); }
+                if(activeTab === 'financials') { openTransactionModal(); }
+                if(activeTab === 'team') { setIsMemberModalOpen(true); setSelectedMemberId(''); }
               }}
               className="flex items-center gap-2 px-4 py-2 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors text-sm font-medium"
             >
               <Plus className="w-4 h-4" />
-              Add {activeTab === 'discovery' ? 'Meeting' : activeTab === 'plan' ? 'Task' : activeTab === 'documents' ? 'Document' : 'Item'}
+              Add {
+                  activeTab === 'discovery' ? 'Meeting' : 
+                  activeTab === 'plan' ? 'Task' : 
+                  activeTab === 'documents' ? 'Document' : 
+                  activeTab === 'financials' ? 'Transaction' :
+                  activeTab === 'team' ? 'Member' : 'Item'
+              }
             </button>
           )}
           {/* Allow non-admins to upload docs too if active tab is docs */}
@@ -1281,6 +1325,22 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
           <div className="max-w-4xl mx-auto space-y-8">
             <h3 className="text-lg font-bold text-gray-800">Phase 3: Financial Management</h3>
             
+            {/* NEW: Budget Overview Section */}
+            <div className="bg-gray-900 text-white p-6 rounded-xl shadow-lg flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                <div>
+                    <p className="text-gray-400 text-xs font-bold uppercase mb-1">Total Project Budget</p>
+                    <h2 className="text-4xl font-bold tracking-tight">${project.budget.toLocaleString()}</h2>
+                </div>
+                <div className="text-left md:text-right">
+                    <p className="text-gray-400 text-xs font-bold uppercase mb-1">Remaining Budget</p>
+                     {/* Remaining = Budget - Total Expenses (Paid + Pending) to reflect actual committed cost against budget */}
+                    <h2 className={`text-2xl font-bold ${project.budget - (paidOut + pendingExpenses) < 0 ? 'text-red-400' : 'text-emerald-400'}`}>
+                        ${(project.budget - (paidOut + pendingExpenses)).toLocaleString()}
+                    </h2>
+                    <p className="text-[10px] text-gray-500 mt-1">Budget - (Paid + Pending Expenses)</p>
+                </div>
+            </div>
+
             <div className="grid grid-cols-2 gap-6">
                <div className="bg-green-50 p-6 rounded-xl border border-green-100 relative overflow-hidden">
                  <div className="flex items-center justify-between mb-2">
@@ -1315,20 +1375,39 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                  </div>
                </div>
             </div>
-            {/* ... Transaction Table ... */}
-            <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+            
+            {/* Transaction Table */}
+            <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden min-h-[300px]">
                 <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center bg-gray-50">
                     <h3 className="font-semibold text-gray-800">Transaction Ledger</h3>
-                    <div className="flex gap-2">
-                    <button className="text-xs bg-white border border-gray-300 px-3 py-1 rounded hover:bg-gray-50 text-gray-700">Filter</button>
-                    {canEditProject && (
+                    <div className="flex gap-2 relative">
+                        {/* Filter Button */}
                         <button 
-                            onClick={() => openTransactionModal()}
-                            className="text-xs bg-gray-900 text-white px-3 py-1 rounded hover:bg-gray-800 font-bold"
+                            onClick={() => setIsFilterOpen(!isFilterOpen)}
+                            className={`text-xs border px-3 py-1.5 rounded-lg hover:bg-white text-gray-700 flex items-center gap-2 font-medium transition-colors ${transactionFilter !== 'all' ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-white border-gray-300'}`}
                         >
-                            New Entry
+                            <Filter className="w-3.5 h-3.5"/> 
+                            <span className="capitalize">{transactionFilter === 'all' ? 'Filter' : transactionFilter}</span>
                         </button>
-                    )}
+                        
+                        {/* Filter Dropdown */}
+                        {isFilterOpen && (
+                            <>
+                                <div className="fixed inset-0 z-10" onClick={() => setIsFilterOpen(false)}></div>
+                                <div className="absolute right-0 top-9 bg-white shadow-xl border border-gray-100 rounded-lg p-1.5 z-20 w-36 flex flex-col gap-0.5 animate-fade-in">
+                                    {['all', 'income', 'expense', 'pending', 'overdue'].map(f => (
+                                        <button 
+                                            key={f}
+                                            onClick={() => { setTransactionFilter(f as any); setIsFilterOpen(false); }}
+                                            className={`text-left text-xs px-3 py-2 rounded-md capitalize font-medium ${transactionFilter === f ? 'bg-gray-100 text-gray-900' : 'text-gray-600 hover:bg-gray-50'}`}
+                                        >
+                                            {f}
+                                        </button>
+                                    ))}
+                                </div>
+                            </>
+                        )}
+                        {/* Removed duplicate New Entry button as per request */}
                     </div>
                 </div>
                 <table className="w-full text-sm text-left">
@@ -1343,14 +1422,16 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                     </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-50">
-                    {project.financials.length === 0 && (
+                    {filteredFinancials.length === 0 && (
                         <tr>
-                            <td colSpan={6} className="text-center py-6 text-gray-400">No transactions recorded.</td>
+                            <td colSpan={6} className="text-center py-10 text-gray-400">
+                                {project.financials.length === 0 ? 'No transactions recorded.' : 'No transactions match filters.'}
+                            </td>
                         </tr>
                     )}
-                    {project.financials.map(fin => (
-                    <tr key={fin.id} className="hover:bg-gray-50 group">
-                        <td className="px-6 py-4 text-gray-600">{fin.date}</td>
+                    {filteredFinancials.map(fin => (
+                    <tr key={fin.id} className="hover:bg-gray-50 group transition-colors">
+                        <td className="px-6 py-4 text-gray-600 whitespace-nowrap">{fin.date}</td>
                         <td className="px-6 py-4 font-medium text-gray-900">{fin.description}</td>
                         <td className="px-6 py-4">
                         {fin.type === 'income' ? (
@@ -1366,14 +1447,14 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                             {fin.status}
                         </span>
                         </td>
-                        <td className={`px-6 py-4 text-right font-bold ${fin.type === 'income' ? 'text-green-600' : 'text-gray-900'}`}>
+                        <td className={`px-6 py-4 text-right font-bold whitespace-nowrap ${fin.type === 'income' ? 'text-green-600' : 'text-gray-900'}`}>
                         ${fin.amount.toLocaleString()}
                         </td>
                         <td className="px-6 py-4 text-right">
                           {canEditProject && (
                              <button 
                                onClick={() => openTransactionModal(fin.id)}
-                               className="text-gray-400 hover:text-blue-600 opacity-0 group-hover:opacity-100 transition-opacity"
+                               className="text-gray-400 hover:text-blue-600 opacity-0 group-hover:opacity-100 transition-opacity p-2 hover:bg-blue-50 rounded-full"
                                title="Edit Transaction"
                              >
                                 <Pencil className="w-4 h-4" />
@@ -1481,6 +1562,53 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       </div>
 
       {/* ... (Modals remain unchanged) ... */}
+      {/* Invite Member Modal */}
+      {isMemberModalOpen && createPortal(
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+           <div className="bg-white rounded-xl shadow-xl w-full max-w-sm p-6 animate-fade-in">
+               <h3 className="text-lg font-bold mb-4 text-gray-900 flex items-center gap-2"><UserIcon className="w-5 h-5"/> Add Team Member</h3>
+               <div className="space-y-4">
+                  <div>
+                      <label className="text-xs font-bold text-gray-500 uppercase">Select User</label>
+                      <div className="relative mt-1">
+                          <select 
+                              className="w-full pl-3 pr-10 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-900 bg-white"
+                              value={selectedMemberId}
+                              onChange={(e) => setSelectedMemberId(e.target.value)}
+                          >
+                              <option value="">Select a person...</option>
+                              {users
+                                  .filter(u => 
+                                      (u.role === Role.CLIENT || u.role === Role.VENDOR || u.role === Role.DESIGNER) &&
+                                      u.id !== project.clientId &&
+                                      u.id !== project.leadDesignerId &&
+                                      // Optional: Filter out existing task assignees if desired, but user might want to re-add/promote them.
+                                      // For now, filtering out main Client/Lead Designer is crucial.
+                                      // We can also filter out users who are vendors already assigned tasks to avoid clutter.
+                                      !project.tasks.some(t => t.assigneeId === u.id)
+                                  )
+                                  .map(u => (
+                                      <option key={u.id} value={u.id}>
+                                          {u.name} ({u.role})
+                                      </option>
+                                  ))
+                              }
+                          </select>
+                      </div>
+                      <p className="text-xs text-gray-400 mt-2">
+                          Select from existing Clients, Vendors, or Designers not already in the team.
+                      </p>
+                  </div>
+                  <div className="flex gap-3 pt-2">
+                      <button onClick={() => setIsMemberModalOpen(false)} className="flex-1 py-2 text-gray-500 hover:bg-gray-100 rounded">Cancel</button>
+                      <button onClick={handleInviteMember} className="flex-1 py-2 bg-gray-900 text-white rounded font-bold hover:bg-gray-800">Add Member</button>
+                  </div>
+               </div>
+           </div>
+        </div>,
+        document.body
+      )}
+
       {/* Financial Transaction Modal */}
       {isTransactionModalOpen && createPortal(
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
