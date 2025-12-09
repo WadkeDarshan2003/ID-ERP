@@ -1,0 +1,239 @@
+import React, { useState } from 'react';
+import { Task, TaskStatus, User } from '../types';
+import { Calendar, Lock, CheckCircle, Clock, Ban, PauseCircle } from 'lucide-react';
+import { useNotifications } from '../contexts/NotificationContext';
+import { useAuth } from '../contexts/AuthContext';
+import { AvatarCircle } from '../utils/avatarUtils';
+
+import { calculateTaskProgress } from '../utils/taskUtils';
+
+interface KanbanBoardProps {
+  tasks: Task[];
+  users: User[];
+  onUpdateTask: (task: Task) => void;
+  onDeleteTask: (taskId: string) => void;
+  currentUser: User;
+}
+
+// Columns are now Task Statuses
+const COLUMNS: { id: TaskStatus; label: string; color: string }[] = [
+  { id: TaskStatus.TODO, label: 'Scheduled Tasks', color: 'border-t-4 border-gray-400' },
+  { id: TaskStatus.IN_PROGRESS, label: 'In Process', color: 'border-t-4 border-blue-500' },
+  { id: TaskStatus.REVIEW, label: 'In Review', color: 'border-t-4 border-purple-500' },
+  { id: TaskStatus.ON_HOLD, label: 'On Hold', color: 'border-t-4 border-yellow-500' },
+  { id: TaskStatus.DONE, label: 'Completed', color: 'border-t-4 border-green-500' },
+];
+
+const KanbanBoard: React.FC<KanbanBoardProps> = ({ tasks, users, onUpdateTaskStatus, onUpdateTaskPriority, onEditTask }) => {
+  const { user } = useAuth();
+  const { addNotification } = useNotifications();
+  const [draggedTaskId, setDraggedTaskId] = useState<string | null>(null);
+
+  const isTaskFrozen = (status: TaskStatus) => {
+    return status === TaskStatus.ABORTED || status === TaskStatus.ON_HOLD;
+  };
+
+  const handleDragStart = (e: React.DragEvent, taskId: string) => {
+    const task = tasks.find(t => t.id === taskId);
+    if (task && isTaskFrozen(task.status)) {
+        e.preventDefault();
+        return;
+    }
+    setDraggedTaskId(taskId);
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+  };
+
+  // Dropping now updates STATUS
+  const handleDrop = (e: React.DragEvent, status: TaskStatus) => {
+    e.preventDefault();
+    if (!draggedTaskId || !onUpdateTaskStatus) return;
+
+    onUpdateTaskStatus(draggedTaskId, status);
+    setDraggedTaskId(null);
+  };
+
+  // Quick Action: Advance Status
+  const handleQuickAction = (e: React.MouseEvent, task: Task) => {
+    e.stopPropagation();
+    
+    if (isTaskFrozen(task.status)) return;
+
+    if (isTaskBlocked(task) && task.status !== TaskStatus.DONE) {
+      addNotification("Locked", "Cannot update task. Dependencies not met.", "error");
+      return;
+    }
+    
+    // Flow: TODO -> IN_PROGRESS -> REVIEW -> DONE
+    let nextStatus = task.status;
+    if (task.status === TaskStatus.TODO) nextStatus = TaskStatus.IN_PROGRESS;
+    else if (task.status === TaskStatus.IN_PROGRESS) nextStatus = TaskStatus.REVIEW;
+    else if (task.status === TaskStatus.REVIEW) nextStatus = TaskStatus.DONE;
+
+    onUpdateTaskStatus(task.id, nextStatus);
+  };
+
+  const getAssigneeAvatar = (id: string) => users.find(u => u.id === id)?.avatar || 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"%3E%3Ccircle cx="12" cy="12" r="12" fill="%23e5e7eb"/%3E%3Ctext x="12" y="13" text-anchor="middle" font-size="10" fill="%239ca3af" dominant-baseline="middle"%3E?%3C/text%3E%3C/svg%3E';
+  const getAssigneeName = (id: string) => users.find(u => u.id === id)?.name || 'Unassigned';
+
+  const getAvatarComponent = (userId: string) => {
+    const userObj = users.find(u => u.id === userId);
+    if (userObj) {
+      return <AvatarCircle avatar={userObj.avatar} name={userObj.name} size="sm" />;
+    }
+    return <AvatarCircle avatar="" name="Unassigned" size="sm" />;
+  };
+
+  const isTaskBlocked = (task: Task) => {
+      if (task.status === TaskStatus.DONE) return false;
+      const parentTasks = tasks.filter(t => task.dependencies.includes(t.id));
+      return parentTasks.some(t => t.status !== TaskStatus.DONE);
+  };
+
+  // Replaced local getTaskProgress with imported utility
+  // const getTaskProgress = (task: Task) => { ... }
+
+  const getStatusColor = (status: TaskStatus) => {
+    switch (status) {
+        case TaskStatus.TODO: return 'bg-gray-100 text-gray-600';
+        case TaskStatus.IN_PROGRESS: return 'bg-blue-100 text-blue-600';
+        case TaskStatus.REVIEW: return 'bg-purple-100 text-purple-600';
+        case TaskStatus.DONE: return 'bg-green-100 text-green-600';
+        case TaskStatus.OVERDUE: return 'bg-red-100 text-red-600';
+        case TaskStatus.ABORTED: return 'bg-black text-white';
+        case TaskStatus.ON_HOLD: return 'bg-yellow-100 text-yellow-800';
+        default: return 'bg-gray-100';
+    }
+  };
+
+  // Topological Sort / Dependency Sort within a Column
+  const sortTasksByDependency = (taskList: Task[]) => {
+      // Logic: If A depends on B, B comes first.
+      return taskList.sort((a, b) => {
+          // Check if A depends on B
+          if (a.dependencies.includes(b.id)) return 1; // A after B
+          // Check if B depends on A
+          if (b.dependencies.includes(a.id)) return -1; // B after A
+          
+          // Secondary sort: Due Date
+          return new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime();
+      });
+  };
+
+  return (
+    <div className="flex h-full overflow-x-auto gap-3 p-2 pb-6 items-start">
+      {COLUMNS.map(column => {
+        // Filter by Status
+        const rawTasks = tasks.filter(t => t.status === column.id);
+        const columnTasks = sortTasksByDependency(rawTasks);
+
+        return (
+          <div 
+            key={column.id} 
+            className={`flex-shrink-0 w-72 bg-gray-50 rounded-lg p-3 flex flex-col h-full max-h-[calc(100vh-250px)] border border-gray-200 ${column.color}`}
+            onDragOver={handleDragOver}
+            onDrop={(e) => handleDrop(e, column.id)}
+          >
+            <div className="flex justify-between items-center mb-3 px-1">
+              <h3 className="font-bold text-gray-900 text-xs flex items-center gap-2">
+                {column.label}
+                <span className="bg-white border border-gray-200 text-gray-600 text-xs px-2 py-0.5 rounded-full">{columnTasks.length}</span>
+              </h3>
+            </div>
+
+            <div className="flex-1 overflow-y-auto space-y-2 pr-1">
+              {columnTasks.map(task => {
+                const blocked = isTaskBlocked(task) && task.status !== TaskStatus.DONE;
+                const frozen = isTaskFrozen(task.status);
+                const progress = calculateTaskProgress(task);
+                const isMyTask = user?.id === task.assigneeId;
+                
+                return (
+                  <div 
+                    key={task.id}
+                    draggable={!blocked && !frozen}
+                    onDragStart={(e) => !blocked && !frozen && handleDragStart(e, task.id)}
+                    onClick={() => onEditTask(task)}
+                    className={`bg-white p-2.5 rounded-lg shadow-sm border cursor-grab active:cursor-grabbing hover:shadow-md transition-all group relative
+                       ${blocked ? 'border-red-200 bg-red-50/50 cursor-not-allowed opacity-75' : 'border-gray-200'}
+                       ${frozen ? 'border-gray-300 bg-gray-100 opacity-80 cursor-not-allowed' : ''}
+                       ${task.status === TaskStatus.DONE ? 'opacity-70 bg-gray-50' : ''}
+                    `}
+                  >
+                    {frozen && (
+                       <div className="absolute top-1 right-1 text-gray-500" title={`Frozen: ${task.status}`}>
+                          {task.status === TaskStatus.ABORTED ? <Ban className="w-3 h-3" /> : <PauseCircle className="w-3 h-3" />}
+                       </div>
+                    )}
+
+                    {/* Category and Status Row */}
+                    <div className="flex justify-between items-center gap-1 mb-2">
+                      <div className="flex items-center gap-1">
+                        {blocked && (
+                          <Lock className="w-3 h-3 text-red-400 flex-shrink-0" title="Locked by dependencies" />
+                        )}
+                        <span className="text-[9px] font-medium text-gray-500 bg-gray-100 px-1 py-0.5 rounded border border-gray-200 flex-shrink-0">{task.category}</span>
+                      </div>
+                      <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase flex-shrink-0 ${getStatusColor(task.status)}`}>
+                         {task.status}
+                      </span>
+                    </div>
+                    
+                    <div className="flex justify-between items-start gap-1 mb-2">
+                        <h4 className={`font-bold text-xs group-hover:text-blue-600 transition-colors line-clamp-2 ${blocked || frozen ? 'text-gray-500' : 'text-gray-900'}`}>
+                            {task.title}
+                        </h4>
+                        
+                        {/* Quick Action Button */}
+                        {isMyTask && !blocked && !frozen && task.status !== TaskStatus.DONE && (
+                           <button 
+                             onClick={(e) => handleQuickAction(e, task)}
+                             className="text-gray-300 hover:text-blue-500 transition-colors p-0.5 flex-shrink-0"
+                             title={task.status === TaskStatus.IN_PROGRESS ? "Send for Review" : "Start Task"}
+                           >
+                             {task.status === TaskStatus.REVIEW ? <Clock className="w-4 h-4 text-purple-400"/> : <CheckCircle className="w-4 h-4" />}
+                           </button>
+                        )}
+                    </div>
+
+                    {/* Progress Bar */}
+                    <div className="flex justify-between items-center mb-1 text-[8px]">
+                      <span className="text-gray-400 font-medium">Progress</span>
+                      <span className="text-gray-600 font-bold">{progress}%</span>
+                    </div>
+                    <div className="w-full bg-gray-100 rounded-full h-1 mb-2">
+                       <div 
+                         className={`h-1 rounded-full transition-all duration-500 ${task.status === TaskStatus.DONE ? 'bg-green-500' : frozen ? 'bg-gray-400' : 'bg-blue-500'}`} 
+                         {...{ style: { width: `${progress}%` } }}
+                       />
+                    </div>
+                    
+                    <div className="flex justify-between items-center pt-2 border-t border-gray-50">
+                       <div className="flex items-center gap-1">
+                          {getAvatarComponent(task.assigneeId)}
+                       </div>
+                       <div className="flex items-center gap-1 text-[8px] text-gray-400">
+                          <Calendar className="w-2.5 h-2.5" />
+                          <span>{new Date(task.dueDate).toLocaleDateString(undefined, {month:'short', day:'numeric'})}</span>
+                       </div>
+                    </div>
+                  </div>
+                );
+              })}
+              {columnTasks.length === 0 && (
+                <div className="h-16 border-2 border-dashed border-gray-300 rounded-lg flex items-center justify-center text-xs text-gray-400 italic bg-white">
+                   Drop items here
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+};
+
+export default KanbanBoard;

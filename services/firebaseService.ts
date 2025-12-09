@@ -1,0 +1,267 @@
+import {
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  setDoc,
+  updateDoc,
+  deleteDoc,
+  query,
+  where,
+  onSnapshot,
+  QueryConstraint,
+  Unsubscribe
+} from "firebase/firestore";
+import { db } from "./firebaseConfig";
+import { Project, User, Task } from "../types";
+
+// ============ PROJECTS COLLECTION ============
+
+export const projectsRef = collection(db, "projects");
+
+// Get all projects
+export const getAllProjects = async (): Promise<Project[]> => {
+  try {
+    const snapshot = await getDocs(projectsRef);
+    return snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as Project));
+  } catch (error) {
+    console.error("Error fetching projects:", error);
+    return [];
+  }
+};
+
+// Get single project
+export const getProject = async (projectId: string): Promise<Project | null> => {
+  try {
+    const docSnap = await getDoc(doc(db, "projects", projectId));
+    if (docSnap.exists()) {
+      return { ...docSnap.data(), id: docSnap.id } as Project;
+    }
+    return null;
+  } catch (error) {
+    console.error("Error fetching project:", error);
+    return null;
+  }
+};
+
+// Helper to recursively remove undefined values
+const cleanUndefined = (obj: any): any => {
+  if (Array.isArray(obj)) {
+    return obj.map(v => cleanUndefined(v)).filter(v => v !== undefined);
+  }
+  if (obj !== null && typeof obj === 'object') {
+    return Object.fromEntries(
+      Object.entries(obj)
+        .map(([k, v]) => [k, cleanUndefined(v)])
+        .filter(([_, v]) => v !== undefined)
+    );
+  }
+  return obj;
+};
+
+// Create project
+export const createProject = async (project: Omit<Project, "id">): Promise<string> => {
+  try {
+    const newDocRef = doc(projectsRef);
+    const cleanedProject = cleanUndefined(project);
+    await setDoc(newDocRef, cleanedProject);
+    return newDocRef.id;
+  } catch (error) {
+    console.error("Error creating project:", error);
+    throw error;
+  }
+};
+
+// Update project
+export const updateProject = async (projectId: string, updates: Partial<Project>): Promise<void> => {
+  try {
+    // Remove undefined values recursively - Firebase doesn't allow them
+    const cleanedUpdates = cleanUndefined(updates);
+    await updateDoc(doc(db, "projects", projectId), cleanedUpdates);
+  } catch (error) {
+    console.error("Error updating project:", error);
+    throw error;
+  }
+};
+
+// Delete project
+export const deleteProject = async (projectId: string): Promise<void> => {
+  try {
+    await deleteDoc(doc(db, "projects", projectId));
+  } catch (error) {
+    console.error("Error deleting project:", error);
+    throw error;
+  }
+};
+
+// Real-time listener for projects
+export const subscribeToProjects = (callback: (projects: Project[]) => void): Unsubscribe => {
+  return onSnapshot(projectsRef, (snapshot) => {
+    const projects = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as Project));
+    callback(projects);
+  });
+};
+
+// Real-time listener for user's projects
+export const subscribeToUserProjects = (
+  userId: string,
+  userRole: string,
+  callback: (projects: Project[]) => void
+): Unsubscribe => {
+  let constraints: QueryConstraint[] = [];
+  
+  if (userRole === "Client") {
+    constraints = [where("clientId", "==", userId)];
+  } else if (userRole === "Designer") {
+    constraints = [where("leadDesignerId", "==", userId)];
+  }
+
+  const q = query(projectsRef, ...constraints);
+  
+  return onSnapshot(q, (snapshot) => {
+    const projects = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as Project));
+    callback(projects);
+  });
+};
+
+// ============ USERS COLLECTION ============
+
+export const usersRef = collection(db, "users");
+
+// Get all users
+export const getAllUsers = async (): Promise<User[]> => {
+  try {
+    const snapshot = await getDocs(usersRef);
+    return snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as User));
+  } catch (error) {
+    console.error("Error fetching users:", error);
+    return [];
+  }
+};
+
+// Get single user
+export const getUser = async (userId: string): Promise<User | null> => {
+  try {
+    const docSnap = await getDoc(doc(db, "users", userId));
+    if (docSnap.exists()) {
+      return { ...docSnap.data(), id: docSnap.id } as User;
+    }
+    console.warn(`User document not found for ID: ${userId}. Make sure to create a user profile in Firestore.`);
+    return null;
+  } catch (error: any) {
+    if (error.code === 'failed-precondition') {
+      console.error(`Firebase offline: ${error.message}`);
+    } else {
+      console.error("Error fetching user:", error);
+    }
+    throw error;
+  }
+};
+
+// Create user
+export const createUser = async (user: User): Promise<string> => {
+  try {
+    await setDoc(doc(db, "users", user.id), user);
+    return user.id;
+  } catch (error) {
+    console.error("Error creating user:", error);
+    throw error;
+  }
+};
+
+// Update user
+export const updateUser = async (userId: string, updates: Partial<User>): Promise<void> => {
+  try {
+    await updateDoc(doc(db, "users", userId), updates);
+  } catch (error) {
+    console.error("Error updating user:", error);
+    throw error;
+  }
+};
+
+// Real-time listener for users
+export const subscribeToUsers = (callback: (users: User[]) => void): Unsubscribe => {
+  console.log('🔔 Setting up real-time listener for users collection...');
+  
+  let allUsers: User[] = [];
+  let unsubscribers: Unsubscribe[] = [];
+
+  // Listen to main users collection
+  const unsubUser = onSnapshot(usersRef, (snapshot) => {
+    const users = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as User));
+    console.log(`📥 Real-time update from 'users': ${users.length} users`);
+    allUsers = users;
+    callback(allUsers);
+  }, (error) => {
+    console.error('❌ Error in users collection listener:', error);
+  });
+
+  unsubscribers.push(unsubUser);
+
+  // Return cleanup function
+  return () => {
+    unsubscribers.forEach(unsub => unsub());
+  };
+};
+
+// ============ BULK OPERATIONS ============
+
+// Seed initial data to Firestore
+export const seedDatabase = async (projects: Project[], users: User[]): Promise<void> => {
+  try {
+    // Add projects
+    for (const project of projects) {
+      const { id, ...projectData } = project;
+      await setDoc(doc(db, "projects", id), projectData);
+    }
+
+    // Add users
+    for (const user of users) {
+      const { id, ...userData } = user;
+      await setDoc(doc(db, "users", id), userData);
+    }
+
+    console.log("Database seeded successfully!");
+  } catch (error) {
+    console.error("Error seeding database:", error);
+    throw error;
+  }
+};
+
+// ============ ROLE-SPECIFIC COLLECTIONS ============
+
+// Real-time listener for designers
+export const subscribeToDesigners = (callback: (designers: User[]) => void): Unsubscribe => {
+  console.log('🔔 Setting up real-time listener for designers collection...');
+  return onSnapshot(collection(db, "designers"), (snapshot) => {
+    const designers = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as User));
+    console.log(`📥 Real-time update from 'designers': ${designers.length} designers`);
+    callback(designers);
+  }, (error) => {
+    console.error('❌ Error in designers collection listener:', error);
+  });
+};
+
+// Real-time listener for vendors
+export const subscribeToVendors = (callback: (vendors: User[]) => void): Unsubscribe => {
+  console.log('🔔 Setting up real-time listener for vendors collection...');
+  return onSnapshot(collection(db, "vendors"), (snapshot) => {
+    const vendors = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as User));
+    console.log(`📥 Real-time update from 'vendors': ${vendors.length} vendors`);
+    callback(vendors);
+  }, (error) => {
+    console.error('❌ Error in vendors collection listener:', error);
+  });
+};
+
+// Real-time listener for clients
+export const subscribeToClients = (callback: (clients: User[]) => void): Unsubscribe => {
+  console.log('🔔 Setting up real-time listener for clients collection...');
+  return onSnapshot(collection(db, "clients"), (snapshot) => {
+    const clients = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as User));
+    console.log(`📥 Real-time update from 'clients': ${clients.length} clients`);
+    callback(clients);
+  }, (error) => {
+    console.error('❌ Error in clients collection listener:', error);
+  });
+};
