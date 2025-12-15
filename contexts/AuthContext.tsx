@@ -2,7 +2,7 @@ import React, { createContext, useContext, useState, ReactNode, useEffect } from
 import { User } from '../types';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { auth } from '../services/firebaseConfig';
-import { getUser } from '../services/firebaseService';
+import { getUser, createUser } from '../services/firebaseService';
 
 interface AuthContextType {
   user: User | null;
@@ -44,6 +44,8 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
               role: 'Admin' as any,
               phone: ''
             };
+            
+            // Continue with user profile
           }
           
           setFirebaseUser(authUser);
@@ -70,9 +72,15 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   const logout = async () => {
     try {
-      await signOut(auth);
+      // Clear user state first to signal listeners to stop
       setUser(null);
       setFirebaseUser(null);
+      
+      // Small delay to allow cleanup handlers to run
+      await new Promise(resolve => setTimeout(resolve, 100));
+      
+      // Now sign out
+      await signOut(auth);
     } catch (error) {
       console.error('Logout error:', error);
       throw error;

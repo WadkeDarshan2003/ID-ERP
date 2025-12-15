@@ -96,8 +96,8 @@ const Login: React.FC<LoginProps> = ({ users = [] }) => {
         {/* Left Side - Brand */}
         <div className="md:w-1/2 bg-gray-900 p-12 text-white flex flex-col justify-between">
           <div>
-            <div className="w-12 h-12 bg-white rounded-xl flex items-center justify-center text-gray-900 font-bold text-2xl mb-6">L</div>
-            <h1 className="text-4xl font-bold mb-4">BTW ERP</h1>
+            <img src="/logo-header.png" alt="Btw Solutions Logo" className="h-12 w-12 mb-6 rounded-xl bg-white p-1" />
+            <h1 className="text-4xl font-bold mb-4">Btw Solutions</h1>
             <p className="text-gray-400 text-lg leading-relaxed">
               Manage your interior design projects, clients, and vendors in one seamless platform.
             </p>

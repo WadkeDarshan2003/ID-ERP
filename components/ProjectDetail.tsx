@@ -1,20 +1,27 @@
-import React, { useState, useMemo, useRef, useEffect } from 'react';
+import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { Project, User, Task, TaskStatus, Role, Meeting, SubTask, Comment, ApprovalStatus, ActivityLog, ProjectDocument, FinancialRecord, ProjectStatus, Timeline } from '../types';
 import { useAuth } from '../contexts/AuthContext';
 import { CATEGORY_ORDER } from '../constants';
 import { useProjectCrud, useFinancialCrud } from '../hooks/useCrud';
-import { createMeeting, createDocument, addCommentToDocument, createTask, updateTask, deleteTask, subscribeToProjectMeetings, subscribeToProjectDocuments, subscribeToTimelines, subscribeToProjectTasks, logTimelineEvent, addTeamMember } from '../services/projectDetailsService';
-import { subscribeToProjectFinancialRecords } from '../services/financialService';
+import { createMeeting, updateMeeting, deleteMeeting, createDocument, addCommentToDocument, deleteDocument, updateDocument, createTask, updateTask, deleteTask, subscribeToProjectMeetings, subscribeToProjectDocuments, subscribeToTimelines, subscribeToProjectTasks, logTimelineEvent, addTeamMember, addCommentToMeeting, deleteCommentFromMeeting, subscribeToMeetingComments } from '../services/projectDetailsService';
+import { subscribeToProjectFinancialRecords, updateProjectFinancialRecord, createProjectFinancialRecord } from '../services/financialService';
+import { sendTaskReminder, sendPaymentReminder } from '../services/emailService';
+import { sendTaskCreationEmail, sendProjectWelcomeEmail, sendDocumentApprovalEmail, sendTaskApprovalEmail } from '../services/emailTriggerService';
+import { syncAllVendorsEarnings } from '../services/firebaseService';
+import { doc, updateDoc } from 'firebase/firestore';
+import { db } from '../services/firebaseConfig';
+import { uploadFile } from '../services/storageService';
 import { AvatarCircle, getInitials, getInitialsBgColor } from '../utils/avatarUtils';
-import { calculateTaskProgress } from '../utils/taskUtils';
+import { calculateTaskProgress, deriveStatus, formatRelativeTime, formatDateToIndian, formatIndianToISO } from '../utils/taskUtils';
 import KanbanBoard from './KanbanBoard';
+import MeetingForm from './MeetingForm';
 import { 
   Calendar, DollarSign, Plus, CheckCircle, 
   ChevronRight, Lock, Clock, FileText,
   Layout, ListChecks, ArrowRight, User as UserIcon, X,
   MessageSquare, ThumbsUp, ThumbsDown, Send, Shield, History, Layers, Link2, AlertCircle, Tag, Upload, Ban, PauseCircle, PlayCircle,
-  File as FileIcon, Eye, Download, Pencil, Mail, Filter, IndianRupee, Bell, MessageCircle, Users, MessageCircle as CommentIcon, Trash2
+  File as FileIcon, Eye, Download, Pencil, Mail, Filter, IndianRupee, Bell, MessageCircle, Users, MessageCircle as CommentIcon, Trash2, Edit3, Check
 } from 'lucide-react';
 import { useNotifications } from '../contexts/NotificationContext';
 
@@ -27,35 +34,100 @@ interface ProjectDetailProps {
 }
 
 const ROW_HEIGHT = 48; // Fixed height for Gantt rows
-const DEFAULT_AVATAR = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"%3E%3Ccircle cx="12" cy="12" r="12" fill="%23e5e7eb"/%3E%3Ctext x="12" y="13" text-anchor="middle" font-size="10" fill="%239ca3af" dominant-baseline="middle"%3E?%3C/text%3E%3C/svg%3E';
+const DEFAULT_AVATAR = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"%3E%3Ccircle cx="12" cy="12" r="12" fill="%23e5e7eb"/%3E%3C/svg%3E';
 
 const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateProject, onBack, initialTab }) => {
   const { user } = useAuth();
   const { addNotification } = useNotifications();
-  const { updateExistingProject, loading: projectLoading } = useProjectCrud();
+  const { updateExistingProject, deleteExistingProject, loading: projectLoading } = useProjectCrud();
   const { createNewRecord: createFinancialRecord, updateExistingRecord: updateFinancialRecord, deleteExistingRecord: deleteFinancialRecord, loading: financialLoading } = useFinancialCrud(project.id);
+
+  // Helper to recalculate and update project budget in Firestore
+  const syncProjectBudget = async (projectId: string, financials: FinancialRecord[]) => {
+    try {
+      // Calculate budget as total income minus total expense
+      const totalIncome = financials.filter(f => f.type === 'income').reduce((sum, f) => sum + f.amount, 0);
+      const totalExpense = financials.filter(f => f.type === 'expense').reduce((sum, f) => sum + f.amount, 0);
+      const newBudget = totalIncome - totalExpense;
+      await updateDoc(doc(db, 'projects', projectId), { budget: newBudget });
+      console.log('✅ Project budget synced:', newBudget);
+    } catch (error) {
+      console.error('❌ Error syncing project budget:', error);
+      // Don't throw - allow operation to continue even if sync fails
+    }
+  };
+
+  // Wrap financial record changes to also sync vendor earnings and project budget
+  const createFinancialRecordAndSync = async (record: Omit<FinancialRecord, 'id'>) => {
+    try {
+      const id = await createFinancialRecord(record);
+      const newRecord = { ...record, id } as FinancialRecord;
+      // Sync after successful creation
+      await Promise.all([
+        syncAllVendorsEarnings(),
+        syncProjectBudget(project.id, [...currentFinancials, newRecord])
+      ]);
+      return id;
+    } catch (error) {
+      console.error('❌ Error creating financial record:', error);
+      throw error;
+    }
+  };
+  const updateFinancialRecordAndSync = async (recordId: string, updates: Partial<FinancialRecord>) => {
+    try {
+      await updateFinancialRecord(recordId, updates);
+      // Sync after successful update
+      await Promise.all([
+        syncAllVendorsEarnings(),
+        syncProjectBudget(project.id, currentFinancials)
+      ]);
+    } catch (error) {
+      console.error('❌ Error updating financial record:', error);
+      throw error;
+    }
+  };
+  const deleteFinancialRecordAndSync = async (recordId: string) => {
+    try {
+      await deleteFinancialRecord(recordId);
+      // Sync after successful deletion
+      await Promise.all([
+        syncAllVendorsEarnings(),
+        syncProjectBudget(project.id, currentFinancials)
+      ]);
+    } catch (error) {
+      console.error('❌ Error deleting financial record:', error);
+      throw error;
+    }
+  };
   
   const [activeTab, setActiveTab] = useState<'discovery' | 'plan' | 'financials' | 'team' | 'timeline' | 'documents'>('plan');
   const [planView, setPlanView] = useState<'list' | 'gantt' | 'kanban'>('list');
   const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
   const [editingTask, setEditingTask] = useState<Partial<Task> | null>(null);
   const [showTaskErrors, setShowTaskErrors] = useState(false);
+  const [mobileTaskTab, setMobileTaskTab] = useState<'details' | 'activity'>('details');
   
-  // Comment State
+  // Comments State
   const [newComment, setNewComment] = useState('');
+  const [expandedMeetings, setExpandedMeetings] = useState<Set<string>>(new Set());
   const commentsEndRef = useRef<HTMLDivElement>(null);
+  const tabsContainerRef = useRef<HTMLDivElement>(null);
+
+  // Email/Action Loading States
+  const [sendingEmailFor, setSendingEmailFor] = useState<string | null>(null);
 
 
 
   // Documents State
   const [isDocModalOpen, setIsDocModalOpen] = useState(false);
-  const [newDoc, setNewDoc] = useState<{name: string, sharedWith: Role[]}>({ name: '', sharedWith: [] });
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [newDoc, setNewDoc] = useState<{name: string, sharedWith: string[], attachToTaskId?: string}>({ name: '', sharedWith: [] });
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [showDocErrors, setShowDocErrors] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [selectedDocument, setSelectedDocument] = useState<ProjectDocument | null>(null);
   const [isDocDetailOpen, setIsDocDetailOpen] = useState(false);
   const [documentCommentText, setDocumentCommentText] = useState('');
+  const [isTaskDocModalOpen, setIsTaskDocModalOpen] = useState(false);
 
   // Financials State
   const [isTransactionModalOpen, setIsTransactionModalOpen] = useState(false);
@@ -66,6 +138,10 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       status: 'pending',
       amount: undefined
   });
+  const [customCategory, setCustomCategory] = useState(''); // For "Others" option in income categories
+  const [receivedByName, setReceivedByName] = useState(''); // For income transactions - who received the payment
+  const [receivedByRole, setReceivedByRole] = useState<'client' | 'vendor' | 'designer' | 'admin' | 'other' | 'client-received' | 'vendor-received' | 'designer-received' | 'admin-received' | 'other-received' | ''>(''); // Track selected role for received by
+  const [paidByName, setPaidByName] = useState(''); // For income transactions - name of who paid
   const [showTransactionErrors, setShowTransactionErrors] = useState(false);
   const [isSavingTransaction, setIsSavingTransaction] = useState(false);
   const [transactionFilter, setTransactionFilter] = useState<'all' | 'income' | 'expense' | 'pending' | 'overdue'>('all');
@@ -74,14 +150,55 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
   // Team State
   const [isMemberModalOpen, setIsMemberModalOpen] = useState(false);
   const [selectedMemberId, setSelectedMemberId] = useState('');
-  const [memberModalType, setMemberModalType] = useState<'member' | 'client'>('member'); // Track what we're adding
+  const [memberModalType, setMemberModalType] = useState<'member' | 'vendor' | 'client' | 'designer'>('member'); // Track what we're adding
+
+  // Meeting Form State
+  const [isMeetingModalOpen, setIsMeetingModalOpen] = useState(false);
+  const [editingMeeting, setEditingMeeting] = useState<Meeting | null>(null);
+  const [isSavingMeeting, setIsSavingMeeting] = useState(false);
+  
+  // Meeting Comments State
+  const [meetingComments, setMeetingComments] = useState<Record<string, Comment[]>>({});
+  const [newMeetingComment, setNewMeetingComment] = useState<Record<string, string>>({});
 
   // Delete Confirmation State
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
   const [deleteConfirmTask, setDeleteConfirmTask] = useState<Partial<Task> | null>(null);
+  const [isProjectDeleteConfirmOpen, setIsProjectDeleteConfirmOpen] = useState(false);
+  const [isTransactionDeleteConfirmOpen, setIsTransactionDeleteConfirmOpen] = useState(false);
+  const [deleteConfirmTransactionId, setDeleteConfirmTransactionId] = useState<string | null>(null);
+  const [isMeetingDeleteConfirmOpen, setIsMeetingDeleteConfirmOpen] = useState(false);
+  const [deletingMeeting, setDeletingMeeting] = useState<Meeting | null>(null);
+  const [isDocDeleteConfirmOpen, setIsDocDeleteConfirmOpen] = useState(false);
+  const [deletingDoc, setDeletingDoc] = useState<ProjectDocument | null>(null);
 
   // Vendor Billing Report State
   const [selectedVendorForBilling, setSelectedVendorForBilling] = useState<User | null>(null);
+  // Designer Details State
+  const [selectedDesignerForDetails, setSelectedDesignerForDetails] = useState<User | null>(null);
+  // Designer Charges Percent: sync with project, admin can edit and persist
+  const [designerChargesPercent, setDesignerChargesPercent] = useState<number>(project.designerChargePercentage ?? 0);
+  const [isEditingDesignerCharges, setIsEditingDesignerCharges] = useState(false);
+
+  // Keep local state in sync with project prop
+  useEffect(() => {
+    setDesignerChargesPercent(project.designerChargePercentage ?? 0);
+  }, [project.designerChargePercentage]);
+
+  // Handler to persist designerChargesPercent to project (admin only)
+  const handleDesignerChargesBlur = () => {
+    if (!isAdmin) return;
+    if (designerChargesPercent !== (project.designerChargePercentage ?? 0)) {
+      onUpdateProject({ ...project, designerChargePercentage: designerChargesPercent });
+      addNotification('Designer Charges Updated', 'Designer Charges percent saved.', 'success', undefined, project.id, project.name);
+    }
+  };
+
+
+  // Additional Budget Modal State
+  const [isAdditionalBudgetModalOpen, setIsAdditionalBudgetModalOpen] = useState(false);
+  const [additionalBudgetAmount, setAdditionalBudgetAmount] = useState('');
+  const [additionalBudgetDescription, setAdditionalBudgetDescription] = useState('');
 
   // Real-time Subcollection State
   const [realTimeMeetings, setRealTimeMeetings] = useState<Meeting[]>([]);
@@ -90,37 +207,13 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
   const [realTimeTasks, setRealTimeTasks] = useState<Task[]>([]);
   const [realTimeFinancials, setRealTimeFinancials] = useState<FinancialRecord[]>([]);
 
-  // Unified Financials List with Deduplication
-  const currentFinancials = useMemo(() => {
-      const finMap = new Map<string, FinancialRecord>();
-      // Legacy financials
-      project.financials.forEach(f => finMap.set(f.id, f));
-      // Real-time financials (override legacy)
-      realTimeFinancials.forEach(f => finMap.set(f.id, f));
-      
-      // Remove content-based duplicates (same vendor, amount, type, dates)
-      const deduped = Array.from(finMap.values());
-      const seen = new Set<string>();
-      
-      return deduped.filter(record => {
-        const signature = `${record.vendorName}|${record.amount}|${record.type}|${record.date}`;
-        if (seen.has(signature)) {
-          return false; // Skip duplicate
-        }
-        seen.add(signature);
-        return true;
-      });
-  }, [realTimeFinancials, project.financials]);
+  // Use only real-time financials
+  const currentFinancials = realTimeFinancials;
 
-  // Unified Task List
-  const currentTasks = useMemo(() => {
-      const taskMap = new Map<string, Task>();
-      // Legacy tasks
-      project.tasks.forEach(t => taskMap.set(t.id, t));
-      // Real-time tasks (override legacy)
-      realTimeTasks.forEach(t => taskMap.set(t.id, t));
-      return Array.from(taskMap.values());
-  }, [realTimeTasks, project.tasks]);
+  // Replace usages of createFinancialRecord, updateFinancialRecord, deleteFinancialRecord with the wrapped versions below where needed
+
+  // Use only real-time tasks
+  const currentTasks = realTimeTasks;
 
   // Filter tasks for vendor view (vendors only see their assigned tasks)
   const displayTasks = useMemo(() => {
@@ -166,7 +259,6 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       });
 
       if (tasksToUpdate.length > 0) {
-        console.log(`Found ${tasksToUpdate.length} overdue tasks. Updating...`);
         for (const task of tasksToUpdate) {
            await updateTask(project.id, task.id, { status: TaskStatus.OVERDUE });
         }
@@ -181,7 +273,6 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       });
 
       if (financialsToUpdate.length > 0) {
-        console.log(`Found ${financialsToUpdate.length} overdue payments. Updating...`);
         for (const fin of financialsToUpdate) {
            await updateFinancialRecord(fin.id, { ...fin, status: 'overdue' });
         }
@@ -204,6 +295,15 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
   useEffect(() => {
     const unsubscribe = subscribeToProjectMeetings(project.id, (meetings) => {
       setRealTimeMeetings(meetings);
+      // Subscribe to comments for each meeting
+      meetings.forEach(meeting => {
+        subscribeToMeetingComments(project.id, meeting.id, (comments) => {
+          setMeetingComments(prev => ({
+            ...prev,
+            [meeting.id]: comments
+          }));
+        });
+      });
     });
     return () => unsubscribe();
   }, [project.id]);
@@ -224,6 +324,16 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
     return () => unsubscribe();
   }, [project.id]);
 
+  // Keep selected document in sync with real-time updates (for comments, approvals, etc.)
+  useEffect(() => {
+    if (isDocDetailOpen && selectedDocument) {
+      const updatedDoc = realTimeDocuments.find(d => d.id === selectedDocument.id);
+      if (updatedDoc) {
+        setSelectedDocument(updatedDoc);
+      }
+    }
+  }, [realTimeDocuments, isDocDetailOpen, selectedDocument?.id]);
+
   // Subscribe to real-time tasks from Firestore
   useEffect(() => {
     const unsubscribe = subscribeToProjectTasks(project.id, (tasks) => {
@@ -231,6 +341,16 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
     });
     return () => unsubscribe();
   }, [project.id]);
+
+  // Keep editing task in sync with real-time updates (for approvals, status, etc.)
+  useEffect(() => {
+    if (isTaskModalOpen && editingTask && editingTask.id) {
+      const updatedTask = realTimeTasks.find(t => t.id === editingTask.id);
+      if (updatedTask) {
+        setEditingTask(updatedTask);
+      }
+    }
+  }, [realTimeTasks, isTaskModalOpen, editingTask?.id]);
 
   // Subscribe to real-time financials from Firestore
   useEffect(() => {
@@ -240,12 +360,50 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
     return () => unsubscribe();
   }, [project.id]);
 
+  // Sync total allocated budget (initial + additional) to project budget field
+  useEffect(() => {
+    const syncBudgetFromFinancials = async () => {
+      try {
+        // Calculate total budget: Estimated + Additional (same as totalAdditionalBudget calculation)
+        const totalAdditionalBudgetAmount = currentFinancials
+          .filter(f => f.type === 'income' && f.category === 'Additional Budget')
+          .reduce((sum, f) => sum + f.amount, 0);
+        const newBudget = (project.initialBudget || 0) + totalAdditionalBudgetAmount;
+        
+        // Update Firestore project doc
+        await updateDoc(doc(db, 'projects', project.id), { budget: newBudget });
+        
+        // Update local state immediately for instant UI feedback
+        onUpdateProject({ ...project, budget: newBudget });
+        
+        console.log('✅ Project budget synced in real-time:', newBudget);
+      } catch (error) {
+        console.error('❌ Error syncing project budget in real-time:', error);
+      }
+    };
+
+    // Sync whenever financials change
+    if (currentFinancials.length > 0 || project.financials.length > 0) {
+      syncBudgetFromFinancials();
+    }
+  }, [currentFinancials, project.id]);
+
   // Initial Tab / Deep Linking
   useEffect(() => {
     if (initialTab) {
         setActiveTab(initialTab);
     }
   }, [initialTab]);
+
+  // Scroll active tab into view
+  useEffect(() => {
+    if (tabsContainerRef.current) {
+      const activeTabElement = tabsContainerRef.current.querySelector(`[data-tab-id="${activeTab}"]`) as HTMLElement;
+      if (activeTabElement) {
+        activeTabElement.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+      }
+    }
+  }, [activeTab]);
 
   // If Vendor, default to 'plan' tab if they try to access others, or initial load
   useEffect(() => {
@@ -262,15 +420,77 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
   const isAdmin = user.role === Role.ADMIN;
   const isLeadDesigner = user.role === Role.DESIGNER && project.leadDesignerId === user.id;
 
-  const canEditProject = isAdmin || isLeadDesigner;
+  const canEditProject = isAdmin;
   // Documents: Everyone can upload/view if shared with them.
   const canUploadDocs = true; 
   const canViewFinancials = !isVendor; 
   const canUseAI = canEditProject;
 
-  const getAssigneeName = (id: string) => {
-    if (id === user.id) return user.name || 'Admin';
-    return users.find(u => u.id === id)?.name || 'Unassigned';
+  // Swipe Logic
+  const [touchStart, setTouchStart] = useState<number | null>(null);
+  const [touchEnd, setTouchEnd] = useState<number | null>(null);
+  const minSwipeDistance = 50;
+
+  const onTouchStart = (e: React.TouchEvent) => {
+    setTouchEnd(null);
+    setTouchStart(e.targetTouches[0].clientX);
+  };
+
+  const onTouchMove = (e: React.TouchEvent) => {
+    setTouchEnd(e.targetTouches[0].clientX);
+  };
+
+  const onTouchEnd = () => {
+    if (!touchStart || !touchEnd) return;
+    const distance = touchStart - touchEnd;
+    const isLeftSwipe = distance > minSwipeDistance;
+    const isRightSwipe = distance < -minSwipeDistance;
+
+    if (isLeftSwipe || isRightSwipe) {
+      const tabs = [
+        { id: 'discovery', hidden: isVendor },
+        { id: 'plan', hidden: false },
+        { id: 'documents', hidden: false },
+        { id: 'financials', hidden: !canViewFinancials },
+        { id: 'timeline', hidden: isVendor },
+        { id: 'team', hidden: false }
+      ].filter(t => !t.hidden).map(t => t.id);
+
+      const currentIndex = tabs.indexOf(activeTab);
+      if (isLeftSwipe && currentIndex < tabs.length - 1) {
+        setActiveTab(tabs[currentIndex + 1] as any);
+      }
+      if (isRightSwipe && currentIndex > 0) {
+        setActiveTab(tabs[currentIndex - 1] as any);
+      }
+    }
+  };
+
+  const getAssigneeName = (id: string, storedName?: string) => {
+    if (!id) return 'Unknown User';
+    if (id === user.id) return user.name || 'You';
+    
+    // If the name was stored with the comment, use it (most reliable)
+    if (storedName && storedName.trim()) return storedName;
+    
+    // Check in users array
+    const foundUser = users.find(u => u.id === id);
+    if (foundUser?.name) return foundUser.name;
+    
+    // Check if it's the lead designer
+    if (id === project.leadDesignerId) {
+      const designer = users.find(u => u.id === id);
+      if (designer?.name) return designer.name;
+    }
+    
+    // Check if it's the client
+    if (id === project.clientId) {
+      const client = users.find(u => u.id === id);
+      if (client?.name) return client.name;
+    }
+    
+    // Fallback: return a generic name
+    return 'Unknown User';
   };
   
   const getAssigneeAvatar = (id: string) => {
@@ -285,12 +505,12 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
     
     if (userId === user.id) {
       userName = user.name || 'Admin';
-      userAvatar = user.avatar;
+      userAvatar = user.avatar || DEFAULT_AVATAR;
     } else {
       const foundUser = users.find(u => u.id === userId);
       if (foundUser) {
         userName = foundUser.name;
-        userAvatar = foundUser.avatar;
+        userAvatar = foundUser.avatar || DEFAULT_AVATAR;
       }
     }
     
@@ -301,8 +521,13 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
   const projectTeam = useMemo(() => {
     const teamIds = new Set<string>();
     
+
     // Core Roles
     if (project.clientId) teamIds.add(project.clientId);
+    // Add additional clients
+    if (project.clientIds) {
+      project.clientIds.forEach(id => teamIds.add(id));
+    }
     if (project.leadDesignerId) teamIds.add(project.leadDesignerId);
 
     // Admins (always available)
@@ -320,6 +545,113 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
 
     return users.filter(u => teamIds.has(u.id));
   }, [project, users]);
+
+  // Handle Meeting Submission
+  const handleMeetingSubmit = async (meeting: Omit<Meeting, 'id'>) => {
+    try {
+      setIsSavingMeeting(true);
+      await createMeeting(project.id, meeting);
+      addNotification('Success', 'Meeting added successfully', 'success');
+    } catch (error) {
+      console.error('Error creating meeting:', error);
+      addNotification('Error', 'Failed to add meeting', 'error');
+      throw error;
+    } finally {
+      setIsSavingMeeting(false);
+    }
+  };
+
+  // Handle Meeting Update
+  const handleMeetingUpdate = async (meeting: Meeting) => {
+    try {
+      setIsSavingMeeting(true);
+      await updateMeeting(project.id, meeting.id, meeting);
+      addNotification('Success', 'Meeting updated successfully', 'success');
+    } catch (error) {
+      console.error('Error updating meeting:', error);
+      addNotification('Error', 'Failed to update meeting', 'error');
+      throw error;
+    } finally {
+      setIsSavingMeeting(false);
+    }
+  };
+
+  // Handle Adding Comment to Meeting
+  const handleAddMeetingComment = async (meetingId: string) => {
+    const commentText = newMeetingComment[meetingId];
+    if (!commentText || !commentText.trim()) {
+      addNotification('Validation Error', 'Please enter a comment', 'error');
+      return;
+    }
+
+    try {
+      // Find user name from users array or use current user
+      let userName = user.name || 'Unknown User';
+      const foundUser = users.find(u => u.id === user.id);
+      if (foundUser?.name) {
+        userName = foundUser.name;
+      }
+
+      const comment: Omit<Comment, 'id'> = {
+        userId: user.id,
+        userName: userName, // Store name for display resilience
+        text: commentText,
+        timestamp: new Date().toISOString()
+      };
+      
+      await addCommentToMeeting(project.id, meetingId, comment);
+      
+      // Clear the input
+      setNewMeetingComment(prev => ({
+        ...prev,
+        [meetingId]: ''
+      }));
+      
+      addNotification('Success', 'Comment added successfully', 'success');
+    } catch (error: any) {
+      console.error('Error adding meeting comment:', error);
+      addNotification('Error', 'Failed to add comment', 'error');
+    }
+  };
+
+  // Handle Deleting Comment from Meeting
+  const handleDeleteMeetingComment = async (meetingId: string, commentId: string) => {
+    try {
+      await deleteCommentFromMeeting(project.id, meetingId, commentId);
+      addNotification('Success', 'Comment deleted successfully', 'success');
+    } catch (error: any) {
+      console.error('Error deleting meeting comment:', error);
+      addNotification('Error', 'Failed to delete comment', 'error');
+    }
+  };
+
+  // Handle Deleting Meeting
+  const handleDeleteMeeting = async (meetingId: string, meetingTitle: string) => {
+    try {
+      await deleteMeeting(project.id, meetingId);
+      addNotification('Success', `Meeting "${meetingTitle}" deleted successfully`, 'success');
+    } catch (error: any) {
+      console.error('Error deleting meeting:', error);
+      addNotification('Error', 'Failed to delete meeting', 'error');
+    }
+  };
+
+  // Handle Deleting Project
+  const handleDeleteProject = async () => {
+    setIsProjectDeleteConfirmOpen(false);
+    try {
+      await deleteExistingProject(project.id);
+      addNotification('Success', 'Project deleted successfully', 'success');
+      onBack(); // Go back to project list
+    } catch (error: any) {
+      console.error('Error deleting project:', error);
+      addNotification('Error', 'Failed to delete project', 'error');
+    }
+  };
+
+  const openDeleteProjectConfirm = () => {
+    setIsProjectDeleteConfirmOpen(true);
+  };
 
   // --- Helper: Notifications ---
   const notifyProjectTeam = (title: string, message: string, excludeUserId?: string, targetTab?: string) => {
@@ -391,36 +723,8 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
 
   // Automated Status Derivation
   // Updated to consider approvals for DONE status
-  const deriveStatus = (task: Task | Partial<Task>, currentStatus: TaskStatus = TaskStatus.TODO): TaskStatus => {
-     // If locked by Admin, don't auto-change
-     if (currentStatus === TaskStatus.ABORTED || currentStatus === TaskStatus.ON_HOLD) {
-         return currentStatus;
-     }
+  // Now using imported utility deriveStatus
 
-     const subtasks = task.subtasks || [];
-     if (subtasks.length === 0) {
-         // If no subtasks, rely on current status (buttons trigger changes)
-         // But ensure we don't regress from Done unless intended
-         return currentStatus;
-     }
-
-     const completedCount = subtasks.filter(s => s.isCompleted).length;
-     
-     if (completedCount === 0) return TaskStatus.TODO;
-     
-     if (completedCount === subtasks.length) {
-         // Check Approvals
-         const clientApproved = task.approvals?.completion?.client?.status === 'approved';
-         const designerApproved = task.approvals?.completion?.designer?.status === 'approved';
-         
-         if (clientApproved && designerApproved) {
-             return TaskStatus.DONE;
-         }
-         return TaskStatus.REVIEW; // Needs approval to go to DONE
-     }
-     
-     return TaskStatus.IN_PROGRESS;
-  };
 
   const getInputClass = (isError: boolean, disabled: boolean = false) => `
     w-full p-2 border rounded-lg transition-all focus:outline-none placeholder-gray-400
@@ -430,6 +734,8 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
 
   // --- Handlers ---
   
+
+  
   const handleOpenTask = (task: Task) => {
     // Permission Check for Vendors
     if (user.role === Role.VENDOR && task.assigneeId !== user.id) {
@@ -437,12 +743,12 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
         return;
     }
     const defaultApprovals = {
-       start: { client: { status: 'pending' }, designer: { status: 'pending' } },
-       completion: { client: { status: 'pending' }, designer: { status: 'pending' } }
+       start: { client: { status: 'pending' }, admin: { status: 'pending' } },
+       completion: { client: { status: 'pending' }, admin: { status: 'pending' } }
     };
     setEditingTask({
-        ...task,
-        approvals: task.approvals || defaultApprovals
+      ...task,
+      approvals: task.approvals || defaultApprovals
     });
     setIsTaskModalOpen(true);
     setShowTaskErrors(false);
@@ -470,8 +776,8 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
           `Client Added: ${member.name}`,
           `${member.name} added as additional client to the project`,
           'completed',
-          new Date().toISOString().split('T')[0],
-          new Date().toISOString().split('T')[0]
+          new Date().toISOString(),
+          new Date().toISOString()
         );
         
         onUpdateProject({
@@ -482,8 +788,10 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
         
         notifyUser(member.id, 'Added to Project', `You have been added as a client to "${project.name}"`, 'success', 'dashboard');
         addNotification('Success', `${member.name} added as client`, 'success');
-      } else {
-        // Add as vendor - just log it without adding to teamMembers
+      } else if (memberModalType === 'vendor') {
+        // Add as vendor
+        const updatedVendorIds = [...(project.vendorIds || []), selectedMemberId];
+        
         const log = logActivity('Vendor Added', `${member.name} added as vendor to project`);
         
         await logTimelineEvent(
@@ -491,17 +799,65 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
           `Vendor Added: ${member.name}`,
           `${member.name} added as vendor to the project`,
           'completed',
-          new Date().toISOString().split('T')[0],
-          new Date().toISOString().split('T')[0]
+          new Date().toISOString(),
+          new Date().toISOString()
         );
         
         onUpdateProject({
             ...project,
+            vendorIds: updatedVendorIds,
             activityLog: [log, ...(project.activityLog || [])]
         });
         
         notifyUser(member.id, 'Added to Project', `You have been added as a vendor to "${project.name}"`, 'success', 'dashboard');
         addNotification('Success', `${member.name} added as vendor`, 'success');
+      } else if (memberModalType === 'designer') {
+        // Set as lead designer
+        const log = logActivity('Lead Designer Set', `${member.name} set as lead designer`);
+        
+        await logTimelineEvent(
+          project.id,
+          `Lead Designer Set: ${member.name}`,
+          `${member.name} set as lead designer for the project`,
+          'completed',
+          new Date().toISOString(),
+          new Date().toISOString()
+        );
+        
+        onUpdateProject({
+            ...project,
+            leadDesignerId: selectedMemberId,
+            activityLog: [log, ...(project.activityLog || [])]
+        });
+        
+        notifyUser(member.id, 'Added to Project', `You have been set as lead designer for "${project.name}"`, 'success', 'dashboard');
+        addNotification('Success', `${member.name} set as lead designer`, 'success');
+      } else {
+        // Add as team member
+        const updatedTeamMembers = [...(project.teamMembers || []), selectedMemberId];
+        
+        const log = logActivity('Team Member Added', `${member.name} added as team member to project`);
+        
+        await logTimelineEvent(
+          project.id,
+          `Team Member Added: ${member.name}`,
+          `${member.name} added as team member to the project`,
+          'completed',
+          new Date().toISOString(),
+          new Date().toISOString()
+        );
+        
+        onUpdateProject({
+            ...project,
+            teamMembers: updatedTeamMembers,
+            activityLog: [log, ...(project.activityLog || [])]
+        });
+        
+        // Send welcome email to new team member
+        await sendProjectWelcomeEmail(member, project.name, user);
+        
+        notifyUser(member.id, 'Added to Project', `You have been added as a team member to "${project.name}"`, 'success', 'dashboard');
+        addNotification('Success', `${member.name} added as team member`, 'success');
       }
       
       setIsMemberModalOpen(false);
@@ -512,67 +868,144 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
     }
   };
 
+  const [isUploadingDocument, setIsUploadingDocument] = useState(false);
+
   const handleUploadDocument = async () => {
-      // Allow upload if either a file is selected OR just a name is provided (for mock/link purposes)
-      if (!newDoc.name && !selectedFile) {
+      // Allow upload if either files are selected OR just a name is provided (for mock/link purposes)
+      if (selectedFiles.length === 0 && !newDoc.name) {
         setShowDocErrors(true);
-        addNotification('Validation Error', `Please select a file or enter a name for "${project.name}".`, 'error', undefined, project.id, project.name);
+        addNotification('Validation Error', `Please select files or enter a name for "${project.name}".`, 'error', undefined, project.id, project.name);
         return;
       }
       
+      setIsUploadingDocument(true);
       try {
-        const fileName = selectedFile ? selectedFile.name : newDoc.name;
-        // Determine type
-        let docType: 'image' | 'pdf' | 'other' = 'other';
-        if (selectedFile) {
-            if (selectedFile.type.startsWith('image/')) docType = 'image';
-            else if (selectedFile.type === 'application/pdf') docType = 'pdf';
-        }
+        const filesToUpload: File[] = selectedFiles.length > 0 ? selectedFiles : [{ name: newDoc.name } as File];
+        const createdDocIds: string[] = [];
 
-        // Generate URL: Use Blob URL for real file, or Local placeholder for name-only
-        const fileUrl = selectedFile 
-          ? URL.createObjectURL(selectedFile) 
-          : 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iODAwIiBoZWlnaHQ9IjYwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iODAwIiBoZWlnaHQ9IjYwMCIgZmlsbD0iI2VmZWZlZiIvPjx0ZXh0IHg9IjUwJSIgeT0iNTAlIiBmb250LXNpemU9IjI0IiBmaWxsPSIjYWFhIiBkb21pbmFudC1iYXNlbGluZT0ibWlkZGxlIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj5QbGFjZWhvbGRlcjwvdGV4dD48L3N2Zz4=';
+        // Upload each file
+        for (const file of filesToUpload) {
+          const fileName = file.name || newDoc.name;
+          
+          // Determine type
+          let docType: 'image' | 'pdf' | 'other' = 'other';
+          if (file.type) {
+            if (file.type.startsWith('image/')) docType = 'image';
+            else if (file.type === 'application/pdf') docType = 'pdf';
+          }
 
+          // Generate URL: Upload to Firebase Storage for real file, or Local placeholder for name-only
+          let fileUrl = '';
+          
+          if (file instanceof File && file.size) {
+            try {
+              // Create a unique path for the file
+              const storagePath = `projects/${project.id}/documents/${Date.now()}_${file.name}`;
+              // Upload and get download URL
+              fileUrl = await uploadFile(file, storagePath);
+            } catch (uploadError) {
+              console.error("Upload failed, falling back to local preview:", uploadError);
+              // Fallback to blob URL if upload fails (though this won't persist well)
+              fileUrl = URL.createObjectURL(file);
+              addNotification('Warning', `Failed to upload "${fileName}" to storage. Using local preview.`, 'warning');
+            }
+          } else {
+            // Placeholder for name-only
+            fileUrl = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iODAwIiBoZWlnaHQ9IjYwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iODAwIiBoZWlnaHQ9IjYwMCIgZmlsbD0iI2VmZWZlZiIvPjx0ZXh0IHg9IjUwJSIgeT0iNTAlIiBmb250LXNpemU9IjI0IiBmaWxsPSIjYWFhIiBkb21pbmFudC1iYXNlbGluZT0ibWlkZGxlIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj5QbGFjZWhvbGRlcjwvdGV4dD48L3N2Zz4=';
+          }
 
-        const doc = {
+          const doc = {
             name: fileName,
             type: docType, 
             url: fileUrl,
             uploadedBy: user.id,
             uploadDate: new Date().toISOString(),
-            sharedWith: newDoc.sharedWith.length > 0 ? newDoc.sharedWith : [Role.ADMIN, Role.DESIGNER, Role.CLIENT]
-        };
-        
-        // Save to Firestore subcollection
-        await createDocument(project.id, doc as Omit<ProjectDocument, 'id'>);
-        
-        // Log timeline event
-        await logTimelineEvent(
-          project.id,
-          `Document Uploaded: ${fileName}`,
-          `${fileName} (${docType}) uploaded by ${user.name}. Shared with: ${newDoc.sharedWith.length > 0 ? newDoc.sharedWith.join(', ') : 'Admin, Designer, Client'}`,
-          'completed',
-          new Date().toISOString().split('T')[0],
-          new Date().toISOString().split('T')[0]
-        );
-        
-        const log = logActivity('Document Uploaded', `Uploaded ${doc.name}`);
+            sharedWith: newDoc.sharedWith.length > 0 ? newDoc.sharedWith : [Role.ADMIN, Role.DESIGNER, Role.CLIENT],
+            approvalStatus: 'pending'
+          };
+          
+          // Save to Firestore subcollection
+          const createdDocId = await createDocument(project.id, doc as Omit<ProjectDocument, 'id'>);
+          createdDocIds.push(createdDocId);
+
+          // Convert shared IDs to names for timeline
+          const sharedNames = newDoc.sharedWith.length > 0 
+            ? newDoc.sharedWith.map(id => {
+                if (id === Role.ADMIN || id === Role.DESIGNER || id === Role.CLIENT) return id;
+                const user = users.find(u => u.id === id);
+                return user?.name || id;
+              }).join(', ')
+            : 'Admin, Designer, Client';
+
+          // Log timeline event
+          const now = new Date().toISOString();
+          await logTimelineEvent(
+            project.id,
+            `Document Uploaded: ${fileName}`,
+            `${fileName} (${docType}) uploaded by ${user.name}. Shared with: ${sharedNames}`,
+            'completed',
+            now,
+            now
+          );
+        }
+
+        // If attaching to a task, update the task with all document IDs
+        if (newDoc.attachToTaskId && createdDocIds.length > 0) {
+          // Find the task from currentTasks (works whether editing task or uploading from Documents tab)
+          const targetTask = currentTasks.find(t => t.id === newDoc.attachToTaskId);
+          
+          if (targetTask) {
+            const taskDocs = targetTask.documents || [];
+            const newDocIds = createdDocIds.filter(id => !taskDocs.includes(id));
+            
+            if (newDocIds.length > 0) {
+              const updatedDocArray = [...taskDocs, ...newDocIds];
+              
+              // Update Firestore
+              await updateTask(project.id, targetTask.id, {
+                ...targetTask,
+                documents: updatedDocArray
+              });
+              
+              // Sync editingTask state if it's the same task
+              if (editingTask?.id === targetTask.id) {
+                setEditingTask({
+                  ...editingTask,
+                  documents: updatedDocArray
+                });
+              }
+              
+              // Update project tasks array
+              const updatedTasks = currentTasks.map(t => 
+                t.id === targetTask.id ? {...t, documents: updatedDocArray} : t
+              );
+              onUpdateProject({
+                ...project,
+                tasks: updatedTasks
+              });
+            }
+          }
+        }
+
+        const log = logActivity('Document Uploaded', `Uploaded ${createdDocIds.length} document(s)`);
         onUpdateProject({
             ...project,
             activityLog: [log, ...(project.activityLog || [])]
         });
         
-        notifyProjectTeam('File Added', `${user.name} uploaded "${doc.name}" to "${project.name}"`, user.id, 'documents');
+        notifyProjectTeam('Files Added', `${user.name} uploaded ${createdDocIds.length} document(s) to "${project.name}"`, user.id, 'documents');
         
         setIsDocModalOpen(false);
         setNewDoc({ name: '', sharedWith: [] });
-        setSelectedFile(null);
+        setSelectedFiles([]);
         setShowDocErrors(false);
-        addNotification("Success", `Document uploaded successfully to "${project.name}"`, "success", undefined, project.id, project.name);
-        // Real-time listener will fetch the new document
+        addNotification("Success", `${createdDocIds.length} document(s) uploaded successfully to "${project.name}"`, "success", undefined, project.id, project.name);
+        // Real-time listener will fetch the new documents
       } catch (error: any) {
-        addNotification("Error", `Failed to upload document: ${error.message}`, "error", undefined, project.id, project.name);
+        console.error('Document upload error:', error);
+        addNotification("Error", "Unable to upload document(s). Please check file size and try again.", "error", undefined, project.id, project.name);
+      } finally {
+        setIsUploadingDocument(false);
       }
   };
 
@@ -586,9 +1019,104 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       addNotification("Download Started", `Downloading ${doc.name}...`, "success");
   };
 
+  const handleDeleteDocument = (doc: ProjectDocument) => {
+    setDeletingDoc(doc);
+    setIsDocDeleteConfirmOpen(true);
+  };
+
+  const confirmDeleteDocument = async () => {
+    if (!deletingDoc) return;
+    const doc = deletingDoc;
+
+    try {
+      await deleteDocument(project.id, doc.id);
+      
+      // Remove document ID from all tasks that have it attached
+      const updatedTasks = currentTasks.map(task => {
+        if (task.documents?.includes(doc.id)) {
+          return {
+            ...task,
+            documents: task.documents.filter(docId => docId !== doc.id)
+          };
+        }
+        return task;
+      });
+      
+      // Update editingTask if it had this document
+      if (editingTask?.documents?.includes(doc.id)) {
+        setEditingTask({
+          ...editingTask,
+          documents: editingTask.documents.filter(docId => docId !== doc.id)
+        });
+      }
+      
+      // Update all affected tasks in Firestore
+      const affectedTasks = updatedTasks.filter(t => t.documents && t.documents.length !== currentTasks.find(ct => ct.id === t.id)?.documents?.length);
+      for (const task of affectedTasks) {
+        await updateTask(project.id, task.id, { documents: task.documents });
+      }
+      
+      // Update project state
+      onUpdateProject({
+        ...project,
+        tasks: updatedTasks
+      });
+      
+      addNotification("Success", `Document "${doc.name}" deleted successfully`, "success");
+      setIsDocDetailOpen(false);
+    } catch (error) {
+      console.error('Error deleting document:', error);
+      addNotification("Error", "Failed to delete document", "error");
+    } finally {
+      setIsDocDeleteConfirmOpen(false);
+      setDeletingDoc(null);
+    }
+  };
+
   const handleOpenDocumentDetail = (doc: ProjectDocument) => {
-    setSelectedDocument(doc);
+    // Get the latest document data from realTimeDocuments to ensure comments are up-to-date
+    const latestDoc = realTimeDocuments.find(d => d.id === doc.id) || doc;
+    setSelectedDocument(latestDoc);
     setIsDocDetailOpen(true);
+  };
+
+  const handleApproveDocument = async (doc: ProjectDocument) => {
+    try {
+      await updateDocument(project.id, doc.id, {
+        approvalStatus: 'approved',
+        approvedBy: user.id,
+        approvalDate: new Date().toISOString()
+      });
+      
+      // Send approval email to document recipients
+      if (doc.sharedWith && doc.sharedWith.length > 0) {
+        for (const recipientId of doc.sharedWith) {
+          const recipient = projectTeam.find(u => u.id === recipientId);
+          if (recipient && recipient.email) {
+            await sendDocumentApprovalEmail(doc, recipient, project.name, user.name);
+          }
+        }
+      }
+      
+      addNotification("Success", `Document "${doc.name}" approved`, "success");
+    } catch (error) {
+      console.error('Error approving document:', error);
+      addNotification("Error", "Failed to approve document", "error");
+    }
+  };
+
+  const handleRejectDocument = async (doc: ProjectDocument) => {
+    try {
+      await updateDocument(project.id, doc.id, {
+        approvalStatus: 'rejected',
+        rejectedBy: user.id,
+        rejectionDate: new Date().toISOString()
+      });
+      addNotification("Success", `Document "${doc.name}" rejected`, "success");
+    } catch (error) {
+      console.error('Error rejecting document:', error);
+      addNotification("Error", "Failed to reject document", "error");
+    }
   };
 
   const handleAddDocumentComment = async () => {
@@ -597,21 +1125,26 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
     try {
       const comment = {
         userId: user.id,
+        userName: user.name || 'Unknown User', // Store name for display resilience
         text: documentCommentText,
         timestamp: new Date().toISOString()
       };
 
-      // Save to Firestore subcollection
+      // Save to Firestore - real-time listener will update state automatically
       await addCommentToDocument(project.id, selectedDocument.id, comment as Omit<Comment, 'id'>);
 
+      // Clear input field
+      setDocumentCommentText('');
+
       // Log timeline event
+      const commentNow = new Date().toISOString();
       await logTimelineEvent(
         project.id,
         `Document Comment: ${selectedDocument.name}`,
         `${user.name} commented: "${documentCommentText.substring(0, 100)}..."`,
         'completed',
-        new Date().toISOString().split('T')[0],
-        new Date().toISOString().split('T')[0]
+        commentNow,
+        commentNow
       );
 
       const log = logActivity('Document Comment', `Added comment to "${selectedDocument.name}"`);
@@ -620,10 +1153,10 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
         activityLog: [log, ...(project.activityLog || [])]
       });
 
-      setDocumentCommentText('');
       addNotification("Success", `Comment added to "${selectedDocument.name}"`, "success");
     } catch (error: any) {
-      addNotification("Error", `Failed to add comment: ${error.message}`, "error");
+      console.error('Document comment error:', error);
+      addNotification("Error", "Unable to add comment. Please try again.", "error");
     }
   };
 
@@ -633,22 +1166,109 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       if (txn) {
         setNewTransaction(txn);
         setEditingTransactionId(existingId);
+        // Set customCategory if the transaction category is "Others"
+        if (txn.category === 'Others') {
+          setCustomCategory(txn.description || '');
+        } else {
+          setCustomCategory('');
+        }
+        // Set paidByName and receivedByName for editing transactions
+        if (txn.type === 'income') {
+          // Use stored receivedByRole if available, otherwise determine from data
+          if (txn.paidByRole) {
+            setReceivedByRole(txn.paidByRole);
+            setPaidByName(txn.paidTo || '');
+          } else if (txn.paidByOther) {
+            setReceivedByRole('other');
+            setPaidByName(txn.paidByOther || '');
+          } else if (txn.paidTo) {
+            const paidUser = users.find(u => u.name === txn.paidTo);
+            if (paidUser) {
+              if (paidUser.role === Role.CLIENT) {
+                setReceivedByRole('client');
+              } else if (paidUser.role === Role.VENDOR) {
+                setReceivedByRole('vendor');
+              } else if (paidUser.role === Role.DESIGNER) {
+                setReceivedByRole('designer');
+              } else if (paidUser.role === Role.ADMIN) {
+                setReceivedByRole('admin');
+              }
+            } else {
+              setReceivedByRole('other');
+            }
+            setPaidByName(txn.paidTo || '');
+          }
+          // Determine receivedByRole based on transaction data
+          if (txn.receivedByRole) {
+            setReceivedByRole(txn.receivedByRole);
+            setReceivedByName(txn.receivedBy || txn.receivedByName || '');
+          } else if (txn.receivedBy) {
+            const receivedUser = users.find(u => u.name === txn.receivedBy);
+            if (receivedUser) {
+              if (receivedUser.role === Role.VENDOR) {
+                setReceivedByRole('vendor-received');
+              } else if (receivedUser.role === Role.DESIGNER) {
+                setReceivedByRole('designer-received');
+              } else if (receivedUser.role === Role.ADMIN) {
+                setReceivedByRole('admin-received');
+              }
+            } else {
+              setReceivedByRole('other-received');
+            }
+            setReceivedByName(txn.receivedBy || '');
+          }
+        } else if (txn.type === 'expense') {
+          if (txn.paidByOther) {
+            setNewTransaction({...txn, paidBy: 'other' as any});
+          }
+          // Determine receivedByRole based on stored role or transaction data
+          if (txn.receivedByRole) {
+            setReceivedByRole(txn.receivedByRole);
+            setReceivedByName(txn.receivedByName || txn.receivedBy || '');
+          } else if (txn.receivedBy) {
+            const receivedUser = users.find(u => u.name === txn.receivedBy);
+            if (receivedUser) {
+              // Set role based on user's role
+              if (receivedUser.role === Role.CLIENT) {
+                setReceivedByRole('client');
+              } else if (receivedUser.role === Role.VENDOR) {
+                setReceivedByRole('vendor');
+              } else if (receivedUser.role === Role.DESIGNER) {
+                setReceivedByRole('designer');
+              } else if (receivedUser.role === Role.ADMIN) {
+                setReceivedByRole('admin');
+              }
+            } else {
+              // If receivedBy doesn't match any user, it's "Other"
+              setReceivedByRole('other');
+            }
+            setReceivedByName(txn.receivedBy || '');
+          }
+        }
       }
     } else {
       setNewTransaction({
         date: new Date().toISOString().split('T')[0],
         type: 'expense',
         status: 'pending',
-        amount: undefined
+        amount: undefined,
+        paymentMode: undefined
       });
       setEditingTransactionId(null);
+      setPaidByName('');
+      setReceivedByName('');
+      setReceivedByRole('');
+      setCustomCategory('');
     }
     setIsTransactionModalOpen(true);
     setShowTransactionErrors(false);
   };
 
   const handleSaveTransaction = async () => {
-     if (!newTransaction.amount || !newTransaction.description || !newTransaction.category || !newTransaction.date) {
+     // Use custom category if "Others" is selected
+     const finalCategory = newTransaction.category === 'Others' ? customCategory : newTransaction.category;
+     
+     if (!newTransaction.amount || !newTransaction.description || !finalCategory || !newTransaction.date) {
         setShowTransactionErrors(true);
         addNotification("Validation Error", `Please fill all required fields for "${project.name}"`, "error", undefined, project.id, project.name);
         return;
@@ -683,12 +1303,54 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
 
        if (editingTransactionId) {
          // Update existing transaction in local state
-         const updatedRecord = {
+         let updatedRecord = {
            ...currentFinancials.find(f => f.id === editingTransactionId)!,
            ...newTransaction,
-           amount: Number(newTransaction.amount)
+           amount: Number(newTransaction.amount),
+           paidBy: newTransaction.type === 'income' ? 
+             (receivedByRole === 'other' ? 'other' : 
+              receivedByRole === 'client' ? 'client' :
+              receivedByRole === 'vendor' ? 'vendor' :
+              receivedByRole === 'designer' ? 'designer' :
+              receivedByRole === 'admin' ? 'admin' : newTransaction.paidBy)
+             : newTransaction.paidBy,
+           paidByRole: newTransaction.type === 'income' ? (
+             receivedByRole === 'other' ? 'other' : 
+             receivedByRole === 'client' ? 'client' :
+             receivedByRole === 'vendor' ? 'vendor' :
+             receivedByRole === 'designer' ? 'designer' :
+             receivedByRole === 'admin' ? 'admin' : undefined
+           ) : undefined,
+           paidTo: newTransaction.type === 'income' ? (newTransaction.vendorName || paidByName) : (paidByName || newTransaction.paidTo),
+           paidByOther: newTransaction.type === 'income' ? 
+             (receivedByRole === 'other' ? paidByName : newTransaction.paidByOther)
+             : newTransaction.paidByOther,
+           receivedBy: newTransaction.type === 'income' ?
+             (receivedByRole === 'vendor-received' || receivedByRole === 'designer-received' || receivedByRole === 'admin-received' || receivedByRole === 'other-received' || receivedByRole === 'admin' || receivedByRole === 'client' || receivedByRole === 'vendor' || receivedByRole === 'designer' ? receivedByName : newTransaction.receivedBy)
+             : (receivedByName || newTransaction.receivedBy),
+           receivedByRole: 
+             receivedByRole === 'client-received' ? 'client-received' :
+             receivedByRole === 'vendor-received' ? 'vendor-received' :
+             receivedByRole === 'designer-received' ? 'designer-received' :
+             receivedByRole === 'admin-received' ? 'admin-received' :
+             receivedByRole === 'other-received' ? 'other-received' :
+             receivedByRole === 'client' ? 'client-received' :
+             receivedByRole === 'vendor' ? 'vendor-received' :
+             receivedByRole === 'designer' ? 'designer-received' :
+             receivedByRole === 'admin' ? 'admin-received' :
+             receivedByRole === 'other' ? 'other-received' : undefined
+           ,
+           receivedByName: newTransaction.type === 'expense' ? receivedByName : (newTransaction.type === 'income' ? receivedByName : newTransaction.receivedByName)
          } as FinancialRecord;
-         
+
+         // --- FIX: If payment is now received/paid, always set status to 'paid' ---
+         if (
+           (updatedRecord.type === 'income' && updatedRecord.status === 'paid') ||
+           (updatedRecord.type === 'expense' && updatedRecord.status === 'paid')
+         ) {
+           updatedRecord.status = 'paid';
+         }
+
          // Determine timeline status based on transaction status
          let timelineStatus: 'completed' | 'in-progress' | 'planned' = 'in-progress';
          if (updatedRecord.status === 'paid') {
@@ -696,10 +1358,10 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
          } else if (updatedRecord.status === 'overdue') {
            timelineStatus = 'in-progress';
          }
-         
+
          // Enhanced timeline description with all transaction details
-         const detailedDescription = `Type: ${updatedRecord.type} | Amount: ₹${updatedRecord.amount.toLocaleString()} | Category: ${updatedRecord.category} | Status: ${updatedRecord.status}${updatedRecord.vendorName ? ` | Vendor: ${updatedRecord.vendorName}` : ''}`;
-         
+         const detailedDescription = `Type: ${updatedRecord.type} | Amount: ₹${updatedRecord.amount.toLocaleString()} | Category: ${updatedRecord.category} | Mode: ${updatedRecord.paymentMode || 'N/A'} | Status: ${updatedRecord.status}${updatedRecord.vendorName ? ` | Vendor: ${updatedRecord.vendorName}` : ''}`;
+
          // Log timeline event
          await logTimelineEvent(
            project.id,
@@ -709,27 +1371,75 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
            updatedRecord.date,
            updatedRecord.date
          );
-         
+
          updatedFinancials = updatedFinancials.map(f => f.id === editingTransactionId ? updatedRecord : f);
          log = logActivity('Financial', `Updated transaction: ${updatedRecord.description} (${updatedRecord.type} - ₹${updatedRecord.amount.toLocaleString()})`);
        } else {
          // Create new transaction in local state
-          const record: FinancialRecord = {
+           const record: FinancialRecord = {
             id: Math.random().toString(36).substr(2, 9),
             date: newTransaction.date!,
+            timestamp: new Date().toISOString(),
             description: newTransaction.description!,
             amount: Number(newTransaction.amount),
             type: newTransaction.type as 'income' | 'expense' | 'designer-charge',
-            status: newTransaction.status as any,
-            category: newTransaction.category!,
+            status: (newTransaction.status || 'pending') as any,
+            category: finalCategory,
             vendorName: newTransaction.vendorName,
-            paidBy: newTransaction.paidBy,
-            paidTo: newTransaction.paidTo,
+            paidBy: newTransaction.type === 'income' ? 
+              (receivedByRole === 'other' ? 'other' : 
+               receivedByRole === 'client' ? 'client' :
+               receivedByRole === 'vendor' ? 'vendor' :
+               receivedByRole === 'designer' ? 'designer' :
+               receivedByRole === 'admin' ? 'admin' : undefined)
+              : newTransaction.paidBy,
+            paidByRole: newTransaction.type === 'income' ? (
+              receivedByRole === 'other' ? 'other' : 
+              receivedByRole === 'client' ? 'client' :
+              receivedByRole === 'vendor' ? 'vendor' :
+              receivedByRole === 'designer' ? 'designer' :
+              receivedByRole === 'admin' ? 'admin' : undefined
+            ) : undefined,
+            paidTo: newTransaction.type === 'income' ? (newTransaction.vendorName || paidByName) : newTransaction.paidTo,
+            paidByOther: newTransaction.type === 'income' ? 
+              (receivedByRole === 'other' ? paidByName : newTransaction.paidByOther)
+              : newTransaction.paidByOther,
+            receivedBy: newTransaction.type === 'income' ?
+              (receivedByRole === 'vendor-received' || receivedByRole === 'designer-received' || receivedByRole === 'admin-received' || receivedByRole === 'other-received' || receivedByRole === 'admin' || receivedByRole === 'client' || receivedByRole === 'vendor' || receivedByRole === 'designer' ? receivedByName : undefined)
+              : (receivedByName || newTransaction.receivedBy),
+            receivedByRole: 
+              receivedByRole === 'client-received' ? 'client-received' :
+              receivedByRole === 'vendor-received' ? 'vendor-received' :
+              receivedByRole === 'designer-received' ? 'designer-received' :
+              receivedByRole === 'admin-received' ? 'admin-received' :
+              receivedByRole === 'other-received' ? 'other-received' :
+              receivedByRole === 'client' ? 'client-received' :
+              receivedByRole === 'vendor' ? 'vendor-received' :
+              receivedByRole === 'designer' ? 'designer-received' :
+              receivedByRole === 'admin' ? 'admin-received' :
+              receivedByRole === 'other' ? 'other-received' : undefined
+            ,
+            receivedByName: newTransaction.type === 'expense' ? receivedByName : (newTransaction.type === 'income' ? receivedByName : undefined),
+            paymentMode: newTransaction.paymentMode,
             adminApproved: newTransaction.adminApproved,
-            clientApproved: newTransaction.clientApproved
-         };
-         
-         // Determine timeline status based on transaction type and status
+            clientApproved: newTransaction.clientApproved,
+            // Add approval flags for additional budgets
+            isAdditionalBudget: newTransaction.type === 'income' && finalCategory === 'Additional Budget',
+            clientApprovalForAdditionalBudget: newTransaction.type === 'income' && finalCategory === 'Additional Budget' 
+              ? (newTransaction.clientApprovalForAdditionalBudget || 'pending')
+              : undefined,
+            adminApprovalForAdditionalBudget: newTransaction.type === 'income' && finalCategory === 'Additional Budget'
+              ? (newTransaction.adminApprovalForAdditionalBudget || 'pending')
+              : undefined,
+            // Add approval flags for received payments
+            isClientPayment: newTransaction.type === 'income' && finalCategory !== 'Additional Budget',
+            clientApprovalForPayment: newTransaction.type === 'income' && finalCategory !== 'Additional Budget'
+              ? (newTransaction.clientApprovalForPayment || 'pending')
+              : undefined,
+            adminApprovalForPayment: newTransaction.type === 'income' && finalCategory !== 'Additional Budget'
+              ? (newTransaction.adminApprovalForPayment || 'pending')
+              : undefined
+         };         // Determine timeline status based on transaction type and status
          let timelineStatus: 'completed' | 'in-progress' | 'planned' = 'planned';
          if (record.status === 'paid') {
            timelineStatus = 'completed';
@@ -738,7 +1448,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
          }
          
          // Comprehensive timeline description
-         const detailedDescription = `Type: ${record.type} | Amount: ₹${record.amount.toLocaleString()} | Category: ${record.category} | Status: ${record.status} | Paid By: ${record.paidBy || 'N/A'}${record.vendorName ? ` | Vendor: ${record.vendorName}` : ''}`;
+         const detailedDescription = `Type: ${record.type} | Amount: ₹${record.amount.toLocaleString()} | Category: ${record.category} | Mode: ${record.paymentMode || 'N/A'} | Status: ${record.status} | Paid By: ${record.paidBy || 'N/A'}${record.vendorName ? ` | Vendor: ${record.vendorName}` : ''}`;
          
          // Log timeline event
          await logTimelineEvent(
@@ -754,9 +1464,54 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
          log = logActivity('Financial', `Added ${record.type}: ₹${record.amount.toLocaleString()} for ${record.description}`)
        }
 
+       // Save to Firestore
+       try {
+         if (editingTransactionId) {
+           // Update existing transaction in Firestore
+           const recordToUpdate = updatedFinancials.find(f => f.id === editingTransactionId);
+           if (recordToUpdate) {
+             await updateProjectFinancialRecord(project.id, editingTransactionId, recordToUpdate);
+           }
+         } else {
+           // Create new transaction in Firestore
+           const newRecord = updatedFinancials[updatedFinancials.length - 1];
+           const recordId = await createProjectFinancialRecord(project.id, {
+             date: newRecord.date,
+             timestamp: newRecord.timestamp,
+             description: newRecord.description,
+             amount: newRecord.amount,
+             type: newRecord.type,
+             status: newRecord.status,
+             category: newRecord.category,
+             vendorName: newRecord.vendorName,
+             paidBy: newRecord.paidBy,
+             paidByRole: newRecord.paidByRole,
+             paidTo: newRecord.paidTo,
+             paidByOther: newRecord.paidByOther,
+             receivedBy: newRecord.receivedBy,
+             receivedByRole: newRecord.receivedByRole,
+             receivedByName: newRecord.receivedByName,
+             paymentMode: newRecord.paymentMode,
+             adminApproved: newRecord.adminApproved,
+             clientApproved: newRecord.clientApproved,
+             isAdditionalBudget: newRecord.isAdditionalBudget,
+             clientApprovalForAdditionalBudget: newRecord.clientApprovalForAdditionalBudget,
+             adminApprovalForAdditionalBudget: newRecord.adminApprovalForAdditionalBudget,
+             isClientPayment: newRecord.isClientPayment,
+             clientApprovalForPayment: newRecord.clientApprovalForPayment,
+             adminApprovalForPayment: newRecord.adminApprovalForPayment
+           });
+           // Update the record with the generated ID
+           newRecord.id = recordId;
+         }
+       } catch (dbError) {
+         console.error('Database save error:', dbError);
+         throw new Error('Failed to save transaction to database');
+       }
+
        onUpdateProject({
           ...project,
-          financials: updatedFinancials,
+          financials: editingTransactionId ? project.financials : updatedFinancials,
           activityLog: [log, ...(project.activityLog || [])]
        });
        
@@ -774,37 +1529,161 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
        setEditingTransactionId(null);
        setShowTransactionErrors(false);
        setIsSavingTransaction(false);
+       setPaidByName('');
+       setReceivedByName('');
+       setReceivedByRole('');
+       setCustomCategory('');
        addNotification("Success", `Transaction ${editingTransactionId ? 'updated' : 'added'} and saved to database.`, "success", undefined, project.id, project.name);
      } catch (error: any) {
        // Show user-friendly message instead of technical error
-       const userMessage = "Transaction saved locally. Please refresh the page or contact support if changes don't appear.";
-       addNotification("Transaction Saved", userMessage, "warning", undefined, project.id, project.name);
+       const userMessage = error.message?.includes('database') 
+         ? "Failed to save transaction. Please try again."
+         : "Transaction saved locally. Please refresh the page or contact support if changes don't appear.";
+       addNotification("Error", userMessage, "error", undefined, project.id, project.name);
        
        // Still update local state so user sees their changes
        setIsTransactionModalOpen(false);
        setEditingTransactionId(null);
        setIsSavingTransaction(false);
+       setPaidByName('');
+       setReceivedByName('');
+       setReceivedByRole('');
+       setCustomCategory('');
        
        // Log the actual error for debugging
        console.error("Transaction save error:", error);
      }
   };
 
-  // Helper to sync project updates to Firebase
-  const syncProjectToFirebase = async (updatedProject: Project) => {
+  // Remove handleProjectUpdate and syncProjectToFirebase (no longer needed for financials)
+
+  // Handle approval for additional budgets
+  const handleApproveAdditionalBudget = async (transactionId: string, approvalType: 'client' | 'admin', status: 'approved' | 'rejected') => {
     try {
-      await updateExistingProject(project.id, updatedProject);
+      const key = approvalType === 'client' ? 'clientApprovalForAdditionalBudget' : 'adminApprovalForAdditionalBudget';
+      
+      // Check if record exists in real-time collection
+      const isRealTime = realTimeFinancials.some(f => f.id === transactionId);
+
+      if (isRealTime) {
+        // Write directly to Firebase subcollection
+        await updateProjectFinancialRecord(project.id, transactionId, {
+          [key]: status
+        });
+      }
+
+      // Get the updated transaction from current financials to check if both approved
+      const txn = currentFinancials.find(f => f.id === transactionId);
+      if (txn) {
+        // Construct updated txn for logic check since state might not be updated yet
+        const updatedTxn = { ...txn, [key]: status };
+        
+        const statusText = status === 'approved' ? 'Approved' : 'Rejected';
+        const roleText = approvalType === 'client' ? 'Client' : 'Admin';
+        
+        // Check if both will be approved after this update
+        const clientApproved = approvalType === 'client' ? status === 'approved' : updatedTxn.clientApprovalForAdditionalBudget === 'approved';
+        const adminApproved = approvalType === 'admin' ? status === 'approved' : updatedTxn.adminApprovalForAdditionalBudget === 'approved';
+        const isBothApproved = clientApproved && adminApproved;
+        
+        // If both approved, update the project budget
+        if (isBothApproved && txn.status !== 'paid') {
+          const newBudget = project.budget + txn.amount;
+          
+          // Prepare updates
+          let updatedProject = {
+            ...project,
+            budget: newBudget,
+            initialBudget: project.initialBudget || project.budget
+          };
+
+          onUpdateProject(updatedProject);
+          
+          // Also mark the transaction as paid in subcollection if needed
+          if (isRealTime) {
+            await updateProjectFinancialRecord(project.id, transactionId, { status: 'paid' });
+          }
+        }
+        
+        await logTimelineEvent(
+          project.id,
+          isBothApproved ? `Additional Budget Approved: ₹${txn.amount.toLocaleString()}` : `Additional Budget ${statusText}`,
+          isBothApproved 
+            ? `Budget increased by ₹${txn.amount.toLocaleString()}. Both Client and Admin have approved. New Total: ₹${(project.budget + txn.amount).toLocaleString()}`
+            : `${roleText} ${status === 'approved' ? 'approved' : 'rejected'} additional budget of ₹${txn.amount.toLocaleString()}`,
+          isBothApproved ? 'completed' : 'in-progress',
+          new Date().toISOString(),
+          new Date().toISOString()
+        );
+      }
+
+      addNotification("Success", `Additional budget ${status === 'approved' ? 'approved' : 'rejected'} by ${approvalType === 'client' ? 'Client' : 'Admin'}`, "success", undefined, project.id, project.name);
     } catch (error: any) {
-      console.error("Firebase sync error:", error);
-      // Don't block UI, just log the error
+      console.error('Approval error:', error);
+      addNotification("Error", "Unable to process approval. Please try again.", "error", undefined, project.id, project.name);
     }
   };
 
-  // Wrapper for all project updates - syncs to both local state and Firebase
-  const handleProjectUpdate = (updatedProject: Project) => {
-    onUpdateProject(updatedProject);
-    syncProjectToFirebase(updatedProject);
+  // Handle approval for received payments
+  const handleApprovePayment = async (transactionId: string, approvalType: 'client' | 'admin', status: 'approved' | 'rejected') => {
+    try {
+      const key = approvalType === 'client' ? 'clientApprovalForPayment' : 'adminApprovalForPayment';
+      
+      // Check if record exists in real-time collection
+      const isRealTime = realTimeFinancials.some(f => f.id === transactionId);
+
+      if (isRealTime) {
+        // Write directly to Firebase subcollection
+        await updateProjectFinancialRecord(project.id, transactionId, {
+          [key]: status
+        });
+      }
+
+      // Log timeline event
+      const txn = currentFinancials.find(f => f.id === transactionId);
+      if (txn) {
+        const statusText = status === 'approved' ? 'Confirmed' : 'Disputed';
+        const roleText = approvalType === 'client' ? 'Client' : 'Admin';
+        const approvalNow = new Date().toISOString();
+        await logTimelineEvent(
+          project.id,
+          `Payment ${statusText}`,
+          `${roleText} ${status === 'approved' ? 'confirmed' : 'disputed'} payment of ₹${txn.amount.toLocaleString()} for ${txn.description}`,
+          status === 'approved' ? 'completed' : 'in-progress',
+          approvalNow,
+          approvalNow
+        );
+      }
+
+      addNotification("Success", `Payment ${status === 'approved' ? 'confirmed' : 'disputed'} by ${approvalType === 'client' ? 'Client' : 'Admin'}`, "success", undefined, project.id, project.name);
+    } catch (error: any) {
+      console.error('Approval error:', error);
+      addNotification("Error", "Unable to process approval. Please try again.", "error", undefined, project.id, project.name);
+    }
   };
+
+  const handleApproveExpense = useCallback(async (transactionId: string, approvalType: 'client' | 'admin', isApproved: boolean) => {
+    const key = approvalType === 'client' ? 'clientApproved' : 'adminApproved';
+    
+    try {
+      // Check if record exists in real-time collection
+      const isRealTime = realTimeFinancials.some(f => f.id === transactionId);
+
+      if (isRealTime) {
+        // Write directly to Firebase subcollection
+        await updateProjectFinancialRecord(project.id, transactionId, {
+          [key]: isApproved
+        });
+      }
+
+      const actionText = isApproved ? 'approved' : 'rejected';
+      const roleText = approvalType === 'client' ? 'client' : 'admin';
+      addNotification("Success", `Expense ${actionText} by ${roleText}`, "success", undefined, project.id, project.name);
+    } catch (error) {
+      console.error('Approval error:', error);
+      addNotification("Error", "Unable to process approval. Please try again.", "error", undefined, project.id, project.name);
+    }
+  }, [project.id, addNotification, realTimeFinancials]);
 
   const handleDependencyChange = (dependencyId: string, isChecked: boolean) => {
      if (!editingTask || isTaskFrozen(editingTask.status)) return;
@@ -846,8 +1725,8 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
     
     // Default structure for new tasks
     const defaultApprovals = {
-       start: { client: { status: 'pending' }, designer: { status: 'pending' } },
-       completion: { client: { status: 'pending' }, designer: { status: 'pending' } }
+       start: { client: { status: 'pending' }, admin: { status: 'pending' } },
+       completion: { client: { status: 'pending' }, admin: { status: 'pending' } }
     };
 
     // Calculate Status Automatically if not frozen by admin
@@ -874,21 +1753,30 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       comments: editingTask.comments || [],
       approvals: editingTask.approvals as any || defaultApprovals
     };
-
     console.log("Task data being saved:", taskData);
 
     // Cycle Detection Check
-    if (taskData.dependencies.includes(taskData.id)) {
+    if (taskData.dependencies?.includes(taskData.id)) {
         addNotification("Dependency Error", "A task cannot depend on itself.", "error");
         return;
     }
 
     // Strict Dependency Check for Status Change
     if (taskData.status !== TaskStatus.TODO && !isTaskFrozen(taskData.status)) {
-       const incompleteParents = getBlockingTasks(taskData);
-       if (incompleteParents.length > 0) {
-           addNotification("Blocked", `Cannot start task. Blocked by: ${incompleteParents.map(t => t.title).join(', ')}.`, "error");
-           return;
+       // Exception: If task is fully approved (all 4), allow moving to DONE even if dependencies are pending
+       // This handles cases where work was done out of order but approved by Admin/Client
+       const isFullyApproved = 
+          taskData.approvals?.start?.client?.status === 'approved' &&
+          taskData.approvals?.start?.admin?.status === 'approved' &&
+          taskData.approvals?.completion?.client?.status === 'approved' &&
+          taskData.approvals?.completion?.admin?.status === 'approved';
+
+       if (!isFullyApproved) {
+           const incompleteParents = getBlockingTasks(taskData);
+           if (incompleteParents.length > 0) {
+               addNotification("Blocked", `Cannot start task. Blocked by: ${incompleteParents.map(t => t.title).join(', ')}.`, "error");
+               return;
+           }
        }
     }
 
@@ -958,9 +1846,15 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
           taskData.dueDate
         );
         
-        // Notify Assignee
+        // Send email notification to assignee
         if (taskData.assigneeId) {
-            notifyUser(taskData.assigneeId, 'New Task Assignment', `You have been assigned to task "${taskData.title}" in "${project.name}"`, 'info', 'plan');
+          const assignee = users.find(u => u.id === taskData.assigneeId);
+          if (assignee) {
+            await sendTaskCreationEmail(taskData, assignee, project.name);
+          }
+          
+          // In-app notification
+          notifyUser(taskData.assigneeId, 'New Task Assignment', `You have been assigned to task "${taskData.title}" in "${project.name}"`, 'info', 'plan');
         }
       }
 
@@ -989,7 +1883,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       setShowTaskErrors(false);
     } catch (error: any) {
       console.error('Error saving task:', error);
-      addNotification('Error', `Failed to save task: ${error.message || 'Unknown error'}`, 'error', undefined, project.id, project.name);
+      addNotification('Error', 'Unable to save task. Please check your input and try again.', 'error', undefined, project.id, project.name);
     }
   };
 
@@ -1021,7 +1915,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       setDeleteConfirmTask(null);
     } catch (error: any) {
       console.error('Error deleting task:', error);
-      addNotification('Error', `Failed to delete task: ${error.message || 'Unknown error'}`, 'error', undefined, project.id, project.name);
+      addNotification('Error', 'Unable to delete task. Please try again.', 'error', undefined, project.id, project.name);
       setIsDeleteConfirmOpen(false);
       setDeleteConfirmTask(null);
     }
@@ -1036,22 +1930,38 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
     setIsDeleteConfirmOpen(true);
   };
 
-  const handleSendReminder = (task: Task) => {
+  const handleSendReminder = async (task: Task) => {
     const assignee = users.find(u => u.id === task.assigneeId);
     if (!assignee) {
       addNotification('Error', 'Assignee not found', 'error');
       return;
     }
 
-    const subject = `Reminder: ${task.title}`;
-    const body = `Hi ${assignee.name},\n\nThis is a reminder for the task "${task.title}" in project "${project.name}" which is due on ${new Date(task.dueDate).toLocaleDateString('en-IN')}.\n\nPlease update the status.\n\nRegards,\nAdmin`;
-    
-    // Send Email only
-    if (assignee.email && assignee.email.trim()) {
-        window.open(`mailto:${assignee.email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`, '_blank');
+    if (!assignee.email || !assignee.email.trim()) {
+      addNotification('Error', `Email not found for ${assignee.name}`, 'error');
+      return;
+    }
+
+    setSendingEmailFor(task.id);
+    try {
+      const result = await sendTaskReminder(
+        assignee.email,
+        assignee.name,
+        task.title,
+        project.name,
+        task.dueDate
+      );
+
+      if (result.success) {
         addNotification('Success', `Email reminder sent to ${assignee.name}`, 'success');
-    } else {
-        addNotification('Error', `Email not found for ${assignee.name}`, 'error');
+      } else {
+        addNotification('Error', result.error || 'Failed to send email', 'error');
+      }
+    } catch (error) {
+      console.error('Error sending reminder:', error);
+      addNotification('Error', 'Failed to send email reminder', 'error');
+    } finally {
+      setSendingEmailFor(null);
     }
   };
 
@@ -1106,16 +2016,27 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
     document.body.removeChild(textarea);
   };
 
-  const handleSendPaymentReminder = (client: User) => {
-    const subject = `Payment Reminder: ${project.name}`;
-    const body = `Hi ${client.name},\n\nThis is a gentle reminder regarding the pending payments for project "${project.name}".\n\nPlease clear the dues at your earliest convenience.\n\nRegards,\nAdmin`;
-    
-    // Send Email only
-    if (client.email && client.email.trim()) {
-        window.open(`mailto:${client.email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`, '_blank');
-        addNotification('Success', `Payment reminder email sent to ${client.name}`, 'success');
-    } else {
-        addNotification('Error', `Email not found for ${client.name}`, 'error');
+  const handleSendPaymentReminder = async (client: User) => {
+    if (!client.email || !client.email.trim()) {
+      addNotification('Error', `Email not found for ${client.name}`, 'error');
+      return;
+    }
+
+    try {
+      const result = await sendPaymentReminder(
+        client.email,
+        client.name,
+        project.name
+      );
+
+      if (result.success) {
+        addNotification('Success', `Payment reminder sent to ${client.name}`, 'success');
+      } else {
+        addNotification('Error', result.error || 'Failed to send email', 'error');
+      }
+    } catch (error) {
+      console.error('Error sending payment reminder:', error);
+      addNotification('Error', 'Failed to send payment reminder', 'error');
     }
   };
 
@@ -1130,11 +2051,13 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
 
     // STRICT: Check Approvals before DONE
     if (newStatus === TaskStatus.DONE) {
-         const clientApproved = task.approvals?.completion?.client?.status === 'approved';
-         const designerApproved = task.approvals?.completion?.designer?.status === 'approved';
+         const startClient = task.approvals?.start?.client?.status === 'approved';
+         const startAdmin = task.approvals?.start?.admin?.status === 'approved';
+         const completionClient = task.approvals?.completion?.client?.status === 'approved';
+         const completionAdmin = task.approvals?.completion?.admin?.status === 'approved';
          
-         if (!clientApproved || !designerApproved) {
-             addNotification('Approval Required', 'Both Client and Designer must approve completion before marking as Done.', 'warning');
+         if (!startClient || !startAdmin || !completionClient || !completionAdmin) {
+             addNotification('Approval Required', 'All 4 approvals (Start & Completion from both Client & Admin) are required.', 'warning');
              return;
          }
     }
@@ -1184,6 +2107,23 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       
       // Update task in Firebase
       await updateTask(project.id, taskId, { status: newStatus });
+
+      // AUTOMATIC PROJECT STATUS UPDATE
+      // If a task moves to IN_PROGRESS, check if we should advance the project phase
+      let newProjectStatus = project.status;
+      if (newStatus === TaskStatus.IN_PROGRESS) {
+          if (task.category === 'Design and Planning' && project.status === ProjectStatus.DISCOVERY) {
+              newProjectStatus = ProjectStatus.PLANNING;
+          } else if (task.category === 'Execution' && (project.status === ProjectStatus.DISCOVERY || project.status === ProjectStatus.PLANNING)) {
+              newProjectStatus = ProjectStatus.EXECUTION;
+          }
+
+          if (newProjectStatus !== project.status) {
+              await updateExistingProject(project.id, { status: newProjectStatus });
+              addNotification('Phase Updated', `Project automatically moved to ${newProjectStatus}`, 'success');
+          }
+      }
+
     } catch (error: any) {
       console.error('Error updating task status:', error);
       addNotification('Error', 'Failed to update task status. Please try again.', 'error');
@@ -1198,8 +2138,26 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
          notifyProjectTeam('Status Update', `"${task.title}" moved to ${newStatus} in "${project.name}"`, user.id, 'plan');
     }
 
+    // Determine if we have a new status from the auto-update logic above
+    // We need to re-evaluate newProjectStatus variable scope or just re-calculate/use a let variable
+    // To be safe and clean, let's assume the local state update should reflect the change if it happened.
+    // Since I used a local variable 'newProjectStatus' inside the try block, I need to make sure it's accessible or I just check the logic again.
+    // Actually, I can't easily access 'newProjectStatus' from the try block if I defined it there.
+    // Let's refactor slightly to ensure we pass the correct status to onUpdateProject.
+    
+    // RE-CALCULATE for local state (to avoid scope issues with the try-block variable)
+    let finalProjectStatus = project.status;
+    if (newStatus === TaskStatus.IN_PROGRESS) {
+         if (task.category === 'Design and Planning' && project.status === ProjectStatus.DISCOVERY) {
+              finalProjectStatus = ProjectStatus.PLANNING;
+          } else if (task.category === 'Execution' && (project.status === ProjectStatus.DISCOVERY || project.status === ProjectStatus.PLANNING)) {
+              finalProjectStatus = ProjectStatus.EXECUTION;
+          }
+    }
+
     onUpdateProject({
       ...project,
+      status: finalProjectStatus,
       tasks: updatedTasks,
       activityLog: [log, ...(project.activityLog || [])]
     });
@@ -1291,11 +2249,11 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
         else if (task.status === TaskStatus.REVIEW) {
              // Check Approvals before DONE
              const clientApproved = task.approvals?.completion?.client?.status === 'approved';
-             const designerApproved = task.approvals?.completion?.designer?.status === 'approved';
-             if (clientApproved && designerApproved) {
+             const adminApproved = task.approvals?.completion?.admin?.status === 'approved';
+             if (clientApproved && adminApproved) {
                  newStatus = TaskStatus.DONE;
              } else {
-                 addNotification('Approval Required', 'Wait for Client and Designer approvals.', 'warning');
+                 addNotification('Approval Required', 'Wait for Client and Admin approvals.', 'warning');
                  return;
              }
         }
@@ -1322,6 +2280,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
     const comment: Comment = {
       id: Math.random().toString(36).substr(2, 9),
       userId: user.id,
+      userName: user.name || 'Unknown User', // Store name for display resilience
       text: newComment,
       timestamp: new Date().toISOString()
     };
@@ -1343,11 +2302,75 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
     }
   };
 
-  const handleApproval = async (stage: 'start' | 'completion', action: 'approve' | 'reject') => {
+  const handleApproval = async (stage: 'start' | 'completion', action: 'approve' | 'reject' | 'revoke', targetRole?: 'client' | 'admin' | 'designer') => {
     if (!editingTask || !editingTask.approvals) return;
     if (isTaskFrozen(editingTask.status)) return;
     
-    const roleKey = (user.role === Role.CLIENT) ? 'client' : (user.role === Role.ADMIN || user.role === Role.DESIGNER) ? 'designer' : null;
+    // For revoke, only admins can revoke
+    if (action === 'revoke') {
+      if (!isAdmin) {
+        addNotification('Access Denied', 'Only admins can revoke approvals', 'error');
+        return;
+      }
+      if (!targetRole) return;
+      
+      // Check if both have approved - if so, prevent revocation
+      const clientApproved = editingTask.approvals?.[stage]?.client?.status === 'approved';
+      const adminApproved = editingTask.approvals?.[stage]?.admin?.status === 'approved';
+      
+      if (clientApproved && adminApproved) {
+        addNotification('Locked', 'Cannot revoke approvals once both parties have approved.', 'error');
+        return;
+      }
+      
+      const updatedApprovals = {
+        ...editingTask.approvals,
+        [stage]: {
+          ...editingTask.approvals[stage],
+          [targetRole]: {
+            status: 'pending' as ApprovalStatus,
+            updatedBy: user.id,
+            timestamp: new Date().toISOString()
+          }
+        }
+      };
+      
+      setEditingTask({ 
+        ...editingTask, 
+        approvals: updatedApprovals
+      });
+      
+      if (editingTask.id) {
+        try {
+          console.log(`🔄 Revoking ${stage}/${targetRole} approval...`);
+          console.log(`📝 Updated approvals:`, updatedApprovals);
+          
+          await updateTask(project.id, editingTask.id, { 
+            approvals: updatedApprovals
+          });
+          console.log(`✅ Approval updated in Firebase`);
+          
+          const revokeNow = new Date().toISOString();
+          await logTimelineEvent(
+            project.id,
+            `Approval Revoked: ${editingTask.title}`,
+            `${stage} approval revoked for ${targetRole} by ${user.name}`,
+            'in-progress',
+            revokeNow,
+            revokeNow
+          );
+          console.log(`✅ Timeline event logged`);
+          
+          addNotification('Approval Revoked', `${targetRole} approval for ${stage} stage revoked.`, 'info');
+        } catch (error) {
+          console.error("Failed to revoke approval", error);
+          addNotification("Error", "Failed to revoke approval", "error");
+        }
+      }
+      return;
+    }
+    
+    const roleKey = (user.role === Role.CLIENT) ? 'client' : (user.role === Role.ADMIN) ? 'admin' : null;
     if (!roleKey) return;
 
     const newStatus: ApprovalStatus = action === 'approve' ? 'approved' : 'rejected';
@@ -1377,22 +2400,41 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       }
 
     } else {
-        // Check if both Approved for Completion, then set to DONE
-        if (stage === 'completion') {
-             const clientApproved = updatedApprovals.completion.client.status === 'approved';
-             const designerApproved = updatedApprovals.completion.designer.status === 'approved';
-             
-             if (clientApproved && designerApproved) {
-                 updatedTaskStatus = TaskStatus.DONE;
-                 addNotification('Task Approved', "Task fully approved and marked as DONE.", 'success');
-                 if (editingTask.assigneeId) {
-                     notifyUser(editingTask.assigneeId, 'Work Approved', `Great job! "${editingTask.title}" is officially approved and done in "${project.name}".`, 'success', 'plan');
+        // Check if ALL 4 Approved, then set to DONE
+        const startClient = updatedApprovals.start?.client?.status === 'approved';
+        const startAdmin = updatedApprovals.start?.admin?.status === 'approved';
+        const completionClient = updatedApprovals.completion?.client?.status === 'approved';
+        const completionAdmin = updatedApprovals.completion?.admin?.status === 'approved';
+
+        if (startClient && startAdmin && completionClient && completionAdmin) {
+             updatedTaskStatus = TaskStatus.DONE;
+             addNotification('Task Approved', "Task fully approved and marked as DONE.", 'success');
+             if (editingTask.assigneeId) {
+                 notifyUser(editingTask.assigneeId, 'Work Approved', `Great job! "${editingTask.title}" is officially approved and done in "${project.name}".`, 'success', 'plan');
+                 // Send task approval email
+                 const assignee = projectTeam.find(u => u.id === editingTask.assigneeId);
+                 if (assignee && assignee.email) {
+                   await sendTaskApprovalEmail(editingTask.title, assignee, project.name, user.name, 'completion');
                  }
-             } else {
-                 addNotification('Approved', `Task completion approved by ${roleKey}. Waiting for others.`, 'success');
+             }
+        } else if (stage === 'completion') {
+             addNotification('Approved', `Task completion approved by ${roleKey}. Waiting for others.`, 'success');
+             // Send approval email for this stage
+             if (editingTask.assigneeId) {
+               const assignee = projectTeam.find(u => u.id === editingTask.assigneeId);
+               if (assignee && assignee.email) {
+                 await sendTaskApprovalEmail(editingTask.title, assignee, project.name, user.name, 'completion');
+               }
              }
         } else {
             addNotification('Approved', `Task ${stage} approved.`, 'success');
+            // Send approval email for this stage
+            if (editingTask.assigneeId) {
+              const assignee = projectTeam.find(u => u.id === editingTask.assigneeId);
+              if (assignee && assignee.email) {
+                await sendTaskApprovalEmail(editingTask.title, assignee, project.name, user.name, stage);
+              }
+            }
         }
     }
 
@@ -1410,13 +2452,23 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                 status: updatedTaskStatus
             });
             
+            // Update parent component's task list to refresh Kanban board
+            const updatedTaskList = currentTasks.map(t => 
+                t.id === editingTask.id 
+                    ? { ...t, approvals: updatedApprovals, status: updatedTaskStatus as TaskStatus }
+                    : t
+            ) as Task[];
+            onUpdateProject({ ...project, tasks: updatedTaskList });
+            
+            const approvalNow = new Date().toISOString();
             // Log timeline event for approval
             await logTimelineEvent(
                 project.id,
                 `Approval: ${editingTask.title}`,
                 `${stage} approval ${action}ed by ${user.name}`,
                 'completed',
-                new Date().toISOString().split('T')[0]
+                approvalNow,
+                approvalNow
             );
 
         } catch (error) {
@@ -1444,10 +2496,20 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
         .filter(f => f.type === 'expense' && (f.status === 'pending' || f.status === 'overdue'))
         .reduce((sum, f) => sum + f.amount, 0);
 
-    return { received, pendingIncome, paidOut, pendingExpenses };
+    // Calculate additional budget from actual transactions (paid only)
+    const additionalBudgetReceived = currentFinancials
+        .filter(f => f.type === 'income' && f.category === 'Additional Budget' && f.status === 'paid')
+        .reduce((sum, f) => sum + f.amount, 0);
+
+    // Calculate total additional budget from transactions (paid + pending)
+    const totalAdditionalBudget = currentFinancials
+        .filter(f => f.type === 'income' && f.category === 'Additional Budget')
+        .reduce((sum, f) => sum + f.amount, 0);
+
+    return { received, pendingIncome, paidOut, pendingExpenses, additionalBudgetReceived, totalAdditionalBudget };
   };
 
-  const { received, pendingIncome, paidOut, pendingExpenses } = calculateFinancials();
+  const { received, pendingIncome, paidOut, pendingExpenses, additionalBudgetReceived, totalAdditionalBudget } = calculateFinancials();
 
   // Financial Filter Logic
   const filteredFinancials = useMemo(() => {
@@ -1458,7 +2520,12 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
          if (transactionFilter === 'pending') return f.status === 'pending';
          if (transactionFilter === 'overdue') return f.status === 'overdue';
          return true;
-     }).sort((a,b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+     }).sort((a,b) => {
+         // Sort by timestamp (descending - most recent first)
+         const timeA = a.timestamp ? new Date(a.timestamp).getTime() : new Date(a.date).getTime();
+         const timeB = b.timestamp ? new Date(b.timestamp).getTime() : new Date(b.date).getTime();
+         return timeB - timeA; // Descending order
+     });
   }, [currentFinancials, transactionFilter]);
 
   // Helper sort function based on CATEGORY_ORDER
@@ -1539,81 +2606,240 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
     return Object.keys(vendorsByCategory).sort((a, b) => getCategorySortIndex(a) - getCategorySortIndex(b));
   }, [vendorsByCategory]);
 
+  // Sync editingTask documents array with real-time documents and tasks
+  useEffect(() => {
+    if (editingTask && editingTask.id) {
+      // Find the latest version of this task from currentTasks
+      const latestTask = currentTasks.find(t => t.id === editingTask.id);
+      
+      // If documents array has changed in currentTasks, update editingTask
+      if (latestTask && JSON.stringify(latestTask.documents) !== JSON.stringify(editingTask.documents)) {
+        setEditingTask(prev => prev && prev.id === editingTask.id ? {
+          ...prev,
+          documents: latestTask.documents
+        } : prev);
+      }
+    }
+  }, [currentTasks, editingTask?.id]);
+
+  // Helper: Get count of valid documents (those that actually exist in realTimeDocuments)
+  const getValidDocumentCount = (documentIds?: string[]): number => {
+    if (!documentIds || documentIds.length === 0) return 0;
+    return documentIds.filter(docId => realTimeDocuments.some(doc => doc.id === docId)).length;
+  };
+
+  // Helper: Filter to only valid documents (those that exist in realTimeDocuments)
+  const getValidDocuments = (documentIds?: string[]) => {
+    if (!documentIds || documentIds.length === 0) return [];
+    return realTimeDocuments.filter(doc => documentIds.includes(doc.id));
+  };
+
   // Derived state for Task Modal
   const isEditingFrozen = editingTask ? isTaskFrozen(editingTask.status) : false;
 
   const getStatusColor = (status: ProjectStatus) => {
     switch (status) {
+      case ProjectStatus.DISCOVERY: return 'bg-teal-100 text-teal-700';
       case ProjectStatus.PLANNING: return 'bg-purple-100 text-purple-700';
-      case ProjectStatus.IN_PROGRESS: return 'bg-blue-100 text-blue-700';
+      case ProjectStatus.EXECUTION: return 'bg-blue-100 text-blue-700';
       case ProjectStatus.COMPLETED: return 'bg-green-100 text-green-700';
       case ProjectStatus.ON_HOLD: return 'bg-orange-100 text-orange-700';
       default: return 'bg-gray-100 text-gray-700';
     }
   };
 
+  const getNextStatus = (status: ProjectStatus) => {
+    switch (status) {
+      case ProjectStatus.DISCOVERY: return ProjectStatus.PLANNING;
+      case ProjectStatus.PLANNING: return ProjectStatus.EXECUTION;
+      case ProjectStatus.EXECUTION: return ProjectStatus.COMPLETED;
+      default: return null;
+    }
+  };
+
+  const handleAdvanceStatus = async () => {
+    const next = getNextStatus(project.status);
+    if (!next) return;
+    
+    if (window.confirm(`Are you sure you want to move the project from ${project.status} to ${next}?`)) {
+      try {
+        await updateExistingProject(project.id, { status: next });
+        addNotification('Phase Updated', `Project moved to ${next} phase`, 'success');
+      } catch (error: any) {
+        console.error('Error updating status:', error);
+        addNotification('Error', 'Failed to update project status', 'error');
+      }
+    }
+  };
+
+  const handleToggleHold = async () => {
+    if (project.status === ProjectStatus.ON_HOLD) {
+        // Resume Logic: Check if any Execution tasks are started/done to decide where to resume
+        const hasExecutionActivity = currentTasks.some(t => t.category === 'Execution' && (t.status === TaskStatus.IN_PROGRESS || t.status === TaskStatus.DONE));
+        const resumeStatus = hasExecutionActivity ? ProjectStatus.EXECUTION : ProjectStatus.PLANNING;
+        
+        if (window.confirm(`Resume project to ${resumeStatus}?`)) {
+            try {
+                await updateExistingProject(project.id, { status: resumeStatus });
+                addNotification('Project Resumed', `Project resumed to ${resumeStatus}`, 'success');
+            } catch (e) {
+                console.error(e);
+                addNotification('Error', 'Failed to resume project', 'error');
+            }
+        }
+    } else {
+        // Hold Logic
+        if (window.confirm('Are you sure you want to put this project ON HOLD?')) {
+            try {
+                await updateExistingProject(project.id, { status: ProjectStatus.ON_HOLD });
+                addNotification('Project On Hold', 'Project status set to On Hold', 'warning');
+            } catch (e) {
+                console.error(e);
+                addNotification('Error', 'Failed to update status', 'error');
+            }
+        }
+    }
+  };
+
   return (
     <div className="h-full flex flex-col animate-fade-in relative">
-      {/* ... (Header and Tabs code remains unchanged until activeTab === 'plan') ... */}
-      <div className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between sticky top-0 z-10 shadow-sm">
-        <div className="flex items-center gap-4">
-          <button onClick={onBack} className="text-gray-500 hover:text-gray-800 transition-colors" title="Go back to project list">
+      {/* Project Details Header - Mobile Optimized */}
+      <div className="bg-white border-b border-gray-200 px-4 md:px-6 py-3 md:py-2 flex flex-col md:flex-row items-start md:items-center justify-between sticky top-0 z-10 shadow-sm gap-3 md:gap-0">
+        <div className="flex items-start gap-3 md:gap-4 w-full md:w-auto flex-1">
+          <button onClick={onBack} className="text-gray-500 hover:text-gray-800 transition-colors flex-shrink-0 mt-1" title="Go back to project list">
             <ChevronRight className="w-5 h-5 rotate-180" />
           </button>
-          <div>
-            <h1 className="text-2xl font-bold text-gray-900">{project.name}</h1>
-            <div className="flex items-center gap-4 text-sm text-gray-500 mt-1">
-              <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${getStatusColor(project.status)}`}>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-start justify-between gap-2">
+              <h1 className="text-xl md:text-2xl font-bold text-gray-900 truncate">{project.name}</h1>
+              {isAdmin && (
+                <button 
+                  onClick={openDeleteProjectConfirm}
+                  className="md:hidden flex items-center gap-2 px-2 py-1.5 bg-red-100 text-red-700 rounded-lg hover:bg-red-200 transition-colors text-xs font-medium whitespace-nowrap flex-shrink-0"
+                  title="Delete Project"
+                >
+                  <Trash2 className="w-5 h-5" />
+                </button>
+              )}
+            </div>
+            <div className="flex flex-wrap items-center gap-3 md:gap-4 text-sm md:text-xs text-gray-500 mt-4 md:mt-3">
+              <span className={`px-2 py-0.5 rounded-md text-sm md:text-xs font-medium whitespace-nowrap ${getStatusColor(project.status)}`}>
                 {project.status}
               </span>
-              <span className="flex items-center gap-1"><Calendar className="w-4 h-4" /> Due: {project.deadline}</span>
+              {canEditProject && getNextStatus(project.status) && (
+                <button 
+                  onClick={handleAdvanceStatus}
+                  className="text-sm md:text-xs text-blue-600 hover:text-blue-800 font-bold flex items-center gap-1 bg-blue-50 px-2 py-0.5 rounded-md border border-blue-100 hover:bg-blue-100 transition-colors whitespace-nowrap"
+                  title={`Advance to ${getNextStatus(project.status)}`}
+                >
+                  Next Phase <ArrowRight className="w-3 h-3" />
+                </button>
+              )}
+              {isAdmin && (
+                <button
+                  onClick={handleToggleHold}
+                  className={`text-sm md:text-xs font-bold flex items-center gap-1 px-2 py-0.5 rounded-md border transition-colors whitespace-nowrap ${
+                    project.status === ProjectStatus.ON_HOLD 
+                      ? 'text-green-600 bg-green-50 border-green-100 hover:bg-green-100' 
+                      : 'text-orange-600 bg-orange-50 border-orange-100 hover:bg-orange-100'
+                  }`}
+                  title={project.status === ProjectStatus.ON_HOLD ? "Resume Project" : "Put Project On Hold"}
+                >
+                  {project.status === ProjectStatus.ON_HOLD ? <PlayCircle className="w-3 h-3" /> : <PauseCircle className="w-3 h-3" />}
+                  {project.status === ProjectStatus.ON_HOLD ? "Resume" : "Hold"}
+                </button>
+              )}
+            </div>
+            <div className="flex flex-wrap items-center gap-3 md:gap-4 text-base md:text-sm text-gray-600 mt-3 md:mt-3">
+              <span className="flex items-center gap-1 whitespace-nowrap"><Calendar className="w-4 h-4 flex-shrink-0" /> Due: {project.deadline}</span>
               {!isVendor && (
-                <span className="flex items-center gap-1"><IndianRupee className="w-4 h-4" /> Budget: ₹{project.budget.toLocaleString()}</span>
+                <span className="flex items-center gap-1 whitespace-nowrap"><IndianRupee className="w-4 h-4 flex-shrink-0" /> Budget: ₹{project.budget.toLocaleString()}</span>
               )}
             </div>
           </div>
         </div>
-        <div className="flex gap-3">
-          {canEditProject && activeTab !== 'timeline' && (
+        <div className="flex gap-2 md:gap-3 w-full md:w-auto flex-shrink-0">
+          {isAdmin && (
             <button 
-              onClick={() => {
-                if(activeTab === 'plan') { 
-                  const today = new Date().toISOString().split('T')[0];
-                  setEditingTask({ 
-                    startDate: today,
-                    dueDate: today
-                  }); 
-                  setIsTaskModalOpen(true); 
-                  setShowTaskErrors(false); 
-                }
-                if(activeTab === 'documents') { setIsDocModalOpen(true); setSelectedFile(null); }
-                if(activeTab === 'financials') { openTransactionModal(); }
-                if(activeTab === 'team') { setIsMemberModalOpen(true); setSelectedMemberId(''); }
-              }}
-              className="flex items-center gap-2 px-4 py-2 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors text-sm font-medium"
+              onClick={openDeleteProjectConfirm}
+              className="hidden md:flex items-center gap-2 px-3 md:px-4 py-2 bg-red-100 text-red-700 rounded-lg hover:bg-red-200 transition-colors text-sm md:text-xs font-medium whitespace-nowrap"
+              title="Delete Project"
             >
-              <Plus className="w-4 h-4" />
-              {activeTab === 'plan' ? 'Add Task' : 
-               activeTab === 'documents' ? 'Add Document' : 
-               activeTab === 'financials' ? 'Add Transaction' :
-               activeTab === 'team' ? 'Add Member' : 'Add Item'}
+              <Trash2 className="w-5 h-5 flex-shrink-0" />
+              <span className="hidden md:inline">Delete</span>
             </button>
+          )}
+          {canEditProject && activeTab !== 'timeline' && (
+            <>
+              {/* Desktop Button */}
+              <button 
+                onClick={() => {
+                  if(activeTab === 'plan') { 
+                    const today = new Date().toISOString().split('T')[0];
+                    setEditingTask({ 
+                      startDate: today,
+                      dueDate: today
+                    }); 
+                    setIsTaskModalOpen(true); 
+                    setShowTaskErrors(false); 
+                  }
+                  if(activeTab === 'documents') { setIsDocModalOpen(true); setSelectedFiles([]); }
+                  if(activeTab === 'financials') { openTransactionModal(); }
+                  if(activeTab === 'team') { setIsMemberModalOpen(true); setSelectedMemberId(''); }
+                  if(activeTab === 'discovery') { setIsMeetingModalOpen(true); }
+                }}
+                className="hidden md:flex items-center gap-2 px-3 md:px-4 py-2 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors text-sm md:text-xs font-medium whitespace-nowrap flex-1 md:flex-none justify-center md:justify-start"
+              >
+                <Plus className="w-4 h-4 flex-shrink-0" />
+                <span>
+                  {activeTab === 'plan' ? 'Add Task' : 
+                   activeTab === 'documents' ? 'Add Document' : 
+                   activeTab === 'financials' ? 'Add Transaction' :
+                   activeTab === 'team' ? 'Add Member' :
+                   activeTab === 'discovery' ? 'Add Meeting' : 'Add Item'}
+                </span>
+              </button>
+
+              {/* Mobile Floating Action Button */}
+              <button 
+                onClick={() => {
+                  if(activeTab === 'plan') { 
+                    const today = new Date().toISOString().split('T')[0];
+                    setEditingTask({ 
+                      startDate: today,
+                      dueDate: today
+                    }); 
+                    setIsTaskModalOpen(true); 
+                    setShowTaskErrors(false); 
+                  }
+                  if(activeTab === 'documents') { setIsDocModalOpen(true); setSelectedFiles([]); }
+                  if(activeTab === 'financials') { openTransactionModal(); }
+                  if(activeTab === 'team') { setIsMemberModalOpen(true); setSelectedMemberId(''); }
+                  if(activeTab === 'discovery') { setIsMeetingModalOpen(true); }
+                }}
+                className="md:hidden fixed bottom-6 right-6 z-40 w-14 h-14 bg-gray-900 text-white rounded-full shadow-xl flex items-center justify-center hover:bg-gray-800 transition-transform active:scale-95"
+                aria-label="Add Item"
+              >
+                <Plus className="w-6 h-6" />
+              </button>
+            </>
           )}
           {/* Allow non-admins to upload docs too if active tab is docs */}
           {!canEditProject && activeTab === 'documents' && canUploadDocs && (
              <button 
-              onClick={() => { setIsDocModalOpen(true); setSelectedFile(null); }}
-              className="flex items-center gap-2 px-4 py-2 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors text-sm font-medium"
+              onClick={() => { setIsDocModalOpen(true); setSelectedFiles([]); }}
+              className="flex items-center gap-2 px-3 md:px-4 py-2 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors text-sm md:text-xs font-medium whitespace-nowrap flex-1 md:flex-none justify-center md:justify-start"
             >
-              <Upload className="w-4 h-4" /> Upload
+              <Upload className="w-4 h-4 flex-shrink-0" /> 
+              <span className="hidden md:inline">Upload</span>
             </button>
           )}
         </div>
       </div>
 
-      {/* Navigation Tabs */}
-      <div className="px-6 border-b border-gray-200 bg-white">
-        <div className="flex gap-8">
+      {/* Navigation Tabs - Mobile Optimized */}
+      <div ref={tabsContainerRef} className="border-b border-gray-200 bg-gray-50 overflow-x-auto md:overflow-hidden [&::-webkit-scrollbar]:h-2 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-gray-300 [&::-webkit-scrollbar-thumb]:rounded [&:hover::-webkit-scrollbar-thumb]:bg-gray-400 hover:[scrollbar-color:rgb(107_114_128)_transparent]" style={{scrollbarWidth: 'thin', scrollbarColor: 'transparent transparent'}}>
+        <div className="flex gap-1 md:gap-6 px-4 md:px-6 min-w-max md:min-w-0 md:w-full md:justify-center">
           {[
             { id: 'discovery', label: '1. Discovery', icon: FileText, hidden: isVendor },
             { id: 'plan', label: '2. Plan', icon: Layout },
@@ -1626,14 +2852,15 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
              return (
               <button
                 key={tab.id}
+                data-tab-id={tab.id}
                 onClick={() => setActiveTab(tab.id as any)}
-                className={`flex items-center gap-2 py-4 text-sm font-medium border-b-2 transition-all ${
+                className={`flex items-center gap-2 md:gap-2 py-3 md:py-4 px-3 md:px-5 text-base md:text-sm font-medium border-b-2 transition-all whitespace-nowrap flex-shrink-0 md:flex-shrink ${
                   activeTab === tab.id 
                     ? 'border-gray-900 text-gray-900' 
                     : 'border-transparent text-gray-500 hover:text-gray-700'
                 }`}
               >
-                <tab.icon className="w-4 h-4" />
+                <tab.icon className="w-4 h-4 md:w-4 md:h-4 flex-shrink-0" />
                 {tab.label}
               </button>
              );
@@ -1642,37 +2869,211 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       </div>
 
       {/* Content Area */}
-      <div className="flex-1 overflow-y-auto p-6 bg-gray-50">
+      <div 
+        className="flex-1 overflow-y-auto bg-gray-50"
+        onTouchStart={onTouchStart}
+        onTouchMove={onTouchMove}
+        onTouchEnd={onTouchEnd}
+      >
         
         {/* PHASE 1: DISCOVERY & MEETINGS */}
         {activeTab === 'discovery' && !isVendor && (
-          <div className="max-w-5xl mx-auto space-y-6">
+          <div className="max-w-5xl mx-auto space-y-6 p-4 md:p-6">
 
-            <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm">
-              <h3 className="text-lg font-bold text-gray-800 mb-4">Phase 1: Project Discovery</h3>
-              <p className="text-sm text-gray-500 mb-6">Track all client meetings, site visits, and initial requirements gathering here.</p>
-              
-              <div className="space-y-4">
+            <div className="bg-white p-4 md:p-6 rounded-xl border border-gray-200 shadow-sm">
+              <div className="flex flex-col md:flex-row items-start md:items-center justify-between mb-4 gap-3 md:gap-0">
+                <div className="w-full">
+                  <h3 className="text-lg md:text-xl font-bold text-gray-800">Phase 1: Project Discovery</h3>
+                  <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 sm:gap-4 mt-2">
+                    <div className="flex items-center gap-2 text-sm text-gray-600">
+                      <Calendar className="w-4 h-4 flex-shrink-0" />
+                      <span className="font-medium">{realTimeMeetings.length} Meeting{realTimeMeetings.length !== 1 ? 's' : ''} Held</span>
+                    </div>
+                    {realTimeMeetings.length > 0 && (
+                      <div className="flex items-center gap-2 text-sm text-gray-500">
+                        <Clock className="w-3.5 h-3.5 flex-shrink-0" />
+                        <span className="whitespace-nowrap">Latest: {new Date(realTimeMeetings[0]?.date || '').toLocaleDateString('en-IN')}</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-3 md:space-y-4">
                 {realTimeMeetings.length === 0 ? (
-                   <div className="text-center py-10 border-2 border-dashed border-gray-100 rounded-lg">
-                      <p className="text-gray-400">No meetings recorded yet.</p>
+                   <div className="text-center py-8 md:py-10 border-2 border-dashed border-gray-100 rounded-lg">
+                      <p className="text-sm text-gray-400">No meetings recorded yet.</p>
                    </div>
                 ) : realTimeMeetings.map(meeting => (
-                  <div key={meeting.id} className="flex gap-4 p-4 border border-gray-100 rounded-lg hover:shadow-md transition-shadow bg-white">
-                    <div className="flex-shrink-0 w-16 text-center pt-1">
-                      <div className="text-xs font-bold text-gray-500 uppercase">{new Date(meeting.date).toLocaleString('default', { month: 'short' })}</div>
-                      <div className="text-xl font-bold text-gray-900">{new Date(meeting.date).getDate()}</div>
-                    </div>
-                    <div className="flex-1">
-                      <div className="flex justify-between items-start">
-                         <h4 className="font-bold text-gray-800">{meeting.title}</h4>
-                         <span className="bg-purple-100 text-purple-700 text-xs px-2 py-0.5 rounded-full">{meeting.type}</span>
+                  <div key={meeting.id} className="border border-gray-100 rounded-lg hover:shadow-md transition-shadow bg-white overflow-hidden">
+                    <div className="flex flex-col sm:flex-row gap-3 sm:gap-4 p-3 md:p-5">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex flex-col sm:flex-row sm:justify-between sm:items-start gap-2">
+                           <div className="flex items-center gap-2 flex-wrap">
+                             <h4 className="font-bold text-lg md:text-base text-gray-800 break-words">{meeting.title}</h4>
+                             <span className="bg-gray-100 text-gray-600 text-sm md:text-xs px-2 py-1 rounded whitespace-nowrap">{new Date(meeting.date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: '2-digit' })}</span>
+                           </div>
+                           <div className="flex items-center gap-2 flex-shrink-0">
+                             <span className="bg-purple-100 text-purple-700 text-sm md:text-xs px-2 py-0.5 rounded-full whitespace-nowrap">{meeting.type}</span>
+                             {canEditProject && (
+                               <>
+                                 <button
+                                   onClick={() => {
+                                     setEditingMeeting(meeting);
+                                     setIsMeetingModalOpen(true);
+                                   }}
+                                   className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded transition-colors flex-shrink-0"
+                                   title="Edit meeting"
+                                 >
+                                   <Edit3 className="w-4 h-4" />
+                                 </button>
+                                 <button
+                                   onClick={() => {
+                                     setDeletingMeeting(meeting);
+                                     setIsMeetingDeleteConfirmOpen(true);
+                                   }}
+                                   className="p-2 text-gray-400 hover:text-red-600 hover:bg-gray-100 rounded transition-colors flex-shrink-0"
+                                   title="Delete meeting"
+                                 >
+                                   <Trash2 className="w-4 h-4" />
+                                 </button>
+                               </>
+                             )}
+                           </div>
+                        </div>
+                        <p className="text-base md:text-sm text-gray-600 mt-2 whitespace-pre-wrap bg-gray-50 p-3 md:p-4 rounded overflow-hidden">{meeting.notes}</p>
+                        <div className="mt-3 md:mt-4 flex gap-2 flex-wrap">
+                          {(meeting.attendees || []).map((attendeeId) => {
+                            const attendee = users.find(u => u.id === attendeeId) || projectTeam.find(u => u.id === attendeeId);
+                            return (
+                              <span key={attendeeId} className="text-sm md:text-xs bg-blue-100 text-blue-700 px-3 py-1 rounded-full font-medium whitespace-nowrap">
+                                {attendee?.name || 'Unknown'}
+                              </span>
+                            );
+                          })}
+                        </div>
                       </div>
-                      <p className="text-sm text-gray-600 mt-2 whitespace-pre-wrap bg-gray-50 p-3 rounded">{meeting.notes}</p>
-                      <div className="mt-3 flex gap-2">
-                        {(meeting.attendees || []).map((att, i) => (
-                          <span key={i} className="text-xs bg-gray-100 text-gray-600 px-2 py-1 rounded-full">{att}</span>
-                        ))}
+                    </div>
+
+                    {/* Meeting Comments Section */}
+                    <div className="border-t border-gray-100 p-3 md:p-4 bg-gray-50">
+                      <button 
+                        onClick={() => {
+                          setExpandedMeetings(prev => {
+                            const next = new Set(prev);
+                            if (next.has(meeting.id)) {
+                              next.delete(meeting.id);
+                            } else {
+                              next.add(meeting.id);
+                            }
+                            return next;
+                          });
+                        }}
+                        className="flex items-center gap-2 w-full hover:bg-gray-100 p-2 rounded transition-colors"
+                      >
+                        <span className={`transform transition-transform ${expandedMeetings.has(meeting.id) ? 'rotate-90' : ''}`}>
+                          <ChevronRight className="w-4 h-4 text-gray-600" />
+                        </span>
+                        <h5 className="text-sm md:text-xs font-bold text-gray-700">Comments ({(meetingComments[meeting.id] || []).length})</h5>
+                      </button>
+                      
+                      {/* Existing Comments Section - Collapsible */}
+                      {expandedMeetings.has(meeting.id) && (
+                        <div className="mt-2 md:mt-3">
+                      
+      {/* Existing Comments */}
+                          <div className="space-y-3 mb-3 max-h-60 overflow-y-auto">
+                        {(meetingComments[meeting.id] || []).map(comment => {
+                          // Priority order for finding author name:
+                          // 1. Use stored userName if it's valid and not "Unknown User"
+                          // 2. Try to find in current user
+                          // 3. Try to find in users array
+                          // 4. Try to find in projectTeam
+                          // 5. Fallback to Unknown User
+                          let authorName = 'Unknown User';
+                          
+                          // Step 1: Check stored userName
+                          if (comment.userName && comment.userName.trim() && comment.userName !== 'Unknown User') {
+                            authorName = comment.userName;
+                          }
+                          // Step 2: If still Unknown User, check if it's current user
+                          else if (comment.userId === user.id && user.name) {
+                            authorName = user.name;
+                          }
+                          // Step 3: Try to find in users array
+                          else if (comment.userId) {
+                            const commentAuthor = users.find(u => u.id === comment.userId);
+                            if (commentAuthor?.name) {
+                              authorName = commentAuthor.name;
+                            }
+                            // Step 4: Try to find in projectTeam as fallback
+                            else {
+                              const teamMember = projectTeam.find(u => u.id === comment.userId);
+                              if (teamMember?.name) {
+                                authorName = teamMember.name;
+                              }
+                            }
+                          }
+                          
+                          const isDone = comment.status === 'done';
+                          return (
+                            <div key={comment.id} className={`p-3 ${isDone ? 'opacity-60' : ''}`}>
+                              <div className="flex justify-between items-start gap-2">
+                                <div className="flex-1">
+                                  <p className={`text-sm md:text-xs font-semibold text-gray-800 ${isDone ? 'line-through' : ''}`}>{authorName}</p>
+                                  <p className={`text-sm md:text-xs text-gray-700 mt-1 ${isDone ? 'line-through text-gray-500' : ''}`}>{comment.text}</p>
+                                </div>
+                                {(user.id === comment.userId || canEditProject) && (
+                                  <button
+                                    onClick={() => {
+                                      // Toggle done status
+                                      const newStatus = isDone ? ('pending' as const) : ('done' as const);
+                                      const updatedComment = { ...comment, status: newStatus };
+                                      // Update locally
+                                      setMeetingComments(prev => ({
+                                        ...prev,
+                                        [meeting.id]: (prev[meeting.id] || []).map(c => c.id === comment.id ? updatedComment : c)
+                                      }));
+                                    }}
+                                    className={`p-1 flex-shrink-0 rounded transition-colors ${isDone ? 'text-green-600 hover:text-green-700 bg-green-50' : 'text-gray-400 hover:text-green-600'}`}
+                                    title={isDone ? 'Mark as pending' : 'Mark as done'}
+                                  >
+                                    <Check className="w-4 h-4" />
+                                  </button>
+                                )}
+                              </div>
+                              <p className={`text-sm md:text-xs text-gray-500 mt-2 ${isDone ? 'line-through' : ''}`}>{formatRelativeTime(comment.timestamp)}</p>
+                            </div>
+                          );
+                        })}
+                        </div>
+                        </div>
+                      )}
+
+                      {/* Comment Input - Always Visible */}
+                      <div className="flex gap-1 mt-2 md:mt-3">
+                        <input
+                          type="text"
+                          placeholder="Add a comment..."
+                          value={newMeetingComment[meeting.id] || ''}
+                          onChange={(e) => setNewMeetingComment(prev => ({
+                            ...prev,
+                            [meeting.id]: e.target.value
+                          }))}
+                          onKeyPress={(e) => {
+                            if (e.key === 'Enter') {
+                              handleAddMeetingComment(meeting.id);
+                            }
+                          }}
+                          className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none"
+                        />
+                        <button
+                          onClick={() => handleAddMeetingComment(meeting.id)}
+                          className="p-2 text-gray-500 hover:text-purple-600 transition-colors"
+                          title="Post comment"
+                        >
+                          <Send className="w-4 h-4" />
+                        </button>
                       </div>
                     </div>
                   </div>
@@ -1684,9 +3085,9 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
 
         {/* PHASE 2: PLANNING (GANTT, KANBAN, LIST) */}
         {activeTab === 'plan' && (
-          <div className="space-y-6 h-full flex flex-col">
+          <div className="space-y-6 h-full flex flex-col p-4 md:p-6">
             {/* ... (View Switcher and Views code - no structural changes, just ensure Category order is used from props/constants correctly) ... */}
-             <div className="flex bg-white rounded-lg border border-gray-200 p-1 w-fit shadow-sm">
+             <div className="flex bg-white rounded-lg border border-gray-200 p-1.5 w-fit shadow-sm">
               {[
                 { id: 'list', label: 'List View', icon: ListChecks },
                 { id: 'kanban', label: 'Priority Board', icon: Layers },
@@ -1695,10 +3096,10 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                 <button
                   key={view.id}
                   onClick={() => setPlanView(view.id as any)}
-                  className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-medium transition-all
+                  className={`flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all
                     ${planView === view.id ? 'bg-gray-900 text-white shadow-sm' : 'text-gray-500 hover:text-gray-900'}`}
                 >
-                  <view.icon className="w-3.5 h-3.5" />
+                  <view.icon className="w-4 h-4" />
                   {view.label}
                 </button>
               ))}
@@ -1721,9 +3122,9 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
             {planView === 'gantt' && ganttConfig && (
               <div className="bg-white rounded-xl shadow-sm overflow-hidden flex-1 flex flex-col">
                  {/* ... Gantt SVG Logic ... */}
-                 <div className="p-4 bg-gray-50 flex justify-between items-center">
-                   <h3 className="font-bold text-gray-800">Timeline & Dependencies</h3>
-                   <div className="flex items-center gap-6 text-xs text-gray-500">
+                 <div className="p-4 md:p-5 bg-gray-50 flex justify-between items-center">
+                   <h3 className="font-bold text-base md:text-lg text-gray-800">Timeline & Dependencies</h3>
+                   <div className="flex items-center gap-6 text-sm md:text-xs text-gray-500">
                      <div className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-blue-500"></span> Task</div>
                      <div className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-green-500"></span> Done</div>
                      <div className="flex items-center gap-1"><span className="w-3 h-0.5 bg-gray-300"></span> Dependency</div>
@@ -1732,159 +3133,165 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                  </div>
                  
                  <div className="flex-1 overflow-auto relative">
-                   <div className="min-w-[1200px] p-6 relative">
-                      {/* Grid Background */}
-                      <div className="absolute inset-0 pointer-events-none pl-[20%] pt-[40px] pr-6 pb-6 flex">
-                        {Array.from({ length: 12 }).map((_, i) => (
-                          <div key={i} className="flex-1 border-r border-gray-50 h-full"></div>
-                        ))}
-                      </div>
+                   {(() => {
+                     // Calculate all dates for the Gantt chart
+                     const dates: Date[] = [];
+                     const current = new Date(ganttConfig.minDate);
+                     const end = new Date(ganttConfig.maxDate);
+                     
+                     while (current <= end) {
+                       dates.push(new Date(current));
+                       current.setDate(current.getDate() + 1);
+                     }
+                     
+                     const DAY_WIDTH = 40; // Fixed width per day in pixels
+                     const TASK_COLUMN_WIDTH = 250; // Fixed width for task details column
+                     const totalTimelineWidth = dates.length * DAY_WIDTH;
+                     const totalWidth = TASK_COLUMN_WIDTH + totalTimelineWidth;
+                     
+                     // Group months for header
+                     const months: { label: string; startIdx: number; dayCount: number }[] = [];
+                     let currentMonth: string | null = null;
+                     let monthStart = 0;
+                     
+                     dates.forEach((date, idx) => {
+                       const month = date.toLocaleDateString('en-IN', { month: 'short', year: '2-digit' });
+                       if (month !== currentMonth) {
+                         if (currentMonth) {
+                           months.push({ label: currentMonth, startIdx: monthStart, dayCount: idx - monthStart });
+                         }
+                         currentMonth = month;
+                         monthStart = idx;
+                       }
+                     });
+                     if (currentMonth) {
+                       months.push({ label: currentMonth, startIdx: monthStart, dayCount: dates.length - monthStart });
+                     }
+                     
+                     return (
+                       <div style={{ minWidth: `${totalWidth}px` }} className="p-6 relative">
+                         {/* Grid Background */}
+                         <div className="absolute inset-0 pointer-events-none pt-[60px] pb-6 flex" style={{ paddingLeft: `${TASK_COLUMN_WIDTH}px`, paddingRight: '24px' }}>
+                           {dates.map((_, i) => (
+                             <div key={i} style={{ width: `${DAY_WIDTH}px`, flexShrink: 0 }} className="border-r border-gray-100 h-full"></div>
+                           ))}
+                         </div>
 
-                      {/* Header */}
-                      <div className="sticky top-0 bg-white z-20">
-                        <div className="flex pb-1 mb-2">
-                          <div className="w-[20%] font-semibold text-sm text-gray-700 pl-2">Task Details</div>
-                          <div className="w-[80%] px-2 relative">
-                             {(() => {
-                               const dates = [];
-                               const current = new Date(ganttConfig.minDate);
-                               const end = new Date(ganttConfig.maxDate);
-                               let lastMonth = null;
-                               
-                               while (current <= end) {
-                                 dates.push(new Date(current));
-                                 current.setDate(current.getDate() + 1);
-                               }
-                               
-                               const totalDays = dates.length;
-                               const dayWidth = (100 / totalDays);
-                               
-                               // Group months
-                               const months = [];
-                               let currentMonth = null;
-                               let monthStart = 0;
-                               
-                               dates.forEach((date, idx) => {
-                                 const month = date.toLocaleDateString('en-IN', { month: 'short' });
-                                 if (month !== currentMonth) {
-                                   if (currentMonth) {
-                                     months.push({ label: currentMonth, startIdx: monthStart, width: (idx - monthStart) * dayWidth });
-                                   }
-                                   currentMonth = month;
-                                   monthStart = idx;
-                                 }
-                               });
-                               if (currentMonth) {
-                                 months.push({ label: currentMonth, startIdx: monthStart, width: (dates.length - monthStart) * dayWidth });
-                               }
-                               
-                               return (
-                                 <div className="relative">
-                                   {/* Month row */}
-                                   <div className="flex w-full text-[9px] font-bold text-gray-600 mb-1 h-4">
-                                     {months.map((m, idx) => (
-                                       <div key={idx} style={{ marginLeft: `${m.startIdx * dayWidth}%`, width: `${m.width}%` }} className="text-[9px] text-gray-600">
-                                         {m.label}
-                                       </div>
-                                     ))}
-                                   </div>
-                                   {/* Date row */}
-                                   <div className="flex w-full text-[10px] font-semibold text-gray-500">
-                                     {dates.map((d, idx) => (
-                                       <div key={idx} style={{ width: `${dayWidth}%` }} className="text-center text-[10px] leading-none py-1">
-                                         <div>{d.getDate()}</div>
-                                         <div className="text-[8px] text-gray-400">{d.toLocaleDateString('en-IN', { month: 'short' }).split('-')[1]}</div>
-                                       </div>
-                                     ))}
-                                   </div>
-                                 </div>
-                               );
-                             })()}
-                          </div>
-                        </div>
-                        <div className="flex pb-2 border-b border-gray-100">
-                          <div className="w-[20%] pl-2"></div>
-                        </div>
-                      </div>
-
-                      {/* Timeline Area */}
-                      <div className="relative mt-2">
-                        {/* Dependency Lines Layer */}
-                        <svg 
-                            className="absolute top-0 right-0 w-[80%] h-full pointer-events-none z-0"
-                            viewBox={`0 0 100 ${ganttTasksWithPos.length * ROW_HEIGHT}`}
-                            preserveAspectRatio="none"
-                        >
-                            {ganttTasksWithPos.flatMap(task => 
-                                task.dependencies.map(depId => {
-                                    const parent = ganttTasksWithPos.find(t => t.id === depId);
-                                    if (!parent) return null;
-                                    
-                                    const x1 = parent.left + parent.width; 
-                                    const y1 = (parent.index * ROW_HEIGHT) + (ROW_HEIGHT / 2);
-                                    const x2 = task.left; 
-                                    const y2 = (task.index * ROW_HEIGHT) + (ROW_HEIGHT / 2);
-                                    const isConflict = x1 > x2;
-
-                                    const pathD = `M ${x1} ${y1} C ${x1 + 2} ${y1}, ${x2 - 2} ${y2}, ${x2} ${y2}`;
-
-                                    return (
-                                        <g key={`${parent.id}-${task.id}`}>
-                                          <path 
-                                              d={pathD}
-                                              stroke={isConflict ? "#ef4444" : "#9CA3AF"} 
-                                              strokeWidth={isConflict ? "2" : "1.5"}
-                                              fill="none"
-                                              vectorEffect="non-scaling-stroke"
-                                              className={isConflict ? "opacity-80" : "opacity-30"}
-                                              strokeDasharray={isConflict ? "4 2" : "none"}
-                                          />
-                                          <circle cx={x2} cy={y2} r="1" fill={isConflict ? "#ef4444" : "#9CA3AF"} vectorEffect="non-scaling-stroke"/>
-                                        </g>
-                                    );
-                                })
-                            )}
-                        </svg>
-
-                        {/* Rows */}
-                        <div className="relative z-10 space-y-0">
-                          {ganttTasksWithPos.map((task, idx) => {
-                             const isNewCategory = idx === 0 || ganttTasksWithPos[idx - 1].category !== task.category;
-                             const progress = calculateTaskProgress(task);
-                             const frozen = isTaskFrozen(task.status);
-                             
-                             return (
-                             <React.Fragment key={task.id}>
-                               {isNewCategory && (
-                                 <div className="bg-gray-100/50 px-2 py-1 text-xs font-bold text-gray-500 uppercase tracking-wider sticky left-0 w-full mb-1 mt-2">
-                                   {task.category}
-                                 </div>
-                               )}
-                               <div 
-                                 className="flex items-center group hover:bg-gray-50/50 rounded min-h-[48px]"
-                               >
-                                 <div className="w-[20%] pr-4 pl-2 flex flex-col justify-center border-r border-transparent group-hover:border-gray-100">
+                         {/* Header */}
+                         <div className="sticky top-0 bg-white z-20">
+                           <div className="flex pb-1 mb-2">
+                             <div style={{ width: `${TASK_COLUMN_WIDTH}px`, flexShrink: 0 }} className="font-semibold text-sm text-gray-700 pl-2">Task Details</div>
+                             <div style={{ width: `${totalTimelineWidth}px` }} className="relative">
+                               {/* Month row */}
+                               <div className="flex w-full text-xs font-bold text-gray-600 mb-2 h-5 border-b border-gray-200">
+                                 {months.map((m, idx) => (
                                    <div 
-                                     onClick={() => handleOpenTask(task)}
-                                     className="text-sm font-medium text-gray-800 truncate cursor-pointer hover:text-blue-600 flex items-center gap-2"
+                                     key={idx} 
+                                     style={{ width: `${m.dayCount * DAY_WIDTH}px`, flexShrink: 0 }} 
+                                     className="text-left px-2 bg-gray-50 border-r border-gray-200"
                                    >
-                                     {task.title}
-                                     {isTaskBlocked(task) && <Lock className="w-3 h-3 text-red-400" />}
-                                     {frozen && <Ban className="w-3 h-3 text-red-600" />}
+                                     {m.label}
                                    </div>
-                                   <div className="flex justify-between items-center text-[10px] text-gray-400 mt-1">
-                                     <span>{getAssigneeName(task.assigneeId)}</span>
-                                     <span className="font-mono">{progress}%</span>
+                                 ))}
+                               </div>
+                               {/* Date row */}
+                               <div className="flex w-full">
+                                 {dates.map((d, idx) => (
+                                   <div 
+                                     key={idx} 
+                                     style={{ width: `${DAY_WIDTH}px`, flexShrink: 0 }} 
+                                     className={`text-center text-xs py-1 ${d.getDay() === 0 || d.getDay() === 6 ? 'bg-red-50' : ''} ${d.getDate() === 1 ? 'border-l-2 border-gray-300' : ''}`}
+                                   >
+                                     <div className={`font-semibold ${d.getDay() === 0 || d.getDay() === 6 ? 'text-red-400' : 'text-gray-600'}`}>{d.getDate()}</div>
+                                     <div className="text-[10px] text-gray-400">{d.toLocaleDateString('en-IN', { weekday: 'short' }).substring(0, 2)}</div>
                                    </div>
-                                 </div>
-                                 <div className="w-[80%] relative h-6 rounded-md">
-                                    <div 
-                                      className={`absolute h-full rounded shadow-sm flex items-center px-2 cursor-pointer
-                                        ${task.status === 'Done' ? 'bg-green-500 opacity-80' : 'bg-blue-500 opacity-80'}
-                                        ${task.status === 'Review' ? 'bg-purple-500 opacity-80' : ''}
-                                        ${task.status === 'Overdue' ? 'bg-red-500 opacity-80' : ''}
-                                        ${isTaskBlocked(task) ? 'bg-gray-400 opacity-50' : ''}
-                                        ${frozen ? 'bg-gray-800 opacity-70' : ''}
+                                 ))}
+                               </div>
+                             </div>
+                           </div>
+                           <div className="flex pb-2 border-b border-gray-100">
+                             <div style={{ width: `${TASK_COLUMN_WIDTH}px` }} className="pl-2"></div>
+                           </div>
+                         </div>
+
+                         {/* Timeline Area */}
+                         <div className="relative mt-2">
+                           {/* Dependency Lines Layer */}
+                           <svg 
+                               className="absolute top-0 pointer-events-none z-0"
+                               style={{ left: `${TASK_COLUMN_WIDTH}px`, width: `${totalTimelineWidth}px` }}
+                               viewBox={`0 0 ${totalTimelineWidth} ${ganttTasksWithPos.length * ROW_HEIGHT}`}
+                               preserveAspectRatio="none"
+                           >
+                               {ganttTasksWithPos.flatMap(task => 
+                                   (task.dependencies || []).map(depId => {
+                                       const parent = ganttTasksWithPos.find(t => t.id === depId);
+                                       if (!parent) return null;
+                                       
+                                       // Convert percentage positions to pixel positions
+                                       const x1 = (parent.left + parent.width) * totalTimelineWidth / 100; 
+                                       const y1 = (parent.index * ROW_HEIGHT) + (ROW_HEIGHT / 2);
+                                       const x2 = task.left * totalTimelineWidth / 100; 
+                                       const y2 = (task.index * ROW_HEIGHT) + (ROW_HEIGHT / 2);
+                                       const isConflict = x1 > x2;
+
+                                       const pathD = `M ${x1} ${y1} C ${x1 + 20} ${y1}, ${x2 - 20} ${y2}, ${x2} ${y2}`;
+
+                                       return (
+                                           <g key={`${parent.id}-${task.id}`}>
+                                             <path 
+                                                 d={pathD}
+                                                 stroke={isConflict ? "#ef4444" : "#9CA3AF"} 
+                                                 strokeWidth={isConflict ? "2" : "1.5"}
+                                                 fill="none"
+                                                 className={isConflict ? "opacity-80" : "opacity-30"}
+                                                 strokeDasharray={isConflict ? "4 2" : "none"}
+                                             />
+                                             <circle cx={x2} cy={y2} r="3" fill={isConflict ? "#ef4444" : "#9CA3AF"}/>
+                                           </g>
+                                       );
+                                   })
+                               )}
+                           </svg>
+
+                           {/* Rows */}
+                           <div className="relative z-10 space-y-0">
+                             {ganttTasksWithPos.map((task, idx) => {
+                                const isNewCategory = idx === 0 || ganttTasksWithPos[idx - 1].category !== task.category;
+                                const progress = calculateTaskProgress(task);
+                                const frozen = isTaskFrozen(task.status);
+                                
+                                return (
+                                <React.Fragment key={task.id}>
+                                  {isNewCategory && (
+                                    <div className="bg-gray-100/50 px-2 py-1 text-xs font-bold text-gray-500 uppercase tracking-wider sticky left-0 mb-1 mt-2" style={{ width: `${totalWidth}px` }}>
+                                      {task.category}
+                                    </div>
+                                  )}
+                                  <div 
+                                    className="flex items-center group hover:bg-gray-50/50 rounded min-h-[56px]"
+                                  >
+                                    <div style={{ width: `${TASK_COLUMN_WIDTH}px`, flexShrink: 0 }} className="pr-4 pl-2 flex flex-col justify-center border-r border-gray-100">
+                                      <div 
+                                        onClick={() => handleOpenTask(task)}
+                                        className="text-base font-medium text-gray-800 truncate cursor-pointer hover:text-blue-600 flex items-center gap-1"
+                                      >
+                                        {task.title}
+                                        {isTaskBlocked(task) && <Lock className="w-3 h-3 text-red-400" />}
+                                        {frozen && <Ban className="w-3 h-3 text-red-600" />}
+                                      </div>
+                                      <div className="flex justify-between items-center text-xs text-gray-400 mt-1">
+                                        <span>{getAssigneeName(task.assigneeId)}</span>
+                                        <span className="font-mono">{progress}%</span>
+                                      </div>
+                                    </div>
+                                    <div style={{ width: `${totalTimelineWidth}px` }} className="relative h-6 rounded-md">
+                                       <div 
+                                         className={`absolute h-full rounded shadow-sm flex items-center px-2 cursor-pointer
+                                           ${task.status === 'Done' ? 'bg-green-500 opacity-80' : 'bg-blue-500 opacity-80'}
+                                           ${task.status === 'Review' ? 'bg-purple-500 opacity-80' : ''}
+                                           ${isTaskBlocked(task) ? 'bg-gray-400 opacity-50' : ''}
+                                           ${frozen ? 'bg-gray-800 opacity-70' : ''}
                                         hover:opacity-100 transition-opacity z-20
                                       `}
                                       {...{ style: { left: `${task.left}%`, width: `${task.width}%` } }}
@@ -1893,6 +3300,14 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                       title="Click to edit task"
                                       onClick={() => handleOpenTask(task)}
                                     >
+                                      {/* Overdue portion (red overlay) */}
+                                      {task.status === TaskStatus.OVERDUE && (
+                                        <div 
+                                          className="absolute top-0 bottom-0 bg-red-500 opacity-80 rounded"
+                                          style={{ width: '100%' }}
+                                          aria-label="Overdue indicator"
+                                        ></div>
+                                      )}
                                       {/* Progress overlay in bar */}
                                       <div 
                                         className="absolute left-0 top-0 bottom-0 bg-white/20" 
@@ -1907,12 +3322,14 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                            )})}
                         </div>
                       </div>
-                   </div>
+                     </div>
+                   );
+                   })()}
                  </div>
               </div>
             )}
 
-            {/* LIST VIEW (Legacy Grid) */}
+            {/* LIST VIEW */}
             {planView === 'list' && (
               <div className="space-y-8">
                 {/* Sort groups by defined Category Order */}
@@ -1926,7 +3343,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                 .sort((a, b) => getCategorySortIndex(a[0]) - getCategorySortIndex(b[0]))
                 .map(([category, tasks]: [string, Task[]]) => (
                   <div key={category}>
-                    <h3 className="text-sm font-bold text-gray-500 uppercase tracking-wide mb-4 pl-1 flex items-center gap-2">
+                    <h3 className="text-base font-bold text-gray-500 uppercase tracking-wide mb-4 pl-1 flex items-center gap-1">
                        <Tag className="w-4 h-4" /> {category}
                     </h3>
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -1937,13 +3354,13 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                         const isMyTask = user.id === task.assigneeId;
 
                         return (
-                        <div key={task.id} className={`bg-white p-5 rounded-xl border border-gray-200 shadow-sm hover:shadow-md transition-all ${blocked || frozen ? 'opacity-75 bg-gray-50' : ''}`}>
+                        <div key={task.id} className={`bg-white p-4 md:p-6 rounded-xl border border-gray-200 shadow-sm hover:shadow-md transition-all ${blocked || frozen ? 'opacity-75 bg-gray-50' : ''}`}>
                             <div className="flex justify-between items-start mb-3">
-                              <span className={`px-2 py-0.5 rounded text-xs font-bold uppercase
+                              <span className={`px-2 py-0.5 rounded text-sm font-bold uppercase
                                 ${task.priority === 'high' ? 'bg-red-100 text-red-600' : 'bg-blue-100 text-blue-600'}`}>
                                 {task.priority}
                               </span>
-                              <div className="flex items-center gap-2">
+                              <div className="flex items-center gap-1">
                                 {frozen ? (
                                     <span title="Frozen by Admin" className="flex items-center gap-1 text-xs text-red-600 font-bold bg-red-50 px-2 py-0.5 rounded border border-red-100">
                                         <Ban className="w-3 h-3" /> {task.status}
@@ -1974,8 +3391,8 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                             {/* Progress Bar */}
                             <div className="mt-3">
                                 <div className="flex justify-between items-center mb-1">
-                                    <span className="text-[10px] text-gray-400 font-medium">Progress</span>
-                                    <span className="text-[10px] text-gray-600 font-bold">{progress}%</span>
+                                    <span className="text-sm md:text-xs text-gray-400 font-medium">Progress</span>
+                                    <span className="text-sm md:text-xs text-gray-600 font-bold">{progress}%</span>
                                 </div>
                                 <div className="w-full bg-gray-100 rounded-full h-1.5">
                                     <div 
@@ -1985,8 +3402,8 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                 </div>
                             </div>
                             
-                            <h4 className="font-bold text-gray-800 mb-1 cursor-pointer hover:text-blue-600" onClick={() => handleOpenTask(task)}>{task.title}</h4>
-                            <p className="text-xs text-gray-500 mb-4">
+                            <h4 className="font-bold text-lg text-gray-800 mb-1 cursor-pointer hover:text-blue-600" onClick={() => handleOpenTask(task)}>{task.title}</h4>
+                            <p className="text-sm text-gray-500 mb-4">
                                 {new Date(task.startDate).toLocaleDateString('en-IN')} - {new Date(task.dueDate).toLocaleDateString('en-IN')}
                             </p>
                             
@@ -1996,16 +3413,16 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                             <div className="flex gap-2 mb-3 flex-wrap">
                               {task.status === TaskStatus.REVIEW && (
                                 <>
-                                  {task.approvals?.completion?.client?.status === 'approved' && task.approvals?.completion?.designer?.status === 'approved' && (
+                                  {task.approvals?.completion?.client?.status === 'approved' && task.approvals?.completion?.admin?.status === 'approved' && (
                                     <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded">Approved by Both</span>
                                   )}
-                                  {task.approvals?.completion?.client?.status === 'approved' && !task.approvals?.completion?.designer?.status && (
-                                    <span className="text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded">Waiting for Designer Approval</span>
+                                  {task.approvals?.completion?.client?.status === 'approved' && !task.approvals?.completion?.admin?.status && (
+                                    <span className="text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded">Waiting for Admin Approval</span>
                                   )}
-                                  {task.approvals?.completion?.designer?.status === 'approved' && !task.approvals?.completion?.client?.status && (
+                                  {task.approvals?.completion?.admin?.status === 'approved' && !task.approvals?.completion?.client?.status && (
                                     <span className="text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded">Waiting for Client Approval</span>
                                   )}
-                                  {!task.approvals?.completion?.client?.status && !task.approvals?.completion?.designer?.status && (
+                                  {!task.approvals?.completion?.client?.status && !task.approvals?.completion?.admin?.status && (
                                     <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded">Under Review</span>
                                   )}
                                   {task.approvals?.completion?.client?.status === 'rejected' && (
@@ -2016,17 +3433,83 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                   )}
                                 </>
                               )}
+                              {task.subtasks.every(st => st.isCompleted) && (
+                                <>
+                                  {task.approvals?.completion?.client?.status === 'approved' && task.approvals?.completion?.admin?.status === 'approved' && (
+                                    <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded">Approved by Both</span>
+                                  )}
+                                  {task.approvals?.completion?.client?.status === 'approved' && task.approvals?.completion?.admin?.status !== 'approved' && (
+                                    <span className="text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded">Waiting for Admin</span>
+                                  )}
+                                  {task.approvals?.completion?.admin?.status === 'approved' && task.approvals?.completion?.client?.status !== 'approved' && (
+                                    <span className="text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded">Waiting for Client</span>
+                                  )}
+                                  {!task.approvals?.completion?.client?.status && !task.approvals?.completion?.admin?.status && (
+                                    <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded">Waiting for Review</span>
+                                  )}
+                                  {task.approvals?.completion?.client?.status === 'rejected' && (
+                                    <span className="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded">Rejected by Client</span>
+                                  )}
+                                  {task.approvals?.completion?.admin?.status === 'rejected' && (
+                                    <span className="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded">Rejected by Admin</span>
+                                  )}
+                                </>
+                              )}
+                              {task.subtasks.length > 0 && !task.subtasks.every(st => st.isCompleted) && task.status === TaskStatus.DONE && (
+                                <>
+                                  {task.approvals?.completion?.client?.status === 'approved' && task.approvals?.completion?.admin?.status === 'approved' && (
+                                    <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded">Approved by Both</span>
+                                  )}
+                                  {task.approvals?.completion?.client?.status === 'approved' && task.approvals?.completion?.admin?.status !== 'approved' && (
+                                    <span className="text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded">Waiting for Admin</span>
+                                  )}
+                                  {task.approvals?.completion?.admin?.status === 'approved' && task.approvals?.completion?.client?.status !== 'approved' && (
+                                    <span className="text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded">Waiting for Client</span>
+                                  )}
+                                  {!task.approvals?.completion?.client?.status && !task.approvals?.completion?.admin?.status && (
+                                    <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded">Waiting for Review</span>
+                                  )}
+                                  {task.approvals?.completion?.client?.status === 'rejected' && (
+                                    <span className="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded">Rejected by Client</span>
+                                  )}
+                                  {task.approvals?.completion?.admin?.status === 'rejected' && (
+                                    <span className="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded">Rejected by Admin</span>
+                                  )}
+                                </>
+                              )}
+                              {task.status === TaskStatus.DONE && !task.subtasks?.length && (
+                                <>
+                                  {task.approvals?.completion?.client?.status === 'approved' && task.approvals?.completion?.admin?.status === 'approved' && (
+                                    <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded">Approved by Both</span>
+                                  )}
+                                  {task.approvals?.completion?.client?.status === 'approved' && task.approvals?.completion?.admin?.status !== 'approved' && (
+                                    <span className="text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded">Waiting for Admin</span>
+                                  )}
+                                  {task.approvals?.completion?.admin?.status === 'approved' && task.approvals?.completion?.client?.status !== 'approved' && (
+                                    <span className="text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded">Waiting for Client</span>
+                                  )}
+                                  {!task.approvals?.completion?.client?.status && !task.approvals?.completion?.admin?.status && (
+                                    <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded">Waiting for Review</span>
+                                  )}
+                                  {task.approvals?.completion?.client?.status === 'rejected' && (
+                                    <span className="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded">Rejected by Client</span>
+                                  )}
+                                  {task.approvals?.completion?.admin?.status === 'rejected' && (
+                                    <span className="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded">Rejected by Admin</span>
+                                  )}
+                                </>
+                              )}
                               {task.status === TaskStatus.OVERDUE && <span className="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded">Overdue</span>}
                             </div>
 
-                            <div className="space-y-2 mb-4 max-h-40 overflow-y-auto pr-2">
+                            <div className="space-y-2 mb-4 max-h-[80px] overflow-y-auto pr-2">
                               {task.subtasks.map(st => (
-                                <div key={st.id} className="flex items-center gap-2 text-sm text-gray-600">
+                                <div key={st.id} className="flex items-center gap-2 text-sm text-gray-600 transition-opacity" style={{opacity: (blocked || frozen || (!canEditProject && !isMyTask)) ? 0.5 : 1}}>
                                   <div 
                                     onClick={() => (canEditProject || isMyTask) && toggleSubtask(task.id, st.id)}
-                                    className={`w-4 h-4 rounded border cursor-pointer flex items-center justify-center
+                                    className={`w-4 h-4 rounded border flex items-center justify-center transition-all
                                     ${st.isCompleted ? 'bg-green-500 border-green-500' : 'border-gray-300'}
-                                    ${blocked || frozen ? 'cursor-not-allowed opacity-50' : ''}`}
+                                    ${(blocked || frozen || (!canEditProject && !isMyTask)) ? 'cursor-not-allowed opacity-75 bg-gray-100' : 'cursor-pointer hover:border-gray-400'}`}
                                   >
                                     {st.isCompleted && <CheckCircle className="w-3 h-3 text-white" />}
                                   </div>
@@ -2038,18 +3521,26 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                             {/* Action Buttons - Bottom Right */}
                             <div className="flex items-center justify-between pt-3 border-t border-gray-100">
                               <div className="flex items-center gap-2">
-                                {getAvatarComponent(task.assigneeId, 'sm')}
-                                <span className="text-xs text-gray-500">{getAssigneeName(task.assigneeId)}</span>
+                                <span className="text-sm md:text-xs text-gray-500">{getAssigneeName(task.assigneeId)}</span>
                               </div>
                               <div className="flex items-center gap-2">
                                 {user.role === Role.ADMIN && (
                                     <>
                                         <button 
                                             onClick={(e) => { e.stopPropagation(); handleSendReminder(task); }}
-                                            className="text-gray-400 hover:text-blue-600 p-1 rounded-full hover:bg-blue-50 transition-colors"
-                                            title="Send Email Reminder"
+                                            disabled={sendingEmailFor === task.id}
+                                            className={`p-1 rounded-full transition-all ${
+                                              sendingEmailFor === task.id
+                                                ? 'text-blue-500 bg-blue-50 cursor-wait'
+                                                : 'text-gray-400 hover:text-blue-600 hover:bg-blue-50'
+                                            }`}
+                                            title={sendingEmailFor === task.id ? "Sending email..." : "Send Email Reminder"}
                                         >
-                                            <Bell className="w-4 h-4" />
+                                            {sendingEmailFor === task.id ? (
+                                              <span className="inline-block animate-spin w-4 h-4">⏳</span>
+                                            ) : (
+                                              <Bell className="w-4 h-4" />
+                                            )}
                                         </button>
                                         <button
                                           onClick={(e) => {
@@ -2136,79 +3627,148 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
         {/* ... (Documents, Financials, Timeline, Team Tabs - No changes needed) ... */}
         {/* DOCUMENTS TAB */}
         {activeTab === 'documents' && (
-           <div className="max-w-6xl mx-auto space-y-6">
+           <div className="max-w-6xl mx-auto space-y-6 p-4 md:p-6">
               <div className="flex justify-between items-center mb-6">
                  <div>
-                    <h3 className="text-lg font-bold text-gray-800">Project Documents</h3>
-                    <p className="text-sm text-gray-500">Shared files, layouts, and contracts.</p>
+                    <h3 className="text-xl md:text-lg font-bold text-gray-800">Project Documents</h3>
+                    <p className="text-base md:text-sm text-gray-500">Shared files, layouts, and contracts.</p>
                  </div>
                  {/* Filter Info */}
                  {!canEditProject && (
-                    <span className="text-xs bg-gray-100 text-gray-600 px-2 py-1 rounded">Viewing as {user.role}</span>
+                    <span className="text-sm md:text-xs bg-gray-100 text-gray-600 px-2 py-1 rounded">Viewing as {user.role}</span>
                  )}
               </div>
 
               {/* Docs Grid */}
-              <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-6">
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
                  {/* Upload Button - Available to all authorized roles */}
-                 {canUploadDocs && (
+                 {canUploadDocs && user.role !== Role.VENDOR && (
                    <button 
-                     onClick={() => { setIsDocModalOpen(true); setSelectedFile(null); }}
+                     onClick={() => { setIsDocModalOpen(true); setSelectedFiles([]); }}
                      className="border-2 border-dashed border-gray-300 rounded-xl flex flex-col items-center justify-center p-6 hover:bg-gray-50 hover:border-gray-400 transition-all text-gray-400 hover:text-gray-600 bg-white"
                    >
                       <Upload className="w-8 h-8 mb-2" />
-                      <span className="text-sm font-bold">Upload File</span>
+                      <span className="text-base md:text-sm font-bold">Upload File</span>
                    </button>
                  )}
 
                  {/* Files */}
                  {(realTimeDocuments || [])
-                    .filter(doc => doc.sharedWith.includes(user.role as any) || user.role === Role.ADMIN)
+                    .filter(doc => {
+                      // Only show to Admin/Designer if pending
+                      if (doc.approvalStatus === 'pending') {
+                        return user.role === Role.ADMIN || user.role === Role.DESIGNER || doc.uploadedBy === user.id;
+                      }
+                      // Approved: show to shared users, client, vendor
+                      if (doc.approvalStatus === 'approved') {
+                        return (Array.isArray(doc.sharedWith) && doc.sharedWith.includes(user.id)) || user.role === Role.ADMIN || doc.uploadedBy === user.id;
+                      }
+                      // Rejected: only show to admin/designer/uploader
+                      if (doc.approvalStatus === 'rejected') {
+                        return user.role === Role.ADMIN || user.role === Role.DESIGNER || doc.uploadedBy === user.id;
+                      }
+                      // Fallback: only show to admin
+                      return user.role === Role.ADMIN;
+                    })
                     .map(doc => (
                     <div key={doc.id} className="group relative bg-white border border-gray-200 rounded-xl overflow-hidden hover:shadow-lg transition-shadow">
                        {/* Overlay Actions */}
-                       <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2 z-10">
-                          <button 
-                            className="p-2 bg-white rounded-full text-gray-900 hover:bg-gray-100" 
-                            title="Comments"
-                            onClick={() => handleOpenDocumentDetail(doc)}
-                          >
-                             <MessageSquare className="w-4 h-4" />
-                          </button>
-                          <button 
-                            className="p-2 bg-white rounded-full text-gray-900 hover:bg-gray-100" 
-                            title="View"
-                            onClick={() => window.open(doc.url, '_blank')}
-                          >
-                             <Eye className="w-4 h-4" />
-                          </button>
-                          <button 
-                            className="p-2 bg-white rounded-full text-gray-900 hover:bg-gray-100" 
-                            title="Download"
-                            onClick={() => handleDownloadDocument(doc)}
-                          >
-                             <Download className="w-4 h-4" />
-                          </button>
+                       <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center gap-2 z-10">
+                          <div className="flex items-center justify-center gap-2">
+                            <button 
+                              className="p-2 bg-white rounded-full text-gray-900 hover:bg-gray-100" 
+                              title="Comments"
+                              onClick={() => handleOpenDocumentDetail(doc)}
+                            >
+                               <MessageSquare className="w-4 h-4" />
+                            </button>
+                            <button 
+                              className="p-2 bg-white rounded-full text-gray-900 hover:bg-gray-100" 
+                              title="View"
+                              onClick={() => window.open(doc.url, '_blank')}
+                            >
+                               <Eye className="w-4 h-4" />
+                            </button>
+                            <button 
+                              className="p-2 bg-white rounded-full text-gray-900 hover:bg-gray-100" 
+                              title="Download"
+                              onClick={() => handleDownloadDocument(doc)}
+                            >
+                               <Download className="w-4 h-4" />
+                            </button>
+                            {(doc.uploadedBy === user.id || canEditProject) && (
+                              <button 
+                                className="p-2 bg-white rounded-full text-red-600 hover:bg-red-50" 
+                                title="Delete"
+                                onClick={() => handleDeleteDocument(doc)}
+                              >
+                                 <Trash2 className="w-4 h-4" />
+                              </button>
+                            )}
+                          </div>
+                          {user.role === Role.ADMIN && doc.approvalStatus === 'pending' && (
+                            <div className="flex items-center justify-center gap-2">
+                              <button 
+                                className="p-2 bg-white rounded-full text-green-600 hover:bg-green-50" 
+                                title="Approve"
+                                onClick={() => handleApproveDocument(doc)}
+                              >
+                                 <Check className="w-4 h-4" />
+                              </button>
+                              <button 
+                                className="p-2 bg-white rounded-full text-red-600 hover:bg-red-50" 
+                                title="Reject"
+                                onClick={() => handleRejectDocument(doc)}
+                              >
+                                 <X className="w-4 h-4" />
+                              </button>
+                            </div>
+                          )}
                        </div>
                        
-                       <div className="h-32 bg-gray-100 flex items-center justify-center overflow-hidden">
+                       <div className="h-32 bg-gray-100 flex items-center justify-center overflow-hidden relative group">
                           {doc.type === 'image' ? (
-                              <img src={doc.url || DEFAULT_AVATAR} alt={doc.name} className="w-full h-full object-cover" />
+                              <img 
+                                src={doc.url || DEFAULT_AVATAR} 
+                                alt={doc.name} 
+                                className="w-full h-full object-cover" 
+                                onError={(e) => {
+                                  e.currentTarget.src = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9IiNjY2MiIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIj48cmVjdCB4PSIzIiB5PSIzIiB3aWR0aD0iMTgiIGhlaWdodD0iMTgiIHJ4PSIyIiByeT0iMiI+PC9yZWN0PjxjaXJjbGUgY3g9IjguNSIgY3k9IjguNSIgcj0iMS41Ij48L2NpcmNsZT48cG9seWxpbmUgcG9pbnRzPSIyMSAxNSAxNiAxMCA1IDIxIj48L3BvbHlsaW5lPjwvc3ZnPg=='; // Fallback to icon
+                                  e.currentTarget.className = "w-12 h-12 opacity-50"; // Adjust styling for icon
+                                  e.currentTarget.parentElement?.classList.add("flex", "items-center", "justify-center");
+                                }}
+                              />
+                          ) : doc.type === 'pdf' ? (
+                              <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-red-50 to-red-100">
+                                 <FileText className="w-12 h-12 text-red-400 mb-2" />
+                                 <span className="text-sm font-bold text-red-600 uppercase">PDF</span>
+                              </div>
                           ) : (
-                              <FileText className="w-12 h-12 text-gray-400" />
+                              <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-blue-50 to-blue-100">
+                                 <FileText className="w-12 h-12 text-blue-400 mb-2" />
+                                 <span className="text-sm font-bold text-blue-600 uppercase">{doc.type}</span>
+                              </div>
                           )}
                        </div>
                        <div className="p-3">
-                          <p className="text-sm font-bold text-gray-800 truncate" title={doc.name}>{doc.name}</p>
-                          <div className="flex justify-between items-center mt-2">
-                             <span className="text-xs text-gray-400">{new Date(doc.uploadDate).toLocaleDateString('en-IN')}</span>
-                             <img src={getAssigneeAvatar(doc.uploadedBy)} className="w-5 h-5 rounded-full" title="Uploaded by" alt=""/>
+                          <p className="text-lg md:text-sm font-bold text-gray-800 truncate" title={doc.name}>{doc.name}</p>
+                          <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-1 mt-3">
+                            <span className="text-sm md:text-xs text-gray-400">{new Date(doc.uploadDate).toLocaleDateString('en-IN')}</span>
+                            {/* Approval Status Indicator */}
+                            <div className="flex-none w-auto">
+                              <span className={`inline-block text-xs font-bold px-2 py-0.5 rounded mt-1 sm:mt-0 ${doc.approvalStatus === 'pending' ? 'bg-yellow-100 text-yellow-700' : doc.approvalStatus === 'approved' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>{doc.approvalStatus === 'pending' ? 'Approval Pending' : doc.approvalStatus === 'approved' ? 'Approved' : 'Rejected'}</span>
+                            </div>
                           </div>
-                          <div className="mt-2 flex gap-1">
-                             {doc.sharedWith.map(role => (
-                                <span key={role} className="text-[9px] uppercase bg-gray-100 text-gray-500 px-1 rounded">{role.substr(0,1)}</span>
-                             ))}
-                          </div>
+                          <div className="mt-2 flex gap-1 flex-wrap">
+                              {(Array.isArray(doc.sharedWith) ? doc.sharedWith : []).map(userId => {
+                                const sharedUser = users.find(u => u.id === userId);
+                                return (
+                                  <span key={userId} className="text-xs bg-blue-100 text-blue-600 px-1.5 py-0.5 rounded font-semibold" title={sharedUser?.name}>
+                                    {sharedUser?.name?.split(' ')[0] || 'Unknown'}
+                                  </span>
+                                );
+                              })}
+                            </div>
                           {doc.comments && doc.comments.length > 0 && (
                             <div className="mt-2 text-xs text-blue-600 font-medium">
                               {doc.comments.length} {doc.comments.length === 1 ? 'comment' : 'comments'}
@@ -2223,297 +3783,128 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
 
         {/* PHASE 3: FINANCIALS */}
         {activeTab === 'financials' && canViewFinancials && (
-          <div className="max-w-4xl mx-auto space-y-8">
-            <h3 className="text-lg font-bold text-gray-800">Phase 3: Financial Management</h3>
+          <div className="w-full mx-auto space-y-8 p-4 md:p-6">
+            <h3 className="text-lg md:text-base font-bold text-gray-800">Phase 3: Financial Management</h3>
             
             {/* NEW: Budget Overview Section */}
-            <div className="bg-gray-900 text-white p-6 rounded-xl shadow-lg flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+            <div className="bg-gray-900 text-white p-4 md:p-8 rounded-xl shadow-lg flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
                 <div>
                     <div className="flex items-center gap-2">
-                        <p className="text-gray-400 text-xs font-bold uppercase mb-1">Total Project Budget</p>
+                        <p className="text-gray-400 text-sm md:text-xs font-bold uppercase mb-1">Total Project Budget</p>
                         {canEditProject && (
                             <button 
                                 onClick={() => {
-                                    const amount = prompt("Enter additional budget amount:");
-                                    if (amount && !isNaN(parseFloat(amount))) {
-                                        const additional = parseFloat(amount);
-                                        const newBudget = project.budget + additional;
-                                        
-                                        // Set initialBudget on first increase if not already set
-                                        const updatedProject = {
-                                            ...project,
-                                            budget: newBudget,
-                                            initialBudget: project.initialBudget || project.budget
-                                        };
-                                        
-                                        // Update project with new budget
-                                        onUpdateProject(updatedProject);
-                                        
-                                        // Log timeline event for budget increase
-                                        logTimelineEvent(
-                                            project.id,
-                                            `Budget Increased: ₹${additional.toLocaleString()}`,
-                                            `Budget increased by ₹${additional.toLocaleString()} by ${user.name}. Previous: ₹${project.budget.toLocaleString()} | New Total: ₹${newBudget.toLocaleString()} | Paid By: Client | Status: Paid`,
-                                            'completed',
-                                            new Date().toISOString().split('T')[0],
-                                            new Date().toISOString().split('T')[0]
-                                        );
-                                        
-                                        // Log activity
-                                        logActivity('Budget', `Budget increased by ₹${additional.toLocaleString()} by ${user.name}. New Total: ₹${newBudget.toLocaleString()}`);
-                                        
-                                        addNotification({
-                                            id: Date.now().toString(),
-                                            message: `Budget increased by ₹${additional.toLocaleString()}. New Total: ₹${newBudget.toLocaleString()}`,
-                                            type: 'success',
-                                            read: false,
-                                            timestamp: new Date(),
-                                            recipientId: project.clientId,
-                                            projectId: project.id,
-                                            projectName: project.name
-                                        });
-                                    }
+                                    setIsAdditionalBudgetModalOpen(true);
+                                    setAdditionalBudgetAmount('');
+                                    setAdditionalBudgetDescription('');
                                 }}
-                                className="text-[10px] bg-gray-800 hover:bg-gray-700 text-emerald-400 px-2 py-0.5 rounded border border-gray-700 transition-colors flex items-center gap-1"
+                                className="text-xs bg-gray-800 hover:bg-gray-700 text-emerald-400 px-3 py-1 rounded border border-gray-700 transition-colors flex items-center gap-1"
                                 title="Add to Project Budget"
                             >
-                                <Plus className="w-3 h-3" /> Add Funds
+                                <Plus className="w-3.5 h-3.5" /> Add Funds
                             </button>
                         )}
                     </div>
-                    <h2 className="text-4xl font-bold tracking-tight">₹{project.budget.toLocaleString()}</h2>
-                    {project.initialBudget && project.budget > project.initialBudget && (
+                    <h2 className="text-4xl md:text-3xl font-bold tracking-tight">₹{((project.initialBudget || 0) + totalAdditionalBudget).toLocaleString()}</h2>
+                    {totalAdditionalBudget > 0 && (
                         <div className="mt-3 space-y-1">
-                            <p className="text-xs text-gray-400">Initial Budget: ₹{project.initialBudget.toLocaleString()}</p>
-                            <p className="text-xs text-emerald-400 font-medium">
-                                Additional Budget: ₹{(project.budget - project.initialBudget).toLocaleString()}
+                            <p className="text-sm md:text-xs text-gray-400">Initial Budget: ₹{(project.initialBudget || project.budget).toLocaleString()}</p>
+                            <p className="text-sm md:text-xs text-emerald-400 font-medium">
+                                Additional Budget: ₹{totalAdditionalBudget.toLocaleString()}
                             </p>
                         </div>
                     )}
                 </div>
                 <div className="text-left md:text-right">
-                    <p className="text-gray-400 text-xs font-bold uppercase mb-1">Remaining Budget</p>
+                    <p className="text-gray-400 text-sm md:text-xs font-bold uppercase mb-1">Remaining Budget</p>
                      {/* Remaining = Budget - Total Expenses (Paid + Pending) to reflect actual committed cost against budget */}
-                    <h2 className={`text-2xl font-bold ${project.budget - (paidOut + pendingExpenses) < 0 ? 'text-red-400' : 'text-emerald-400'}`}>
-                        ₹{(project.budget - (paidOut + pendingExpenses)).toLocaleString()}
+                    <h2 className={`text-3xl md:text-2xl font-bold ${((project.initialBudget || 0) + totalAdditionalBudget) - (paidOut + pendingExpenses) < 0 ? 'text-red-400' : 'text-emerald-400'}`}>
+                        ₹{(((project.initialBudget || 0) + totalAdditionalBudget) - (paidOut + pendingExpenses)).toLocaleString()}
                     </h2>
-                    <p className="text-[10px] text-gray-500 mt-1">Budget - (Paid + Pending Expenses)</p>
+                    <p className="text-xs text-gray-500 mt-1">Budget - (Paid + Pending Expenses)</p>
                 </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-6">
-               <div className="bg-green-50 p-6 rounded-xl border border-green-100 relative overflow-hidden">
-                 <div className="flex items-center justify-between mb-2">
-                    <p className="text-sm font-medium text-green-800">Total Received (Client)</p>
-                    <ArrowRight className="w-5 h-5 text-green-300" />
-                 </div>
-                 <h3 className="text-3xl font-bold text-green-700">₹{received.toLocaleString()}</h3>
-                 <p className="text-xs text-green-600 mt-1 font-medium">Pending Invoices: ₹{pendingIncome.toLocaleString()}</p>
-                 {/* Budget Progress Indicator */}
-                 <div className="mt-4 pt-4 border-t border-green-200/50">
-                     <div className="flex justify-between text-[10px] text-green-800 mb-1 uppercase font-bold">
-                        <span>Budget Collected</span>
-                        <span>{Math.round((received / project.budget) * 100)}%</span>
-                     </div>
-                     <div className="w-full bg-green-200 h-1.5 rounded-full">
-                        <div 
-                          className="bg-green-600 h-1.5 rounded-full transition-all duration-1000" 
-                          {...{ style: { width: `${Math.min((received/project.budget)*100, 100)}%` } }}
-                          aria-label={`Budget collected: ${Math.round((received / project.budget) * 100)}%`}
-                        ></div>
-                     </div>
-                  </div>
-               </div>
-               
-               <div className="bg-red-50 p-6 rounded-xl border border-red-100">
-                 <div className="flex items-center justify-between mb-2">
-                    <p className="text-sm font-medium text-red-800">Total Paid Out (Vendors)</p>
-                    <ArrowRight className="w-5 h-5 text-red-300" />
-                 </div>
-                 <h3 className="text-3xl font-bold text-red-700">₹{paidOut.toLocaleString()}</h3>
-                 <p className="text-xs text-red-600 mt-1 font-medium">Pending Bills: ₹{pendingExpenses.toLocaleString()}</p>
-                 <div className="mt-4 pt-4 border-t border-red-200/50">
-                     <p className="text-xs text-red-500">
-                        Tracks cash outflow to vendors and material suppliers.
-                     </p>
-                 </div>
-               </div>
             </div>
 
             {/* Detailed Financial Summary */}
             <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-              <div className="px-6 py-4 border-b border-gray-200 bg-gray-50">
-                <h3 className="font-semibold text-gray-800">Financial Summary & Analysis</h3>
+              <div className="px-4 py-3 md:px-6 md:py-5 border-b border-gray-200 bg-gray-50">
+                <h3 className="font-semibold text-base md:text-sm text-gray-800">Financial Summary & Analysis</h3>
               </div>
-              <div className="p-6 space-y-6">
+              <div className="p-4 md:p-6 space-y-6">
                 {/* Income Breakdown */}
                 <div className="space-y-4">
-                  <h4 className="text-sm font-bold text-gray-700 flex items-center gap-2">
+                  <h4 className="text-base md:text-sm font-bold text-gray-700 flex items-center gap-2">
                     <div className="w-3 h-3 rounded-full bg-green-500"></div>
                     Income Breakdown
                   </h4>
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                    <div className="p-4 bg-green-50 rounded-lg border border-green-100">
-                      <p className="text-xs text-green-600 font-bold uppercase mb-1">Received</p>
-                      <p className="text-xl font-bold text-green-700">₹{received.toLocaleString()}</p>
-                      <p className="text-xs text-green-600 mt-1">{Math.round((received / project.budget) * 100)}% of budget</p>
-                    </div>
-                    <div className="p-4 bg-yellow-50 rounded-lg border border-yellow-100">
-                      <p className="text-xs text-yellow-600 font-bold uppercase mb-1">Pending</p>
-                      <p className="text-xl font-bold text-yellow-700">₹{pendingIncome.toLocaleString()}</p>
-                      <p className="text-xs text-yellow-600 mt-1">Awaiting payment</p>
-                    </div>
-                    <div className="p-4 bg-blue-50 rounded-lg border border-blue-100">
-                      <p className="text-xs text-blue-600 font-bold uppercase mb-1">Total Expected</p>
-                      <p className="text-xl font-bold text-blue-700">₹{(received + pendingIncome).toLocaleString()}</p>
-                      <p className="text-xs text-blue-600 mt-1">{Math.round(((received + pendingIncome) / project.budget) * 100)}% of budget</p>
-                    </div>
-                    <div className="p-4 bg-gray-50 rounded-lg border border-gray-200">
-                      <p className="text-xs text-gray-600 font-bold uppercase mb-1">Shortfall</p>
-                      <p className={`text-xl font-bold ${project.budget - (received + pendingIncome) < 0 ? 'text-red-700' : 'text-gray-700'}`}>
-                        ₹{(project.budget - (received + pendingIncome)).toLocaleString()}
-                      </p>
-                      <p className="text-xs text-gray-600 mt-1">Remaining to collect</p>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Expense Breakdown */}
-                <div className="space-y-4">
-                  <h4 className="text-sm font-bold text-gray-700 flex items-center gap-2">
-                    <div className="w-3 h-3 rounded-full bg-red-500"></div>
-                    Expense Breakdown
-                  </h4>
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                    <div className="p-4 bg-red-50 rounded-lg border border-red-100">
-                      <p className="text-xs text-red-600 font-bold uppercase mb-1">Paid Out</p>
-                      <p className="text-xl font-bold text-red-700">₹{paidOut.toLocaleString()}</p>
-                      <p className="text-xs text-red-600 mt-1">{Math.round((paidOut / project.budget) * 100)}% of budget</p>
-                    </div>
-                    <div className="p-4 bg-yellow-50 rounded-lg border border-yellow-100">
-                      <p className="text-xs text-yellow-600 font-bold uppercase mb-1">Pending</p>
-                      <p className="text-xl font-bold text-yellow-700">₹{pendingExpenses.toLocaleString()}</p>
-                      <p className="text-xs text-yellow-600 mt-1">Awaiting payment</p>
-                    </div>
-                    <div className="p-4 bg-blue-50 rounded-lg border border-blue-100">
-                      <p className="text-xs text-blue-600 font-bold uppercase mb-1">Total Committed</p>
-                      <p className="text-xl font-bold text-blue-700">₹{(paidOut + pendingExpenses).toLocaleString()}</p>
-                      <p className="text-xs text-blue-600 mt-1">{Math.round(((paidOut + pendingExpenses) / project.budget) * 100)}% of budget</p>
-                    </div>
-                    <div className="p-4 bg-gray-50 rounded-lg border border-gray-200">
-                      <p className="text-xs text-gray-600 font-bold uppercase mb-1">Remaining</p>
-                      <p className={`text-xl font-bold ${project.budget - (paidOut + pendingExpenses) < 0 ? 'text-red-700' : 'text-gray-700'}`}>
-                        ₹{(project.budget - (paidOut + pendingExpenses)).toLocaleString()}
-                      </p>
-                      <p className="text-xs text-gray-600 mt-1">Available budget</p>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Profit/Loss Analysis */}
-                <div className="space-y-4">
-                  <h4 className="text-sm font-bold text-gray-700 flex items-center gap-2">
-                    <div className="w-3 h-3 rounded-full bg-purple-500"></div>
-                    Profit & Loss Analysis
-                  </h4>
-                  <div className="p-4 bg-purple-50 rounded-lg border border-purple-100 space-y-3">
-                    <div className="flex justify-between items-center pb-3 border-b border-purple-200">
-                      <span className="text-sm text-gray-700">Income (Received)</span>
-                      <span className="font-bold text-green-700">+₹{received.toLocaleString()}</span>
-                    </div>
-                    <div className="flex justify-between items-center pb-3 border-b border-purple-200">
-                      <span className="text-sm text-gray-700">Expenses (Paid Out)</span>
-                      <span className="font-bold text-red-700">-₹{paidOut.toLocaleString()}</span>
-                    </div>
-                    <div className="flex justify-between items-center pt-2">
-                      <span className="text-sm font-bold text-gray-800">Current Profit/Loss</span>
-                      <span className={`text-lg font-bold ${received - paidOut >= 0 ? 'text-green-700' : 'text-red-700'}`}>
-                        {received - paidOut >= 0 ? '+' : ''}₹{(received - paidOut).toLocaleString()}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Project Health Indicator */}
-                <div className="space-y-4">
-                  <h4 className="text-sm font-bold text-gray-700">Project Financial Health</h4>
-                  <div className="space-y-3">
-                    {/* Budget Utilization */}
-                    <div>
-                      <div className="flex justify-between items-center mb-2">
-                        <span className="text-xs font-medium text-gray-600">Budget Utilization</span>
-                        <span className="text-xs font-bold text-gray-700">{Math.round(((paidOut + pendingExpenses) / project.budget) * 100)}%</span>
+                  {(() => {
+                    return (
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 md:gap-6">
+                        <div className="p-4 md:p-6 bg-blue-50 rounded-lg border border-blue-100">
+                          <p className="text-sm md:text-xs text-blue-600 font-bold uppercase mb-1">Estimated</p>
+                          <p className="text-2xl md:text-xl font-bold text-blue-700">₹{(project.initialBudget || project.budget).toLocaleString()}</p>
+                        </div>
+                        <div className="p-4 md:p-6 bg-purple-50 rounded-lg border border-purple-100">
+                          <p className="text-sm md:text-xs text-purple-600 font-bold uppercase mb-1">Additional</p>
+                          <p className="text-2xl md:text-xl font-bold text-purple-700">₹{totalAdditionalBudget.toLocaleString()}</p>
+                        </div>
+                        <div className="p-4 md:p-6 bg-green-50 rounded-lg border border-green-100">
+                          <p className="text-sm md:text-xs text-green-600 font-bold uppercase mb-1">Received</p>
+                          <p className="text-2xl md:text-xl font-bold text-green-700">₹{received.toLocaleString()}</p>
+                          <p className="text-sm md:text-xs text-green-600 mt-1">{Math.round((received / ((project.initialBudget || 0) + totalAdditionalBudget)) * 100) || 0}% of budget</p>
+                        </div>
+                        <div className="p-4 md:p-6 bg-red-50 rounded-lg border border-red-100">
+                          <p className="text-sm md:text-xs text-red-600 font-bold uppercase mb-1">Expense</p>
+                          <p className="text-2xl md:text-xl font-bold text-red-700">₹{paidOut.toLocaleString()}</p>
+                          <p className="text-sm md:text-xs text-red-600 mt-1">{Math.round((paidOut / ((project.initialBudget || 0) + totalAdditionalBudget)) * 100) || 0}% of budget</p>
+                        </div>
+                        <div className={`p-4 md:p-6 rounded-lg border ${received - paidOut >= 0 ? 'bg-green-50 border-green-100' : 'bg-red-50 border-red-100'}`}>
+                          <p className={`text-sm md:text-xs font-bold uppercase mb-1 ${received - paidOut >= 0 ? 'text-green-600' : 'text-red-600'}`}>Profit/Loss</p>
+                          <p className={`text-2xl md:text-xl font-bold ${received - paidOut >= 0 ? 'text-green-700' : 'text-red-700'}`}>
+                            {received - paidOut >= 0 ? '+' : ''}₹{(received - paidOut).toLocaleString()}
+                          </p>
+                        </div>
+                        <div className="p-4 md:p-6 bg-orange-50 rounded-lg border border-orange-100">
+                          <p className="text-sm md:text-xs text-orange-600 font-bold uppercase mb-1">Not Received</p>
+                          <p className={`text-2xl md:text-xl font-bold ${(((project.initialBudget || 0) + totalAdditionalBudget) - received) < 0 ? 'text-red-700' : 'text-orange-700'}`}>
+                            ₹{(((project.initialBudget || 0) + totalAdditionalBudget) - received).toLocaleString()}
+                          </p>
+                        </div>
+                        <div className="p-4 md:p-6 bg-gray-50 rounded-lg border border-gray-200">
+                          <p className="text-sm md:text-xs text-gray-600 font-bold uppercase mb-1">Total</p>
+                          <p className="text-2xl md:text-xl font-bold text-gray-700">₹{((project.initialBudget || 0) + totalAdditionalBudget).toLocaleString()}</p>
+                        </div>
                       </div>
-                      <div className="w-full bg-gray-200 h-2 rounded-full overflow-hidden">
-                        <div 
-                          className={`h-full transition-all duration-500 ${
-                            ((paidOut + pendingExpenses) / project.budget) > 0.9 ? 'bg-red-500' :
-                            ((paidOut + pendingExpenses) / project.budget) > 0.7 ? 'bg-yellow-500' :
-                            'bg-green-500'
-                          }`}
-                          style={{ width: `${Math.min(((paidOut + pendingExpenses) / project.budget) * 100, 100)}%` }}
-                        ></div>
-                      </div>
-                    </div>
-
-                    {/* Income Collection */}
-                    <div>
-                      <div className="flex justify-between items-center mb-2">
-                        <span className="text-xs font-medium text-gray-600">Income Collection Rate</span>
-                        <span className="text-xs font-bold text-gray-700">{Math.round(((received) / project.budget) * 100)}%</span>
-                      </div>
-                      <div className="w-full bg-gray-200 h-2 rounded-full overflow-hidden">
-                        <div 
-                          className="h-full bg-green-500 transition-all duration-500"
-                          style={{ width: `${Math.min((received / project.budget) * 100, 100)}%` }}
-                        ></div>
-                      </div>
-                    </div>
-
-                    {/* Margin Health */}
-                    <div>
-                      <div className="flex justify-between items-center mb-2">
-                        <span className="text-xs font-medium text-gray-600">Profit Margin</span>
-                        <span className={`text-xs font-bold ${received - paidOut >= 0 ? 'text-green-700' : 'text-red-700'}`}>
-                          {received > 0 ? Math.round(((received - paidOut) / received) * 100) : 0}%
-                        </span>
-                      </div>
-                      <div className="w-full bg-gray-200 h-2 rounded-full overflow-hidden">
-                        <div 
-                          className={`h-full transition-all duration-500 ${received - paidOut >= 0 ? 'bg-green-500' : 'bg-red-500'}`}
-                          style={{ width: `${Math.max(Math.min(Math.abs((received - paidOut) / received) * 100, 100), 0)}%` }}
-                        ></div>
-                      </div>
-                    </div>
-                  </div>
+                    );
+                  })()}
                 </div>
               </div>
             </div>
             
             {/* Transaction Table */}
             <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden min-h-[300px]">
-                <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center bg-gray-50">
-                    <h3 className="font-semibold text-gray-800">Transaction Ledger</h3>
+                <div className="px-4 py-3 md:px-5 md:py-4 border-b border-gray-200 flex justify-between items-center bg-gray-50">
+                    <h3 className="font-semibold text-gray-800 text-lg md:text-base">Transaction Ledger</h3>
                     <div className="flex gap-2 relative">
                         {/* Filter Button */}
                         <button 
                             onClick={() => setIsFilterOpen(!isFilterOpen)}
-                            className={`text-xs border px-3 py-1.5 rounded-lg hover:bg-white text-gray-700 flex items-center gap-2 font-medium transition-colors ${transactionFilter !== 'all' ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-white border-gray-300'}`}
+                            className={`text-sm md:text-xs border px-3 py-1.5 rounded-lg hover:bg-white text-gray-700 flex items-center gap-1.5 font-medium transition-colors ${transactionFilter !== 'all' ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-white border-gray-300'}`}
                         >
                             <Filter className="w-3.5 h-3.5"/> 
-                            <span className="capitalize">{transactionFilter === 'all' ? 'Filter' : transactionFilter}</span>
+                            <span className="capitalize hidden sm:inline">{transactionFilter === 'all' ? 'Filter' : transactionFilter}</span>
                         </button>
                         
                         {/* Filter Dropdown */}
                         {isFilterOpen && (
                             <>
                                 <div className="fixed inset-0 z-10" onClick={() => setIsFilterOpen(false)}></div>
-                                <div className="absolute right-0 top-9 bg-white shadow-xl border border-gray-100 rounded-lg p-1.5 z-20 w-36 flex flex-col gap-0.5 animate-fade-in">
+                                <div className="absolute right-0 top-9 bg-white shadow-xl border border-gray-100 rounded-lg p-1 z-20 w-32 flex flex-col gap-0.5 animate-fade-in">
                                     {['all', 'income', 'expense', 'pending', 'overdue'].map(f => (
                                         <button 
                                             key={f}
                                             onClick={() => { setTransactionFilter(f as any); setIsFilterOpen(false); }}
-                                            className={`text-left text-xs px-3 py-2 rounded-md capitalize font-medium ${transactionFilter === f ? 'bg-gray-100 text-gray-900' : 'text-gray-600 hover:bg-gray-50'}`}
+                                            className={`text-left text-xs px-2.5 py-1.5 rounded capitalize font-medium ${transactionFilter === f ? 'bg-gray-100 text-gray-900' : 'text-gray-600 hover:bg-gray-50'}`}
                                         >
                                             {f}
                                         </button>
@@ -2521,170 +3912,529 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                 </div>
                             </>
                         )}
-                        {/* Removed duplicate New Entry button as per request */}
                     </div>
                 </div>
+                <div className="overflow-x-auto scrollbar-thin">
                 <table className="w-full text-sm text-left">
-                <thead className="bg-white text-gray-500 border-b border-gray-100">
+                <thead className="bg-white text-gray-600 border-b border-gray-100 sticky top-0 z-10">
                     <tr>
-                    <th className="px-6 py-3 font-medium">Date</th>
-                    <th className="px-6 py-3 font-medium">Description</th>
-                    <th className="px-6 py-3 font-medium">Flow</th>
-                    <th className="px-6 py-3 font-medium">Paid By</th>
-                    <th className="px-6 py-3 font-medium">Name</th>
-                    <th className="px-6 py-3 font-medium">Status</th>
-                    <th className="px-6 py-3 font-medium text-right">Amount</th>
-                    <th className="px-6 py-3 font-medium"></th>
+                    <th className="px-4 py-2 font-semibold whitespace-nowrap text-left">Date</th>
+                    <th className="px-4 py-2 font-semibold whitespace-nowrap">Paid By</th>
+                    <th className="px-4 py-2 font-semibold whitespace-nowrap text-left">Received By</th>
+                    <th className="px-4 py-2 font-semibold whitespace-nowrap text-center">Type</th>
+                    <th className="px-4 py-2 font-semibold whitespace-nowrap text-center">Mode</th>
+                    <th className="px-4 py-2 font-semibold whitespace-nowrap text-center">Status</th>
+                    <th className="px-4 py-2 font-semibold whitespace-nowrap text-center">Amount</th>
+                    <th className="px-4 py-2 font-semibold whitespace-nowrap text-center">Approvals</th>
+                    <th className="px-2 py-2 font-semibold text-center w-8"></th>
                     </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-50">
                     {filteredFinancials.length === 0 && (
                         <tr>
-                            <td colSpan={8} className="text-center py-10 text-gray-400">
+                            <td colSpan={9} className="text-center py-8 text-gray-400 text-sm">
                                 {currentFinancials.length === 0 ? 'No transactions recorded.' : 'No transactions match filters.'}
                             </td>
                         </tr>
                     )}
                     {filteredFinancials.map(fin => (
                     <tr key={fin.id} className="hover:bg-gray-50 group transition-colors">
-                        <td className="px-6 py-4 text-gray-600 whitespace-nowrap">{fin.date}</td>
-                        <td className="px-6 py-4 font-medium text-gray-900">
-                          <div>{fin.description}</div>
+                      <td className="px-4 py-2 text-gray-600 whitespace-nowrap text-sm md:text-xs text-left">
+                          {fin.date}
+                          {fin.timestamp && (
+                            <div className="text-gray-400 text-xs mt-0.5">
+                              {new Date(fin.timestamp).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                            </div>
+                          )}
                         </td>
-                        <td className="px-6 py-4">
+                        <td className="px-4 py-2" style={{maxWidth: '150px'}}>
+                          <div className="flex flex-col gap-0.5">
+                            <div className="font-bold text-gray-900 text-sm md:text-xs">
+                              {fin.paidByOther ? fin.paidByOther.includes('(') ? fin.paidByOther.split('(')[0].trim() : fin.paidByOther : (
+                                fin.paidBy === 'admin' ? (fin.vendorName ? fin.vendorName : '-') :
+                                fin.type === 'income' ? (fin.paidTo ? fin.paidTo : '-') : (fin.vendorName ? fin.vendorName : '-')
+                              )}
+                            </div>
+                            {fin.type === 'expense' && (
+                              <span className="text-gray-600 break-words text-sm md:text-xs">{fin.description}</span>
+                            )}
+                            <div className="flex items-center gap-1 text-sm md:text-xs">
+                              <span className="text-gray-400">|</span>
+                              <span className={`flex-shrink-0 font-medium ${
+                                fin.paidBy === 'client' ? 'text-blue-700' :
+                                fin.paidBy === 'vendor' ? 'text-purple-700' :
+                                fin.paidBy === 'designer' ? 'text-orange-700' :
+                                fin.paidBy === 'admin' ? 'text-red-700' :
+                                fin.paidBy === 'other' ? 'text-gray-700' :
+                                fin.type === 'income' ? 'text-green-700' :
+                                'text-gray-700'
+                              }`}>
+                                {fin.paidBy === 'client' ? 'Client' :
+                                 fin.paidBy === 'vendor' ? 'Vendor' :
+                                 fin.paidBy === 'designer' ? 'Designer' :
+                                 fin.paidBy === 'admin' ? 'Admin' :
+                                 fin.paidBy === 'other' ? (fin.paidByOther && fin.paidByOther.includes('(') ? fin.paidByOther.split('(')[1].replace(')', '').trim() : 'Other') :
+                                 fin.type === 'income' ? 'Client' :
+                                 fin.type === 'expense' ? 'Proj' :
+                                 'N/A'}
+                              </span>
+                            </div>
+                          </div>
+                        </td>
+                        <td className="px-2 py-2" style={{maxWidth: '150px'}}>
+                          <div className="flex flex-col gap-0.5">
+                            {/* Extract name from "Name (Role)" format */}
+                            <div className="font-bold text-gray-900 text-sm md:text-xs">
+                              {fin.receivedByRole === 'admin-received' ? (fin.receivedByName ? fin.receivedByName : '-') :
+                               fin.receivedBy ? (
+                                fin.receivedBy.includes('(') ? fin.receivedBy.split('(')[0].trim() : fin.receivedBy
+                              ) : (fin.paidTo ? fin.paidTo : (fin.vendorName ? fin.vendorName : '-'))}
+                            </div>
+                            <div className="flex flex-col gap-1 text-sm md:text-xs">
+                              {fin.type !== 'expense' && (
+                                <span className="text-gray-600 break-words text-sm md:text-xs">{fin.description}</span>
+                              )}
+                              <div className="flex items-center gap-1">
+                                <span className="text-gray-400">|</span>
+                                <span className={`flex-shrink-0 font-medium text-sm md:text-xs ${
+                                  fin.receivedByRole === 'admin-received' ? 'text-red-700' :
+                                  fin.receivedByRole === 'vendor-received' ? 'text-purple-700' :
+                                  fin.receivedByRole === 'designer-received' ? 'text-orange-700' :
+                                  fin.receivedByRole === 'client-received' ? 'text-blue-700' :
+                                  fin.receivedByRole === 'other-received' ? 'text-gray-700' :
+                                  fin.receivedBy ? (
+                                    (() => {
+                                      const receivedUser = users.find(u => u.name === (fin.receivedBy?.includes('(') ? fin.receivedBy.split('(')[0].trim() : fin.receivedBy));
+                                      const role = receivedUser?.role || (fin.receivedBy?.includes('(') ? fin.receivedBy.split('(')[1].replace(')', '').trim() : '');
+                                      if (role === Role.CLIENT || role === 'Client') return 'text-blue-700';
+                                      if (role === Role.VENDOR || role === 'Vendor') return 'text-purple-700';
+                                      if (role === Role.DESIGNER || role === 'Designer') return 'text-orange-700';
+                                      if (role === Role.ADMIN || role === 'Admin') return 'text-red-700';
+                                      return fin.type === 'income' ? 'text-green-700' : 'text-gray-700';
+                                    })()
+                                  ) : (fin.type === 'income' ? 'text-green-700' : 'text-gray-700')
+                                }`}>
+                                  {/* Extract role from "Name (Role)" format */}
+                                  {fin.receivedByRole === 'admin-received' ? 'Admin' :
+                                   fin.receivedByRole === 'vendor-received' ? 'Vendor' :
+                                   fin.receivedByRole === 'designer-received' ? 'Designer' :
+                                   fin.receivedByRole === 'client-received' ? 'Client' :
+                                   fin.receivedByRole === 'other-received' ? 'Other' :
+                                   fin.receivedBy && fin.receivedBy.includes('(') ? (
+                                    fin.receivedBy.split('(')[1].replace(')', '').trim()
+                                  ) : (fin.type === 'income' ? (projectTeam.find(m => m.name === fin.receivedBy)?.role || 'Team Member') : (projectTeam.find(m => m.name === fin.receivedBy)?.role || '-'))}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                        </td>
+                        <td className="px-4 py-2 whitespace-nowrap text-center">
                         {fin.type === 'income' ? (
-                            <span className="flex items-center gap-1 text-green-600 text-xs font-bold uppercase"><ArrowRight className="w-3 h-3 rotate-180" /> In</span>
+                          <span className="flex items-center justify-center gap-0.5 text-green-600 text-sm md:text-xs font-bold"><ArrowRight className="w-2.5 h-2.5 rotate-180" /> Received</span>
                         ) : fin.type === 'expense' ? (
-                            <span className="flex items-center gap-1 text-red-600 text-xs font-bold uppercase"><ArrowRight className="w-3 h-3" /> Out</span>
+                          <span className="flex items-center justify-center gap-0.5 text-red-600 text-sm md:text-xs font-bold"><ArrowRight className="w-2.5 h-2.5" /> Paid</span>
                         ) : (
-                            <span className="flex items-center gap-1 text-purple-600 text-xs font-bold uppercase">Design Fee</span>
+                          <span className="text-purple-600 text-sm md:text-xs font-bold">Design</span>
                         )}
                         </td>
-                        <td className="px-6 py-4">
-                          <span className={`inline-flex px-2 py-1 rounded text-xs font-medium whitespace-nowrap ${
-                            fin.paidBy === 'client' ? 'bg-blue-100 text-blue-700' :
-                            fin.paidBy === 'vendor' ? 'bg-purple-100 text-purple-700' :
-                            fin.paidBy === 'designer' ? 'bg-orange-100 text-orange-700' :
-                            fin.paidBy === 'admin' ? 'bg-red-100 text-red-700' :
-                            fin.type === 'income' ? 'bg-green-100 text-green-700' :
-                            'bg-gray-100 text-gray-700'
-                          }`}>
-                            {fin.paidBy === 'client' ? 'Client' :
-                             fin.paidBy === 'vendor' ? 'Vendor' :
-                             fin.paidBy === 'designer' ? 'Designer' :
-                             fin.paidBy === 'admin' ? 'Admin' :
-                             fin.type === 'income' ? 'Client' :
-                             fin.type === 'expense' ? 'Project' :
-                             'N/A'}
-                          </span>
+                        <td className="px-4 py-2 whitespace-nowrap text-center text-sm md:text-xs text-gray-600 capitalize">
+                          {fin.paymentMode ? fin.paymentMode.replace('_', ' ') : '-'}
                         </td>
-                        <td className="px-6 py-4 text-gray-700 text-sm font-medium">
-                          {fin.vendorName || '-'}
-                        </td>
-                        <td className="px-6 py-4">
-                        <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs font-medium capitalize
-                            ${fin.status === 'paid' ? 'bg-green-100 text-green-700' : 
-                              fin.status === 'overdue' ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'}`}>
-                            {fin.status}
+                        <td className="px-4 py-2 whitespace-nowrap text-center">
+                        <span className={`inline-block px-1.5 py-0.5 rounded text-sm md:text-xs font-bold capitalize
+                          ${fin.status === 'paid' ? 'bg-green-100 text-green-700' : 
+                            fin.status === 'overdue' ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'}`}>
+                          {fin.status === 'paid' ? 'Paid' : fin.status === 'overdue' ? 'Overdue' : 'Pending'}
                         </span>
                         </td>
-                        <td className={`px-6 py-4 text-right font-bold whitespace-nowrap ${fin.type === 'income' ? 'text-green-600' : 'text-gray-900'}`}>
+                        <td className={`px-4 py-2 font-semibold whitespace-nowrap text-sm md:text-xs text-center ${fin.type === 'income' ? 'text-green-600' : 'text-gray-900'}`}>
                         ₹{fin.amount.toLocaleString()}
                         </td>
-                        <td className="px-6 py-4 text-right">
-                          {canEditProject && (
-                             <button 
-                               onClick={() => openTransactionModal(fin.id)}
-                               className="text-gray-400 hover:text-blue-600 opacity-0 group-hover:opacity-100 transition-opacity p-2 hover:bg-blue-50 rounded-full"
-                               title="Edit Transaction"
-                             >
-                                <Pencil className="w-4 h-4" />
-                             </button>
+                        <td className="px-4 py-2 whitespace-nowrap">
+                          {/* Detect if this should be an additional budget based on category */}
+                          {(fin.isAdditionalBudget || (fin.type === 'income' && fin.category === 'Additional Budget')) && (
+                            <div className="flex items-center gap-3">
+                              {/* Client Approval */}
+                              <div className="flex items-center gap-1">
+                                <span className="text-xs font-semibold text-blue-600">C:</span>
+                                {(fin.clientApprovalForAdditionalBudget === 'approved' || fin.clientApproved === true) && (
+                                  <span className="bg-green-100 text-green-700 px-1.5 py-0.5 rounded font-bold text-xs">✓</span>
+                                )}
+                                {(fin.clientApprovalForAdditionalBudget === 'rejected') && (
+                                  <span className="bg-red-100 text-red-700 px-1.5 py-0.5 rounded font-bold text-xs">✗</span>
+                                )}
+                                {(fin.clientApprovalForAdditionalBudget === 'pending' || (!fin.clientApprovalForAdditionalBudget && !fin.clientApproved)) && user?.role === Role.CLIENT && (
+                                  <div className="flex gap-0.5">
+                                    <button 
+                                      onClick={() => handleApproveAdditionalBudget(fin.id, 'client', 'approved')}
+                                      className="text-white bg-green-600 hover:bg-green-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer"
+                                      title="Approve"
+                                    >✓</button>
+                                    <button 
+                                      onClick={() => handleApproveAdditionalBudget(fin.id, 'client', 'rejected')}
+                                      className="text-white bg-red-600 hover:bg-red-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer"
+                                      title="Reject"
+                                    >✗</button>
+                                  </div>
+                                )}
+                                {(fin.clientApprovalForAdditionalBudget === 'pending' || (!fin.clientApprovalForAdditionalBudget && !fin.clientApproved)) && user?.role !== Role.CLIENT && (
+                                  <span className="text-gray-400 text-xs">-</span>
+                                )}
+                              </div>
+                              
+                              <span className="text-gray-300">|</span>
+                              
+                              {/* Admin Approval */}
+                              <div className="flex items-center gap-1">
+                                <span className="text-xs font-semibold text-purple-600">A:</span>
+                                {(fin.adminApprovalForAdditionalBudget === 'approved' || fin.adminApproved === true) && (
+                                  <span className="bg-green-100 text-green-700 px-1.5 py-0.5 rounded font-bold text-xs">✓</span>
+                                )}
+                                {(fin.adminApprovalForAdditionalBudget === 'rejected') && (
+                                  <span className="bg-red-100 text-red-700 px-1.5 py-0.5 rounded font-bold text-xs">✗</span>
+                                )}
+                                {(fin.adminApprovalForAdditionalBudget === 'pending' || (!fin.adminApprovalForAdditionalBudget && !fin.adminApproved)) && user?.role === Role.ADMIN && (
+                                  <div className="flex gap-0.5">
+                                    <button 
+                                      onClick={() => handleApproveAdditionalBudget(fin.id, 'admin', 'approved')}
+                                      className="text-white bg-green-600 hover:bg-green-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer"
+                                      title="Approve"
+                                    >✓</button>
+                                    <button 
+                                      onClick={() => handleApproveAdditionalBudget(fin.id, 'admin', 'rejected')}
+                                      className="text-white bg-red-600 hover:bg-red-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer"
+                                      title="Reject"
+                                    >✗</button>
+                                  </div>
+                                )}
+                                {(fin.adminApprovalForAdditionalBudget === 'pending' || (!fin.adminApprovalForAdditionalBudget && !fin.adminApproved)) && user?.role !== Role.ADMIN && (
+                                  <span className="text-gray-400 text-xs">-</span>
+                                )}
+                              </div>
+                            </div>
                           )}
+                          {/* Approval Status for Received Payments */}
+                          {(fin.isClientPayment || (fin.type === 'income' && fin.category !== 'Additional Budget')) && (
+                            <div className="flex items-center gap-3">
+                              {/* Client Payment Approval */}
+                              <div className="flex items-center gap-1">
+                                <span className="text-xs font-semibold text-blue-600">C:</span>
+                                {(fin.clientApprovalForPayment === 'approved' || fin.clientApproved === true) && (
+                                  <span className="bg-green-100 text-green-700 px-1.5 py-0.5 rounded font-bold text-xs">✓</span>
+                                )}
+                                {(fin.clientApprovalForPayment === 'rejected') && (
+                                  <span className="bg-red-100 text-red-700 px-1.5 py-0.5 rounded font-bold text-xs">✗</span>
+                                )}
+                                {(fin.clientApprovalForPayment === 'pending' || (!fin.clientApprovalForPayment && !fin.clientApproved)) && user?.role === Role.CLIENT && (
+                                  <div className="flex gap-0.5">
+                                    <button 
+                                      onClick={() => handleApprovePayment(fin.id, 'client', 'approved')}
+                                      className="text-white bg-green-600 hover:bg-green-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer"
+                                      title="Confirm payment"
+                                    >✓</button>
+                                    <button 
+                                      onClick={() => handleApprovePayment(fin.id, 'client', 'rejected')}
+                                      className="text-white bg-red-600 hover:bg-red-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer"
+                                      title="Dispute payment"
+                                    >✗</button>
+                                  </div>
+                                )}
+                                {(fin.clientApprovalForPayment === 'pending' || (!fin.clientApprovalForPayment && !fin.clientApproved)) && user?.role !== Role.CLIENT && (
+                                  <span className="text-gray-400 text-xs">-</span>
+                                )}
+                              </div>
+                              
+                              <span className="text-gray-300">|</span>
+                              
+                              {/* Admin Payment Approval */}
+                              <div className="flex items-center gap-1">
+                                <span className="text-xs font-semibold text-purple-600">A:</span>
+                                {(fin.adminApprovalForPayment === 'approved' || fin.adminApproved === true) && (
+                                  <span className="bg-green-100 text-green-700 px-1.5 py-0.5 rounded font-bold text-xs">✓</span>
+                                )}
+                                {(fin.adminApprovalForPayment === 'rejected') && (
+                                  <span className="bg-red-100 text-red-700 px-1.5 py-0.5 rounded font-bold text-xs">✗</span>
+                                )}
+                                {(fin.adminApprovalForPayment === 'pending' || (!fin.adminApprovalForPayment && !fin.adminApproved)) && user?.role === Role.ADMIN && (
+                                  <div className="flex gap-0.5">
+                                    <button 
+                                      onClick={() => handleApprovePayment(fin.id, 'admin', 'approved')}
+                                      className="text-white bg-green-600 hover:bg-green-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer"
+                                      title="Approve payment"
+                                    >✓</button>
+                                    <button 
+                                      onClick={() => handleApprovePayment(fin.id, 'admin', 'rejected')}
+                                      className="text-white bg-red-600 hover:bg-red-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer"
+                                      title="Reject payment"
+                                    >✗</button>
+                                  </div>
+                                )}
+                                {(fin.adminApprovalForPayment === 'pending' || (!fin.adminApprovalForPayment && !fin.adminApproved)) && user?.role !== Role.ADMIN && (
+                                  <span className="text-gray-400 text-xs">-</span>
+                                )}
+                              </div>
+                            </div>
+                          )}
+                          {/* Approval Status for Expenses */}
+                          {fin.type === 'expense' && (
+                            <div className="flex items-center gap-3">
+                              {/* Client Approval for Expenses */}
+                              <div className="flex items-center gap-1">
+                                <span className="text-xs font-semibold text-blue-600">C:</span>
+                                {fin.clientApproved === true && (
+                                  <span className="bg-green-100 text-green-700 px-1.5 py-0.5 rounded font-bold text-xs">✓</span>
+                                )}
+                                {fin.clientApproved === false && (
+                                  <span className="bg-red-100 text-red-700 px-1.5 py-0.5 rounded font-bold text-xs">✗</span>
+                                )}
+                                {fin.clientApproved === undefined && user?.role === Role.CLIENT && (
+                                  <div className="flex gap-0.5">
+                                    <button 
+                                      onClick={() => handleApproveExpense(fin.id, 'client', true)}
+                                      className="text-white bg-green-600 hover:bg-green-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer"
+                                      title="Approve expense"
+                                    >✓</button>
+                                    <button 
+                                      onClick={() => handleApproveExpense(fin.id, 'client', false)}
+                                      className="text-white bg-red-600 hover:bg-red-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer"
+                                      title="Reject expense"
+                                    >✗</button>
+                                  </div>
+                                )}
+                                {fin.clientApproved === undefined && user?.role !== Role.CLIENT && (
+                                  <span className="text-gray-400 text-xs">-</span>
+                                )}
+                              </div>
+                              
+                              <span className="text-gray-300">|</span>
+                              
+                              {/* Admin Approval for Expenses */}
+                              <div className="flex items-center gap-1">
+                                <span className="text-xs font-semibold text-purple-600">A:</span>
+                                {fin.adminApproved === true && (
+                                  <span className="bg-green-100 text-green-700 px-1.5 py-0.5 rounded font-bold text-xs">✓</span>
+                                )}
+                                {fin.adminApproved === false && (
+                                  <span className="bg-red-100 text-red-700 px-1.5 py-0.5 rounded font-bold text-xs">✗</span>
+                                )}
+                                {fin.adminApproved === undefined && user?.role === Role.ADMIN && (
+                                  <div className="flex gap-0.5">
+                                    <button 
+                                      onClick={() => handleApproveExpense(fin.id, 'admin', true)}
+                                      className="text-white bg-green-600 hover:bg-green-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer"
+                                      title="Approve expense"
+                                    >✓</button>
+                                    <button 
+                                      onClick={() => handleApproveExpense(fin.id, 'admin', false)}
+                                      className="text-white bg-red-600 hover:bg-red-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer"
+                                      title="Reject expense"
+                                    >✗</button>
+                                  </div>
+                                )}
+                                {fin.adminApproved === undefined && user?.role !== Role.ADMIN && (
+                                  <span className="text-gray-400 text-xs">-</span>
+                                )}
+                              </div>
+                            </div>
+                          )}
+                          {!fin.isAdditionalBudget && !fin.isClientPayment && fin.type !== 'expense' && (
+                            <span className="text-xs text-gray-300">-</span>
+                          )}
+                        </td>
+                        <td className="px-2 py-2 text-center">
+                          <div className="flex items-center justify-center gap-1">
+                            {canEditProject && (
+                              <button 
+                                onClick={() => openTransactionModal(fin.id)}
+                                className="text-gray-400 hover:text-blue-600 opacity-0 group-hover:opacity-100 transition-opacity p-1 hover:bg-blue-50 rounded"
+                                title="Edit Transaction"
+                              >
+                                <Pencil className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                            {isAdmin && (
+                              <button
+                                onClick={() => {
+                                  setDeleteConfirmTransactionId(fin.id);
+                                  setIsTransactionDeleteConfirmOpen(true);
+                                }}
+                                className="text-red-500 hover:text-red-700 opacity-0 group-hover:opacity-100 transition-opacity p-1 hover:bg-red-50 rounded"
+                                title="Delete Transaction"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </div>
                         </td>
                     </tr>
                     ))}
                 </tbody>
                 </table>
+                </div>
             </div>
 
             {/* Vendor Billing Report Section */}
             <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
               <div className="px-6 py-4 border-b border-gray-200 bg-gray-50">
-                <h3 className="font-semibold text-gray-800">{isVendor ? 'My Payment Records' : 'Vendor Billing Report'}</h3>
+                <h3 className="font-semibold text-gray-800 text-lg md:text-base">{isVendor ? 'My Payment Records' : 'Vendor Billing Report'}</h3>
               </div>
               
               {currentFinancials.filter(f => {
-                const isVendorRecord = (f.type === 'expense' && f.paidBy === 'vendor') || (f.type === 'income' && f.paidBy === 'vendor');
-                // If vendor, only show their own records
+                // Get all vendors (users with VENDOR role)
+                const vendorUsers = users.filter(u => u.role === Role.VENDOR);
+                const vendorNames = new Set(vendorUsers.map(v => v.name));
+                
+                const cleanName = (name?: string) => {
+                    if (!name) return '';
+                    return name.includes('(') ? name.split('(')[0].trim() : name.trim();
+                };
+
                 if (isVendor) {
-                  return isVendorRecord && f.vendorName === user.name;
+                  // Show all transactions related to this vendor (vendor paid OR vendor received)
+                  return f.vendorName === user.name || 
+                         cleanName(f.receivedByName) === user.name || 
+                         cleanName(f.paidByOther) === user.name ||
+                         f.paidTo === user.name ||
+                         f.receivedBy === user.name;
                 }
-                // If admin/client, show all vendor records
-                return isVendorRecord;
+                // If admin/client, show all vendor-related transactions
+                // Check if the cleaned name matches any known vendor
+                const isVendorReceived = f.receivedByName && vendorNames.has(cleanName(f.receivedByName));
+                const isVendorPaid = f.paidByOther && vendorNames.has(cleanName(f.paidByOther));
+                const isVendorReceivedByRole = f.receivedByRole === 'vendor-received';
+                
+                return (!!f.vendorName && vendorNames.has(f.vendorName)) || 
+                       f.paidBy === 'vendor' ||
+                       isVendorReceived ||
+                       isVendorPaid ||
+                       isVendorReceivedByRole;
               }).length === 0 ? (
                 <div className="px-6 py-10 text-center text-gray-400">
                   {isVendor ? 'No payment records for you yet.' : 'No vendor transactions recorded yet.'}
                 </div>
               ) : (
                 <div className="overflow-x-auto">
-                  <table className="w-full text-xs">
+                  <table className="w-full text-sm">
                     <thead className="bg-gray-100 border-b border-gray-200">
                       <tr>
-                        <th className="px-4 py-2 text-left font-bold text-gray-700">Vendor</th>
-                        <th className="px-4 py-2 text-center font-bold text-gray-700">Type</th>
-                        <th className="px-4 py-2 text-right font-bold text-gray-700">Amount</th>
-                        <th className="px-4 py-2 text-center font-bold text-gray-700">Admin Approval</th>
-                        <th className="px-4 py-2 text-center font-bold text-gray-700">Client Approval</th>
-                        <th className="px-4 py-2 text-center font-bold text-gray-700">Status</th>
+                        <th className="px-4 py-2 text-left font-bold text-gray-700 text-sm md:text-sm">Date</th>
+                        <th className="px-4 py-2 font-bold text-gray-700 text-sm md:text-sm">Paid By</th>
+                        <th className="px-4 py-2 font-bold text-gray-700 text-left text-sm md:text-sm">Received By (Vendor)</th>
+                        <th className="px-4 py-2 text-left font-bold text-gray-700 text-sm md:text-sm">Description</th>
+                        <th className="px-4 py-2 text-right font-bold text-gray-700 text-sm md:text-sm">Amount</th>
+                        <th className="px-4 py-2 text-center font-bold text-gray-700 text-sm md:text-sm">Admin Approval</th>
+                        <th className="px-4 py-2 text-center font-bold text-gray-700 text-sm md:text-sm">Client Approval</th>
+                        <th className="px-4 py-2 text-center font-bold text-gray-700 text-sm md:text-sm">Status</th>
                       </tr>
                     </thead>
                     <tbody>
                       {currentFinancials.filter(f => {
-                        const isVendorRecord = (f.type === 'expense' && f.paidBy === 'vendor') || (f.type === 'income' && f.paidBy === 'vendor');
+                        const vendorUsers = users.filter(u => u.role === Role.VENDOR);
+                        const vendorNames = new Set(vendorUsers.map(v => v.name));
+                        
+                        const cleanName = (name?: string) => {
+                            if (!name) return '';
+                            return name.includes('(') ? name.split('(')[0].trim() : name.trim();
+                        };
+
                         if (isVendor) {
-                          return isVendorRecord && f.vendorName === user.name;
+                          return f.vendorName === user.name || 
+                                 cleanName(f.receivedByName) === user.name || 
+                                 cleanName(f.paidByOther) === user.name ||
+                                 f.paidTo === user.name ||
+                                 f.receivedBy === user.name;
                         }
-                        return isVendorRecord;
-                      }).map((expense, idx) => (
+                        
+                        const isVendorReceived = f.receivedByName && vendorNames.has(cleanName(f.receivedByName));
+                        const isVendorPaid = f.paidByOther && vendorNames.has(cleanName(f.paidByOther));
+                        const isVendorReceivedByRole = f.receivedByRole === 'vendor-received';
+
+                        return (!!f.vendorName && vendorNames.has(f.vendorName)) || 
+                               f.paidBy === 'vendor' ||
+                               isVendorReceived ||
+                               isVendorPaid ||
+                               isVendorReceivedByRole;
+                      }).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()).map((expense, idx) => (
                         <tr key={expense.id} className={`border-b border-gray-100 hover:bg-gray-50 ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50/50'}`}>
-                          <td className="px-4 py-3 font-medium text-gray-900">{expense.vendorName || 'Unknown'}</td>
-                          <td className="px-4 py-3 text-center">
-                            <span className={`px-2 py-1 rounded text-xs font-bold ${expense.type === 'income' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
-                              {expense.type === 'income' ? 'In' : 'Out'}
-                            </span>
+                          <td className="px-4 py-3 text-gray-600 whitespace-nowrap text-sm md:text-xs text-left">{expense.date}</td>
+                          <td className="px-4 py-2">
+                            <div className="flex flex-col gap-0.5">
+                              <div className="font-bold text-gray-900 text-sm md:text-xs">{expense.type === 'income' ? (expense.paidTo || expense.paidByOther || '-') : (expense.vendorName || '-')}</div>
+                              <div className="flex items-center gap-1 text-sm md:text-xs">
+                                <span className="text-gray-400">|</span>
+                                <span className={`flex-shrink-0 font-medium text-sm md:text-xs ${
+                                  expense.paidBy === 'client' ? 'text-blue-700' :
+                                  expense.paidBy === 'vendor' ? 'text-purple-700' :
+                                  expense.paidBy === 'designer' ? 'text-orange-700' :
+                                  expense.paidBy === 'admin' ? 'text-red-700' :
+                                  'text-gray-700'
+                                }`}>
+                                  {expense.type === 'income' ? (
+                                    (() => {
+                                      const paidByUser = users.find(u => u.name === (expense.paidTo || expense.paidByOther));
+                                      return paidByUser?.role === Role.CLIENT ? 'Client' :
+                                             paidByUser?.role === Role.VENDOR ? 'Vendor' :
+                                             paidByUser?.role === Role.DESIGNER ? 'Designer' :
+                                             paidByUser?.role === Role.ADMIN ? 'Admin' :
+                                             (expense.paidBy === 'client' ? 'Client' :
+                                              expense.paidBy === 'vendor' ? 'Vendor' :
+                                              expense.paidBy === 'designer' ? 'Designer' :
+                                              expense.paidBy === 'admin' ? 'Admin' : 'N/A');
+                                    })()
+                                  ) : (
+                                    expense.paidBy === 'client' ? 'Client' :
+                                    expense.paidBy === 'vendor' ? 'Vendor' :
+                                    expense.paidBy === 'designer' ? 'Designer' :
+                                    expense.paidBy === 'admin' ? 'Admin' :
+                                    'N/A'
+                                  )}
+                                </span>
+                              </div>
+                            </div>
                           </td>
-                          <td className="px-4 py-3 text-right text-gray-700">₹{expense.amount.toLocaleString()}</td>
+                          <td className="px-2 py-2" style={{maxWidth: '150px'}}>
+                            <div className="flex flex-col gap-0.5">
+                              <div className="font-bold text-gray-900 text-sm md:text-xs">
+                                {expense.receivedBy ? (
+                                  expense.receivedBy.includes('(') ? expense.receivedBy.split('(')[0].trim() : expense.receivedBy
+                                ) : '-'}
+                              </div>
+                              <div className="flex flex-col gap-1 text-sm md:text-xs">
+                                <div className="flex items-center gap-1">
+                                  <span className="text-gray-400">|</span>
+                                  <span className={`flex-shrink-0 font-medium text-sm md:text-xs ${
+                                    expense.receivedBy ? (
+                                      (() => {
+                                        const receivedUser = users.find(u => u.name === (expense.receivedBy?.includes('(') ? expense.receivedBy.split('(')[0].trim() : expense.receivedBy));
+                                        const role = receivedUser?.role || (expense.receivedBy?.includes('(') ? expense.receivedBy.split('(')[1].replace(')', '').trim() : '');
+                                        if (role === Role.CLIENT || role === 'Client') return 'text-blue-700';
+                                        if (role === Role.VENDOR || role === 'Vendor') return 'text-purple-700';
+                                        if (role === Role.DESIGNER || role === 'Designer') return 'text-orange-700';
+                                        if (role === Role.ADMIN || role === 'Admin') return 'text-red-700';
+                                        return 'text-gray-700';
+                                      })()
+                                    ) : 'text-gray-700'
+                                  }`}>
+                                    {expense.receivedBy && expense.receivedBy.includes('(') ? (
+                                      expense.receivedBy.split('(')[1].replace(')', '').trim()
+                                    ) : (users.find(m => m.name === expense.receivedBy)?.role || 'Vendor')}
+                                  </span>
+                                </div>
+                              </div>
+                            </div>
+                          </td>
+                          <td className="px-4 py-3 text-left text-gray-700 text-sm md:text-xs">{expense.description}</td>
+                          <td className="px-4 py-3 text-right text-gray-700 font-bold text-sm md:text-xs">₹{expense.amount.toLocaleString()}</td>
                           <td className="px-4 py-3">
                             <div className="flex justify-center">
                               <input 
                                 type="checkbox" 
                                 checked={expense.adminApproved === true}
-                                disabled={!canEditProject || expense.adminApproved}
-                                title="Admin approval checkbox"
-                                aria-label="Approve as admin"
-                                onChange={(e) => {
-                                  if (e.target.checked && !expense.adminApproved) {
-                                    const updatedProject = {
-                                      ...project,
-                                      financials: currentFinancials.map(f => 
-                                        f.id === expense.id ? {...f, adminApproved: true} : f
-                                      )
-                                    };
-                                    onUpdateProject(updatedProject);
-                                    addNotification({
-                                      id: Date.now().toString(),
-                                      message: `Admin approval approved for vendor ${expense.vendorName}`,
-                                      type: 'success',
-                                      read: false,
-                                      timestamp: new Date(),
-                                      recipientId: project.clientId,
-                                      projectId: project.id,
-                                      projectName: project.name
-                                    });
-                                  }
-                                }}
-                                className="w-4 h-4 rounded border-gray-300 cursor-pointer hover:border-gray-400 disabled:cursor-not-allowed"
+                                disabled={!isAdmin}
+                                title={expense.adminApproved ? "Click to revoke admin approval" : "Admin approval checkbox"}
+                                aria-label="Approve or revoke as admin"
+                                onChange={(e) => handleApproveExpense(expense.id, 'admin', e.target.checked)}
+                                className="w-4 h-4 rounded border-gray-300 cursor-pointer hover:border-gray-400 disabled:cursor-not-allowed disabled:opacity-50 disabled:bg-gray-100"
                               />
                             </div>
                           </td>
@@ -2693,42 +4443,24 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                               <input 
                                 type="checkbox" 
                                 checked={expense.clientApproved === true}
-                                disabled={!canEditProject || expense.clientApproved}
-                                title="Client approval checkbox"
-                                aria-label="Approve as client"
-                                onChange={(e) => {
-                                  if (e.target.checked && !expense.clientApproved) {
-                                    const updatedProject = {
-                                      ...project,
-                                      financials: currentFinancials.map(f => 
-                                        f.id === expense.id ? {...f, clientApproved: true} : f
-                                      )
-                                    };
-                                    onUpdateProject(updatedProject);
-                                    addNotification({
-                                      id: Date.now().toString(),
-                                      message: `Client approval approved for vendor ${expense.vendorName}`,
-                                      type: 'success',
-                                      read: false,
-                                      timestamp: new Date(),
-                                      recipientId: project.clientId,
-                                      projectId: project.id,
-                                      projectName: project.name
-                                    });
-                                  }
-                                }}
-                                className="w-4 h-4 rounded border-gray-300 cursor-pointer hover:border-gray-400 disabled:cursor-not-allowed"
+                                disabled={!isClient}
+                                title={expense.clientApproved ? "Click to revoke client approval" : "Client approval checkbox"}
+                                aria-label="Approve or revoke as client"
+                                onChange={(e) => handleApproveExpense(expense.id, 'client', e.target.checked)}
+                                className="w-4 h-4 rounded border-gray-300 cursor-pointer hover:border-gray-400 disabled:cursor-not-allowed disabled:opacity-50 disabled:bg-gray-100"
                               />
                             </div>
                           </td>
                           <td className="px-4 py-3 text-center">
-                            <span className={`inline-block px-2 py-1 rounded text-xs font-medium ${
+                            <span className={`inline-block px-2 py-1 rounded text-sm md:text-xs font-medium ${
                               expense.adminApproved && expense.clientApproved ? 'bg-green-100 text-green-700' :
                               expense.adminApproved ? 'bg-blue-100 text-blue-700' :
+                              expense.clientApproved ? 'bg-purple-100 text-purple-700' :
                               'bg-gray-100 text-gray-700'
                             }`}>
                               {expense.adminApproved && expense.clientApproved ? 'Approved' :
                                expense.adminApproved ? 'Admin OK' :
+                               expense.clientApproved ? 'Client OK' :
                                'Pending'}
                             </span>
                           </td>
@@ -2738,6 +4470,121 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                   </table>
                 </div>
               )}
+
+              {/* Designer Charges Summary - For Designing Projects */}
+              {project.type === 'Designing' && currentFinancials.filter(f => {
+                const vendorUsers = users.filter(u => u.role === Role.VENDOR);
+                const vendorNames = new Set(vendorUsers.map(v => v.name));
+                const cleanName = (name?: string) => {
+                    if (!name) return '';
+                    return name.includes('(') ? name.split('(')[0].trim() : name.trim();
+                };
+                return (!!f.vendorName && vendorNames.has(f.vendorName)) || 
+                       f.paidBy === 'vendor' ||
+                       (f.receivedByName && vendorNames.has(cleanName(f.receivedByName))) ||
+                       (f.paidByOther && vendorNames.has(cleanName(f.paidByOther))) ||
+                       f.receivedByRole === 'vendor-received';
+              }).length > 0 && (
+                <div className="px-6 py-4 bg-gray-100 border-t border-gray-200">
+                  <div className="space-y-3">
+                    <div className="flex justify-between items-center">
+                      <span className="text-sm md:text-xs font-semibold text-gray-700">Total Vendor Transactions</span>
+                      {(() => {
+                        const vendorTransactions = currentFinancials.filter(f => {
+                          const vendorUsers = users.filter(u => u.role === Role.VENDOR);
+                          const vendorNames = new Set(vendorUsers.map(v => v.name));
+                          const cleanName = (name?: string) => {
+                              if (!name) return '';
+                              return name.includes('(') ? name.split('(')[0].trim() : name.trim();
+                          };
+                          const isVendor = (!!f.vendorName && vendorNames.has(f.vendorName)) || 
+                                 f.paidBy === 'vendor' ||
+                                 (f.receivedByName && vendorNames.has(cleanName(f.receivedByName))) ||
+                                 (f.paidByOther && vendorNames.has(cleanName(f.paidByOther))) ||
+                                 f.receivedByRole === 'vendor-received';
+                          // Only include if both client and admin have approved
+                          return isVendor && f.clientApproved === true && f.adminApproved === true;
+                        });
+                        const totalVendor = vendorTransactions.reduce((sum, f) => sum + f.amount, 0);
+                        return <span className="font-semibold text-gray-900 text-lg md:text-sm">₹{totalVendor.toLocaleString()}</span>;
+                      })()}
+                    </div>
+                    
+                    <div className="flex justify-between items-center pt-2 border-t border-gray-200 bg-gray-100 rounded-md px-3 py-2">
+                      <div className="flex items-center gap-2">
+                        <span className="text-base md:text-xs font-semibold text-gray-700">Designer Charges</span>
+                        {isAdmin && !isEditingDesignerCharges && (
+                          <>
+                            <span className="text-base md:text-xs text-gray-700">({designerChargesPercent}%)</span>
+                            <button
+                              className="ml-1 p-1 rounded hover:bg-gray-200"
+                              title="Edit Designer Charges Percentage"
+                              onClick={() => setIsEditingDesignerCharges(true)}
+                            >
+                              <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536M9 13h3l8-8a2.828 2.828 0 10-4-4l-8 8v3h3z" /></svg>
+                            </button>
+                          </>
+                        )}
+                        {isAdmin && isEditingDesignerCharges && (
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="number"
+                              min="0"
+                              max="100"
+                              value={designerChargesPercent}
+                              onChange={e => setDesignerChargesPercent(parseFloat(e.target.value) || 0)}
+                              className="w-16 px-2 py-1 text-xs border border-gray-300 rounded focus:outline-none focus:border-gray-500 bg-white"
+                              aria-label="Designer Charges Percentage"
+                              title="Enter designer charges percentage for vendor payments"
+                              placeholder="0"
+                            />
+                            <span className="text-sm md:text-xs text-gray-700">%</span>
+                            <button
+                              className="ml-2 px-2 py-1 text-xs font-semibold rounded bg-gray-700 text-white hover:bg-gray-800 focus:outline-none border border-gray-700"
+                              onClick={() => { handleDesignerChargesBlur(); setIsEditingDesignerCharges(false); }}
+                              title="Save Designer Charges Percentage"
+                            >Save</button>
+                          </div>
+                        )}
+                        {!isAdmin && (
+                          <span className="text-sm md:text-xs text-gray-700">({designerChargesPercent}%)</span>
+                        )}
+                      </div>
+                    </div>
+                    {/* Calculation summary row in a new row below */}
+                    {(() => {
+                      const vendorTransactions = currentFinancials.filter(f => {
+                        const vendorUsers = users.filter(u => u.role === Role.VENDOR);
+                        const vendorNames = new Set(vendorUsers.map(v => v.name));
+                        const cleanName = (name?: string) => {
+                            if (!name) return '';
+                            return name.includes('(') ? name.split('(')[0].trim() : name.trim();
+                        };
+                        return (!!f.vendorName && vendorNames.has(f.vendorName)) || 
+                               f.paidBy === 'vendor' ||
+                               (f.receivedByName && vendorNames.has(cleanName(f.receivedByName))) ||
+                               (f.paidByOther && vendorNames.has(cleanName(f.paidByOther))) ||
+                               f.receivedByRole === 'vendor-received';
+                      });
+                      const totalVendor = vendorTransactions.reduce((sum, f) => sum + f.amount, 0);
+                      const designerChargesAmount = totalVendor * (designerChargesPercent / 100);
+                      const finalAmount = totalVendor + designerChargesAmount;
+                      return (
+                        <div className="w-full mt-2 bg-gray-100 rounded px-3 py-2 text-sm md:text-xs">
+                          <div
+                            className="flex flex-col gap-2 sm:flex-row sm:gap-4 sm:items-center sm:justify-between"
+                          >
+                            <span className="block min-w-[140px] mb-1 sm:mb-0">Total Vendor Amount: <span className="font-semibold text-gray-900">₹{totalVendor.toLocaleString()}</span></span>
+                            <span className="block min-w-[120px] mb-1 sm:mb-0">Designer Charges: <span className="font-semibold text-gray-700">{designerChargesPercent}%</span></span>
+                            <span className="block min-w-[150px] mb-1 sm:mb-0">Calculated Charges: <span className="font-semibold text-gray-700">₹{designerChargesAmount.toLocaleString(undefined, {maximumFractionDigits: 2})}</span></span>
+                            <span className="block min-w-[130px]">Final Amount: <span className="font-semibold text-green-700">₹{finalAmount.toLocaleString(undefined, {maximumFractionDigits: 2})}</span></span>
+                          </div>
+                        </div>
+                      );
+                    })()}
+                  </div>
+                </div>
+              )}
             </div>
 
           </div>
@@ -2745,14 +4592,18 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
 
         {/* TIMELINE TAB */}
         {activeTab === 'timeline' && !isVendor && (
-           <div className="max-w-3xl mx-auto">
-             <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8">
-               <h3 className="text-lg font-bold text-gray-800 mb-6">Project Timeline</h3>
+           <div className="max-w-3xl mx-auto p-4 md:p-8">
+             <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 md:p-8 overflow-hidden">
+               <h3 className="text-xl md:text-lg font-bold text-gray-800 mb-6">Project Timeline</h3>
                <div className="relative border-l-2 border-gray-100 ml-3 space-y-8">
                   {(!realTimeTimelines || realTimeTimelines.length === 0) && (
                      <div className="pl-6 text-gray-400 italic">No timeline events yet. Add milestones to track project progress.</div>
                   )}
-                  {realTimeTimelines?.sort((a,b) => new Date(b.startDate).getTime() - new Date(a.startDate).getTime()).map(timeline => (
+                  {realTimeTimelines?.sort((a, b) => {
+                    const timeA = new Date(a.endDate || a.startDate).getTime();
+                    const timeB = new Date(b.endDate || b.startDate).getTime();
+                    return timeB - timeA; // Descending order (newest first)
+                  }).map(timeline => (
                     <div key={timeline.id} className="relative pl-8">
                       {/* Timeline Dot */}
                       <span className={`absolute -left-[9px] top-1 w-4 h-4 rounded-full border-2 border-white shadow-sm
@@ -2761,10 +4612,10 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                       
                       <div className="flex flex-col sm:flex-row sm:justify-between sm:items-start">
                          <div className="flex-1">
-                            <p className="font-bold text-gray-800 text-sm">{timeline.title || timeline.milestone}</p>
-                            <p className="text-gray-600 text-sm mt-0.5">{timeline.description}</p>
+                            <p className="font-bold text-gray-800 text-lg md:text-base">{timeline.title || timeline.milestone}</p>
+                            <p className="text-gray-600 text-base md:text-sm mt-0.5">{timeline.description}</p>
                             <div className="flex items-center gap-2 mt-2">
-                               <span className={`text-xs px-2 py-1 rounded-full font-medium
+                               <span className={`text-sm md:text-xs px-2.5 py-1.5 rounded-full font-medium
                                  ${timeline.status === 'completed' ? 'bg-green-100 text-green-700' : 
                                    timeline.status === 'in-progress' ? 'bg-blue-100 text-blue-700' : 
                                    'bg-gray-100 text-gray-700'}`}>
@@ -2772,9 +4623,10 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                </span>
                             </div>
                          </div>
-                         <span className="text-xs text-gray-400 mt-2 sm:mt-0 font-mono">
-                            {new Date(timeline.startDate).toLocaleDateString('en-IN')}
-                         </span>
+                         <div className="text-sm md:text-xs text-gray-400 mt-2 sm:mt-0 font-mono whitespace-nowrap">
+                            <div>{new Date(timeline.endDate || timeline.startDate).toLocaleDateString('en-IN')}</div>
+                            <div className="text-gray-300">{new Date(timeline.endDate || timeline.startDate).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</div>
+                         </div>
                       </div>
                     </div>
                   ))}
@@ -2785,17 +4637,16 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
         
         {/* TEAM TAB */}
         {activeTab === 'team' && (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div className="bg-white p-6 rounded-xl border border-gray-200">
-               <h3 className="font-bold text-gray-800 mb-4">Project Stakeholders</h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 p-4 md:p-8">
+            <div className="bg-white p-4 md:p-8 rounded-xl border border-gray-200">
+               <h3 className="font-bold text-lg md:text-base text-gray-800 mb-4">Project Stakeholders</h3>
                <div className="space-y-4">
                   {/* Primary Client */}
                   <div className="flex items-center justify-between border-b border-gray-50 pb-2">
                      <div className="flex items-center gap-4">
-                        {getAvatarComponent(project.clientId, 'md')}
                         <div>
-                            <p className="font-bold text-gray-900">{getAssigneeName(project.clientId)}</p>
-                            <p className="text-xs text-gray-500">Primary Client</p>
+                            <p className="text-base md:text-sm font-bold text-gray-900">{getAssigneeName(project.clientId)}</p>
+                            <p className="text-sm text-gray-500">Primary Client</p>
                         </div>
                      </div>
                      {user.role === Role.ADMIN && (
@@ -2805,10 +4656,10 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                     const client = users.find(u => u.id === project.clientId);
                                     if (client) handleSendPaymentReminder(client);
                                 }}
-                                className="text-gray-400 hover:text-green-600 p-2 rounded-full hover:bg-green-50 transition-colors"
+                                className="text-gray-400 hover:text-green-600 p-2.5 rounded-full hover:bg-green-50 transition-colors"
                                 title="Send Payment Reminder Email"
                             >
-                                <IndianRupee className="w-4 h-4" />
+                                <IndianRupee className="w-5 h-5" />
                             </button>
                             <button
                               onClick={() => {
@@ -2819,10 +4670,10 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                   addNotification('Error', 'Failed to copy link', 'error');
                                 });
                               }}
-                              className="text-gray-400 hover:text-blue-600 p-2 rounded-full hover:bg-blue-50 transition-colors"
+                              className="text-gray-400 hover:text-blue-600 p-2.5 rounded-full hover:bg-blue-50 transition-colors"
                               title="Copy project link"
                             >
-                              <Link2 className="w-4 h-4" />
+                              <Link2 className="w-5 h-5" />
                             </button>
                         </div>
                      )}
@@ -2831,26 +4682,25 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                   {/* Additional Clients */}
                   {project.clientIds && project.clientIds.length > 0 && (
                      <div className="pt-2 space-y-3">
-                         <h4 className="text-xs font-bold text-gray-500 uppercase mb-2">Additional Clients</h4>
+                         <h4 className="text-sm font-bold text-gray-500 uppercase mb-2">Additional Clients</h4>
                          {project.clientIds.map(clientId => {
                             const client = users.find(u => u.id === clientId);
                             if (!client) return null;
                             return (
-                                <div key={client.id} className="flex items-center gap-3 p-2 hover:bg-gray-50 rounded-lg transition-colors border border-transparent hover:border-gray-100">
-                                    <AvatarCircle avatar={client.avatar} name={client.name} size="sm" />
+                                <div key={client.id} className="flex items-center gap-3 p-2 md:p-3 hover:bg-gray-50 rounded-lg transition-colors border border-transparent hover:border-gray-100">
                                     <div className="flex-1">
-                                        <p className="font-bold text-gray-800 text-sm">{client.name}</p>
-                                        <p className="text-xs text-gray-500">Client</p>
+                                        <p className="font-bold text-gray-800 text-base md:text-sm">{client.name}</p>
+                                        <p className="text-sm text-gray-500">Client</p>
                                     </div>
                                     <div className="flex items-center gap-1">
                                         {user.role === Role.ADMIN && (
                                             <>
                                                 <button 
                                                     onClick={() => handleSendPaymentReminder(client)}
-                                                    className="text-gray-400 hover:text-green-600 p-1.5 rounded-full hover:bg-green-50 transition-colors"
+                                                    className="text-gray-400 hover:text-green-600 p-2 rounded-full hover:bg-green-50 transition-colors"
                                                     title="Send Payment Reminder Email"
                                                 >
-                                                    <IndianRupee className="w-3.5 h-3.5" />
+                                                    <IndianRupee className="w-4 h-4" />
                                                 </button>
                                                 <button
                                                   onClick={() => {
@@ -2861,10 +4711,10 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                                       addNotification('Error', 'Failed to copy link', 'error');
                                                     });
                                                   }}
-                                                  className="text-gray-400 hover:text-blue-600 p-1.5 rounded-full hover:bg-blue-50 transition-colors"
+                                                  className="text-gray-400 hover:text-blue-600 p-2 rounded-full hover:bg-blue-50 transition-colors"
                                                   title="Copy project link"
                                                 >
-                                                  <Link2 className="w-3.5 h-3.5" />
+                                                  <Link2 className="w-4 h-4" />
                                                 </button>
                                             </>
                                         )}
@@ -2876,21 +4726,12 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                                         clientIds: (project.clientIds || []).filter(id => id !== clientId)
                                                     };
                                                     onUpdateProject(updated);
-                                                    addNotification({
-                                                        id: Date.now().toString(),
-                                                        message: `Client ${client.name} removed from project`,
-                                                        type: 'success',
-                                                        read: false,
-                                                        timestamp: new Date(),
-                                                        recipientId: project.clientId,
-                                                        projectId: project.id,
-                                                        projectName: project.name
-                                                    });
+                                                    addNotification('Success', `Client ${client.name} removed from project`, 'success', project.clientId, project.id, project.name);
                                                 }}
-                                                className="text-red-400 hover:text-red-600 p-1 hover:bg-red-50 rounded transition-colors"
+                                                className="text-red-400 hover:text-red-600 p-1.5 hover:bg-red-50 rounded transition-colors"
                                                 title="Remove Client"
                                             >
-                                                <X className="w-3.5 h-3.5" />
+                                                <X className="w-4 h-4" />
                                             </button>
                                         )}
                                     </div>
@@ -2901,26 +4742,52 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                   )}
 
                   <div className="flex items-center gap-4 border-b border-gray-50 pb-2">
-                     {getAvatarComponent(project.leadDesignerId, 'md')}
                      <div>
-                        <p className="font-bold text-gray-900">{getAssigneeName(project.leadDesignerId)}</p>
-                        <p className="text-xs text-gray-500">Lead Designer</p>
+                        <p className="text-base md:text-sm font-bold text-gray-900">{getAssigneeName(project.leadDesignerId)}</p>
+                        <p className="text-sm text-gray-500">Lead Designer</p>
                      </div>
                   </div>
                   
                   {/* Explicitly Added Members */}
                   {project.teamMembers && project.teamMembers.length > 0 && (
                      <div className="pt-2 space-y-3">
-                         <h4 className="text-xs font-bold text-gray-500 uppercase mb-2">Team Members</h4>
+                         <h4 className="text-sm font-bold text-gray-500 uppercase mb-2">Team Members</h4>
                          {project.teamMembers.map(memberId => {
                             const member = users.find(u => u.id === memberId);
                             if (!member) return null;
+                            const isDesigner = member.role === Role.DESIGNER;
                             return (
-                                <div key={member.id} className="flex items-center gap-3 p-2 hover:bg-gray-50 rounded-lg transition-colors border border-transparent hover:border-gray-100">
-                                    <AvatarCircle avatar={member.avatar} name={member.name} size="sm" />
-                                    <div>
-                                        <p className="font-bold text-gray-800 text-sm">{member.name}</p>
-                                        <p className="text-xs text-gray-500">{member.role}</p>
+                                <div key={member.id} className="flex items-center justify-between gap-3 p-3 hover:bg-gray-50 rounded-lg transition-colors border border-transparent hover:border-gray-100">
+                                    <div className="flex-1">
+                                        <p className="font-bold text-gray-800 text-base md:text-sm">{member.name}</p>
+                                        <p className="text-sm text-gray-500">{member.role}</p>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                        {isDesigner && (
+                                            <button 
+                                                onClick={() => setSelectedDesignerForDetails(member)}
+                                                className="text-blue-500 hover:text-blue-700 text-sm font-medium px-2 py-1 hover:bg-blue-50 rounded transition-colors"
+                                                title="View designer details and projects"
+                                            >
+                                                View Details
+                                            </button>
+                                        )}
+                                        {canEditProject && (
+                                            <button 
+                                                onClick={() => {
+                                                    const updated = {
+                                                        ...project,
+                                                        teamMembers: (project.teamMembers || []).filter(id => id !== memberId)
+                                                    };
+                                                    onUpdateProject(updated);
+                                                    addNotification('Success', `${member.name} removed from team`, 'success');
+                                                }}
+                                                className="text-red-400 hover:text-red-600 p-1.5 hover:bg-red-50 rounded transition-colors"
+                                                title="Remove Member"
+                                            >
+                                                <X className="w-4 h-4" />
+                                            </button>
+                                        )}
                                     </div>
                                 </div>
                             );
@@ -2933,41 +4800,57 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                         <div className="pt-4 space-y-6">
                             {sortedVendorCategories.map(category => (
                                 <div key={category}>
-                                    <h4 className="text-xs font-bold text-gray-500 uppercase mb-3 border-b border-gray-100 pb-1 flex items-center gap-2">
-                                        <Tag className="w-3 h-3"/> {category}
+                                    <h4 className="text-sm font-bold text-gray-500 uppercase mb-3 border-b border-gray-100 pb-1 flex items-center gap-2">
+                                        <Tag className="w-4 h-4"/> {category}
                                     </h4>
                                     <div className="grid grid-cols-1 gap-3">
-                                        {vendorsByCategory[category].map(v => (
+                                        {vendorsByCategory[category].map(v => {
+                                          // Calculate approved transactions for this vendor
+                                          const vendorTransactions = currentFinancials.filter(f => {
+                                            // Approval logic: both admin and client must approve
+                                            const approved = f.adminApproved && f.clientApproved;
+                                            // Vendor association logic (same as billing report)
+                                            const cleanName = (name: string | undefined) => name ? (name.includes('(') ? name.split('(')[0].trim() : name.trim()) : '';
+                                            return approved && (
+                                              f.vendorName === v.name ||
+                                              cleanName(f.receivedByName) === v.name ||
+                                              cleanName(f.paidByOther) === v.name ||
+                                              f.paidTo === v.name ||
+                                              f.receivedBy === v.name
+                                            );
+                                          });
+                                          const totalAmount = vendorTransactions.reduce((sum, t) => sum + (t.amount || 0), 0);
+                                          return (
                                             <div 
-                                                key={v.id} 
-                                                onClick={() => {
-                                                  // Only allow vendors to click on their own record
-                                                  if (!isVendor || v.id === user.id) {
-                                                    setSelectedVendorForBilling(v);
-                                                  }
-                                                }}
-                                                className={`flex items-center gap-3 p-2 rounded-lg transition-colors border border-transparent ${
-                                                  isVendor && v.id !== user.id 
-                                                    ? 'opacity-60 cursor-default' 
-                                                    : 'hover:bg-gray-50 hover:border-gray-100 cursor-pointer group'
-                                                }`}
-                                                title={isVendor && v.id !== user.id ? "You can only view your own billing report" : "Click to view billing report"}
+                                              key={v.id} 
+                                              onClick={() => {
+                                                // Only allow vendors to click on their own record
+                                                if (!isVendor || v.id === user.id) {
+                                                setSelectedVendorForBilling(v);
+                                                }
+                                              }}
+                                              className={`flex items-center gap-3 p-3 rounded-lg transition-colors border border-transparent ${
+                                                isVendor && v.id !== user.id 
+                                                ? 'opacity-60 cursor-default' 
+                                                : 'hover:bg-gray-50 hover:border-gray-100 cursor-pointer group'
+                                              }`}
+                                              title={isVendor && v.id !== user.id ? "You can only view your own billing report" : "Click to view billing report"}
                                             >
-                                                <AvatarCircle avatar={v.avatar} name={v.name} size="sm" />
-                                                <div>
-                                                    <p className="font-bold text-gray-800 text-sm">{v.name}</p>
-                                                    <p className="text-xs text-gray-500">{v.company || 'Independent'}</p>
-                                                </div>
-                                                <div className="ml-auto flex items-center gap-2">
-                                                    <span className="text-[10px] bg-gray-100 text-gray-600 px-2 py-1 rounded-full font-medium">
-                                                        {project.tasks.filter(t => t.assigneeId === v.id).length} Tasks
-                                                    </span>
-                                                    {!isVendor || v.id === user.id ? (
-                                                      <ChevronRight className="w-4 h-4 text-gray-300 group-hover:text-gray-500" />
-                                                    ) : null}
-                                                </div>
+                                              <div>
+                                                <p className="font-bold text-gray-800 text-base md:text-sm">{v.name}</p>
+                                                <p className="text-sm text-gray-500">{v.company || 'Independent'}</p>
+                                              </div>
+                                              <div className="ml-auto flex items-center gap-2">
+                                                <span className="text-xs bg-gray-100 text-gray-600 px-2.5 py-1.5 rounded-full font-medium">
+                                                  {project.tasks.filter(t => t.assigneeId === v.id).length} Tasks
+                                                </span>
+                                                {!isVendor || v.id === user.id ? (
+                                                  <ChevronRight className="w-4 h-4 text-gray-300 group-hover:text-gray-500" />
+                                                ) : null}
+                                              </div>
                                             </div>
-                                        ))}
+                                          );
+                                        })}
                                     </div>
                                 </div>
                             ))}
@@ -2981,30 +4864,84 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       </div>
 
       {/* ... (Modals remain unchanged) ... */}
+
+      {/* TEAM TAB: Show vendor financials and designer charges for selected vendor */}
+      {activeTab === 'team' && selectedVendorForBilling && (
+        <div className="max-w-3xl mx-auto bg-white rounded-xl shadow-lg border border-gray-200 mt-8 mb-8 p-4 md:p-6">
+          <h3 className="text-xl font-bold text-gray-800 mb-4 flex items-center gap-2">
+            Vendor Financials: <span className="text-purple-700">{selectedVendorForBilling.name}</span>
+          </h3>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-100 border-b border-gray-200">
+                <tr>
+                  <th className="px-4 py-2 text-left font-bold text-gray-700">Date</th>
+                  <th className="px-4 py-2 font-bold text-gray-700">Description</th>
+                  <th className="px-4 py-2 font-bold text-gray-700">Amount</th>
+                  <th className="px-4 py-2 font-bold text-gray-700">Designer Charge</th>
+                  <th className="px-4 py-2 font-bold text-gray-700">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {currentFinancials.filter(f => {
+                  // Approval logic: both admin and client must approve
+                  const approved = f.adminApproved && f.clientApproved;
+                  // Vendor association logic (same as billing report)
+                  const cleanName = (name: string | undefined) => name ? (name.includes('(') ? name.split('(')[0].trim() : name.trim()) : '';
+                  return approved && (
+                    f.vendorName === selectedVendorForBilling.name ||
+                    cleanName(f.receivedByName) === selectedVendorForBilling.name ||
+                    cleanName(f.paidByOther) === selectedVendorForBilling.name ||
+                    f.paidTo === selectedVendorForBilling.name ||
+                    f.receivedBy === selectedVendorForBilling.name
+                  );
+                }).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()).map((txn, idx) => {
+                  // Designer charge calculation
+                  const designerPercent = project.designerChargePercentage || 0;
+                  const designerCharge = Math.round((txn.amount || 0) * designerPercent / 100);
+                  return (
+                    <tr key={txn.id} className={`border-b border-gray-100 hover:bg-gray-50 ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50/50'}`}>
+                      <td className="px-4 py-3 text-gray-600 whitespace-nowrap text-xs text-left">{txn.date}</td>
+                      <td className="px-4 py-3 text-gray-700">{txn.description || '-'}</td>
+                      <td className="px-4 py-3 text-right text-gray-900 font-bold">₹{txn.amount?.toLocaleString()}</td>
+                      <td className="px-4 py-3 text-right text-orange-700 font-bold">₹{designerCharge.toLocaleString()} <span className="text-xs text-gray-400">({designerPercent}%)</span></td>
+                      <td className="px-4 py-3 text-center">
+                        <span className="inline-block px-2 py-1 rounded text-xs font-medium bg-green-100 text-green-700">Approved</span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
       {/* Invite Member Modal */}
       {isMemberModalOpen && createPortal(
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-           <div className="bg-white rounded-xl shadow-xl w-full max-w-sm p-6 animate-fade-in">
-               <h3 className="text-lg font-bold mb-4 text-gray-900 flex items-center gap-2"><UserIcon className="w-5 h-5"/> Add to Project</h3>
-               <div className="space-y-4">
+           <div className="bg-white rounded-xl shadow-xl w-full max-w-sm max-h-[90vh] flex flex-col animate-fade-in">
+               <div className="p-4 md:p-6 border-b border-gray-100 flex-shrink-0">
+                   <h3 className="text-xl font-bold text-gray-900 flex items-center gap-2"><UserIcon className="w-5 h-5"/> Add to Project</h3>
+               </div>
+               <div className="p-4 md:p-6 space-y-4 flex-1 overflow-y-auto scrollbar-thin">
                   {/* Type Selector */}
                   <div className="flex gap-2 bg-gray-100 p-1 rounded-lg">
                       <button 
                           onClick={() => { setMemberModalType('client'); setSelectedMemberId(''); }}
-                          className={`flex-1 py-2 rounded font-medium text-xs transition-colors ${memberModalType === 'client' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-600 hover:text-gray-900'}`}
+                          className={`flex-1 py-2 rounded font-medium text-sm transition-colors ${memberModalType === 'client' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-600 hover:text-gray-900'}`}
                       >
                           Add Client
                       </button>
                       <button 
                           onClick={() => { setMemberModalType('member'); setSelectedMemberId(''); }}
-                          className={`flex-1 py-2 rounded font-medium text-xs transition-colors ${memberModalType === 'member' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-600 hover:text-gray-900'}`}
+                          className={`flex-1 py-2 rounded font-medium text-sm transition-colors ${memberModalType === 'member' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-600 hover:text-gray-900'}`}
                       >
                           Add Vendor
                       </button>
                   </div>
 
                   <div>
-                      <label className="text-xs font-bold text-gray-500 uppercase">Select {memberModalType === 'client' ? 'Client' : 'Vendor'}</label>
+                      <label className="text-sm font-bold text-gray-500 uppercase">Select {memberModalType === 'client' ? 'Client' : 'Vendor'}</label>
                       <div className="relative mt-1">
                           <select 
                               className="w-full pl-3 pr-10 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-900 bg-white"
@@ -3058,11 +4995,31 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       {isTransactionModalOpen && createPortal(
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
            {/* ... (Same as before) ... */}
-           <div className="bg-white rounded-xl shadow-xl w-full max-w-md max-h-[90vh] overflow-y-auto p-6 animate-fade-in scrollbar-thin">
-              <h3 className="text-lg font-bold mb-3 text-gray-900 flex items-center gap-2">
-                <IndianRupee className="w-5 h-5"/> {editingTransactionId ? 'Edit Transaction' : 'Record Transaction'}
-              </h3>
-              <div className="space-y-3">
+           <div className="bg-white rounded-xl shadow-xl w-full max-w-md max-h-[90vh] flex flex-col animate-fade-in">
+              {/* Fixed Header */}
+              <div className="flex items-center justify-between p-6 border-b border-gray-100 flex-shrink-0">
+                <h3 className="text-lg font-bold text-gray-900 flex items-center gap-2">
+                  <IndianRupee className="w-5 h-5"/> {editingTransactionId ? 'Edit Transaction' : 'Record Transaction'}
+                </h3>
+                <button
+                  onClick={() => {
+                    setIsTransactionModalOpen(false);
+                    setShowTransactionErrors(false);
+                    setEditingTransactionId(null);
+                    setPaidByName('');
+                    setReceivedByName('');
+                    setReceivedByRole('');
+                  }}
+                  className="text-gray-400 hover:text-gray-600 transition-colors"
+                  title="Close modal"
+                >
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+              {/* Scrollable Content */}
+              <div className="flex-1 overflow-y-auto p-6 scrollbar-thin space-y-3">
                  <div>
                     <label className="text-xs font-bold text-gray-500 uppercase">Amount <span className="text-red-500">*</span></label>
                     <div className="relative mt-1">
@@ -3137,6 +5094,10 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                 onClick={() => setNewTransaction({...newTransaction, paidBy: 'admin'})}
                                 className={`py-1 px-2 text-xs font-bold rounded ${newTransaction.paidBy === 'admin' ? 'bg-red-100 text-red-700' : 'bg-gray-50 text-gray-500'}`}
                             >Admin</button>
+                            <button 
+                                onClick={() => setNewTransaction({...newTransaction, paidBy: 'other' as any})}
+                                className={`py-1 px-2 text-xs font-bold rounded ${newTransaction.paidBy === 'other' ? 'bg-gray-100 text-gray-700' : 'bg-gray-50 text-gray-500'}`}
+                            >Other</button>
                         </div>
                       </div>
                       {newTransaction.paidBy === 'client' && (
@@ -3193,39 +5154,91 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                           </select>
                         </div>
                       )}
-                    </>
-                 )}
-
-                 {newTransaction.type === 'income' && (
-                    <>
-                      <div>
-                        <label className="text-xs font-bold text-gray-500 uppercase">Received By</label>
-                        <div className="flex gap-2 mt-1 flex-wrap">
-                            <button 
-                                onClick={() => setNewTransaction({...newTransaction, paidBy: 'designer'})}
-                                className={`py-1 px-2 text-xs font-bold rounded ${newTransaction.paidBy === 'designer' ? 'bg-orange-100 text-orange-700' : 'bg-gray-50 text-gray-500'}`}
-                            >Designer</button>
-                            <button 
-                                onClick={() => setNewTransaction({...newTransaction, paidBy: 'vendor'})}
-                                className={`py-1 px-2 text-xs font-bold rounded ${newTransaction.paidBy === 'vendor' ? 'bg-purple-100 text-purple-700' : 'bg-gray-50 text-gray-500'}`}
-                            >Vendor</button>
-                            <button 
-                                onClick={() => setNewTransaction({...newTransaction, paidBy: 'admin'})}
-                                className={`py-1 px-2 text-xs font-bold rounded ${newTransaction.paidBy === 'admin' ? 'bg-red-100 text-red-700' : 'bg-gray-50 text-gray-500'}`}
-                            >Admin</button>
-                        </div>
-                      </div>
-                      {newTransaction.paidBy === 'vendor' && (
+                      {newTransaction.paidBy === 'admin' && (
                         <div>
-                          <label className="text-xs font-bold text-gray-500 uppercase">Select Vendor</label>
+                          <label className="text-xs font-bold text-gray-500 uppercase">Select Admin</label>
                           <select 
                               className={`${getInputClass(false)} mt-1`}
                               value={newTransaction.vendorName || ''}
                               onChange={e => setNewTransaction({...newTransaction, vendorName: e.target.value})}
-                              title="Select a vendor from the list"
+                              title="Select an admin from the list"
+                          >
+                              <option value="">Select an admin...</option>
+                              {users.filter(u => u.role === Role.ADMIN).map(admin => (
+                                <option key={admin.id} value={admin.name}>
+                                  {admin.name}
+                                </option>
+                              ))}
+                          </select>
+                        </div>
+                      )}
+                      {newTransaction.paidBy === 'other' && (
+                        <div>
+                          <label className="text-xs font-bold text-gray-500 uppercase">Paid By (Name & Role)</label>
+                          <input 
+                              type="text" 
+                              className={`${getInputClass(false)} mt-1`}
+                              placeholder="e.g. John Smith (Partner) or Supplier (Vendor)"
+                              title="Enter who paid (name and role in parentheses)"
+                              value={newTransaction.paidByOther || ''}
+                              onChange={e => setNewTransaction({...newTransaction, paidByOther: e.target.value})}
+                          />
+                        </div>
+                      )}
+                      <div>
+                        <label className="text-xs font-bold text-gray-500 uppercase">Received By</label>
+                        <div className="flex gap-2 mt-1 flex-wrap">
+                            <button 
+                                onClick={() => setReceivedByRole('client')}
+                                className={`py-1 px-2 text-xs font-bold rounded ${receivedByRole === 'client' ? 'bg-blue-100 text-blue-700' : 'bg-gray-50 text-gray-500'}`}
+                            >Client</button>
+                            <button 
+                                onClick={() => setReceivedByRole('vendor')}
+                                className={`py-1 px-2 text-xs font-bold rounded ${receivedByRole === 'vendor' ? 'bg-purple-100 text-purple-700' : 'bg-gray-50 text-gray-500'}`}
+                            >Vendor</button>
+                            <button 
+                                onClick={() => setReceivedByRole('designer')}
+                                className={`py-1 px-2 text-xs font-bold rounded ${receivedByRole === 'designer' ? 'bg-orange-100 text-orange-700' : 'bg-gray-50 text-gray-500'}`}
+                            >Designer</button>
+                            <button 
+                                onClick={() => setReceivedByRole('admin')}
+                                className={`py-1 px-2 text-xs font-bold rounded ${receivedByRole === 'admin' ? 'bg-red-100 text-red-700' : 'bg-gray-50 text-gray-500'}`}
+                            >Admin</button>
+                            <button 
+                                onClick={() => setReceivedByRole('other')}
+                                className={`py-1 px-2 text-xs font-bold rounded ${receivedByRole === 'other' ? 'bg-gray-100 text-gray-700' : 'bg-gray-50 text-gray-500'}`}
+                            >Other</button>
+                        </div>
+                      </div>
+                      {receivedByRole === 'client' && (
+                        <div>
+                          <label className="text-xs font-bold text-gray-500 uppercase">Select Client</label>
+                          <select 
+                              className={`${getInputClass(false)} mt-1`}
+                              value={receivedByName || ''}
+                              onChange={e => setReceivedByName(e.target.value)}
+                              title="Select a client from the project"
+                          >
+                              <option value="">Select a client...</option>
+                              {projectTeam.filter(u => u.role === Role.CLIENT).map(client => (
+                                <option key={client.id} value={client.name}>
+                                  {client.name}
+                                </option>
+                              ))}
+                          </select>
+                        </div>
+                      )}
+                      {receivedByRole === 'vendor' && (
+                        <div>
+                          <label className="text-xs font-bold text-gray-500 uppercase">Select Vendor</label>
+                          <select 
+                              className={`${getInputClass(false)} mt-1`}
+                              value={receivedByName || ''}
+                              onChange={e => setReceivedByName(e.target.value)}
+                              title="Select a vendor from the project"
                           >
                               <option value="">Select a vendor...</option>
-                              {users.filter(u => u.role === Role.VENDOR).map(vendor => (
+                              {projectTeam.filter(u => u.role === Role.VENDOR).map(vendor => (
                                 <option key={vendor.id} value={vendor.name}>
                                   {vendor.name}
                                 </option>
@@ -3233,17 +5246,17 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                           </select>
                         </div>
                       )}
-                      {newTransaction.paidBy === 'designer' && (
+                      {receivedByRole === 'designer' && (
                         <div>
                           <label className="text-xs font-bold text-gray-500 uppercase">Select Designer</label>
                           <select 
                               className={`${getInputClass(false)} mt-1`}
-                              value={newTransaction.vendorName || ''}
-                              onChange={e => setNewTransaction({...newTransaction, vendorName: e.target.value})}
-                              title="Select a designer from the list"
+                              value={receivedByName || ''}
+                              onChange={e => setReceivedByName(e.target.value)}
+                              title="Select a designer from the project"
                           >
                               <option value="">Select a designer...</option>
-                              {users.filter(u => u.role === Role.DESIGNER).map(designer => (
+                              {projectTeam.filter(u => u.role === Role.DESIGNER).map(designer => (
                                 <option key={designer.id} value={designer.name}>
                                   {designer.name}
                                 </option>
@@ -3251,26 +5264,268 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                           </select>
                         </div>
                       )}
+                      {receivedByRole === 'admin' && (
+                        <div>
+                          <label className="text-xs font-bold text-gray-500 uppercase">Select Admin</label>
+                          <select 
+                              className={`${getInputClass(false)} mt-1`}
+                              value={receivedByName || ''}
+                              onChange={e => setReceivedByName(e.target.value)}
+                              title="Select an admin from the list"
+                          >
+                              <option value="">Select an admin...</option>
+                              {users.filter(u => u.role === Role.ADMIN).map(admin => (
+                                <option key={admin.id} value={admin.name}>
+                                  {admin.name}
+                                </option>
+                              ))}
+                          </select>
+                        </div>
+                      )}
+                      {receivedByRole === 'other' && (
+                        <div>
+                          <label className="text-xs font-bold text-gray-500 uppercase">Received By (Name & Role)</label>
+                          <input 
+                              type="text" 
+                              className={`${getInputClass(false)} mt-1`}
+                              placeholder="e.g. John Smith (Contractor) or Supplier (Vendor)"
+                              title="Enter who received (name and role in parentheses)"
+                              value={receivedByName || ''}
+                              onChange={e => setReceivedByName(e.target.value)}
+                          />
+                        </div>
+                      )}
                     </>
                  )}
 
-                 <div className="grid grid-cols-2 gap-3">
+                 {newTransaction.type === 'income' && (
+                    <>
+                      <div>
+                        <label className="text-xs font-bold text-gray-500 uppercase">Paid By</label>
+                        <div className="flex gap-2 mt-1 flex-wrap">
+                            <button 
+                                onClick={() => setReceivedByRole('client')}
+                                className={`py-1 px-2 text-xs font-bold rounded ${receivedByRole === 'client' ? 'bg-blue-100 text-blue-700' : 'bg-gray-50 text-gray-500'}`}
+                            >Client</button>
+                            <button 
+                                onClick={() => setReceivedByRole('vendor')}
+                                className={`py-1 px-2 text-xs font-bold rounded ${receivedByRole === 'vendor' ? 'bg-purple-100 text-purple-700' : 'bg-gray-50 text-gray-500'}`}
+                            >Vendor</button>
+                            <button 
+                                onClick={() => setReceivedByRole('designer')}
+                                className={`py-1 px-2 text-xs font-bold rounded ${receivedByRole === 'designer' ? 'bg-orange-100 text-orange-700' : 'bg-gray-50 text-gray-500'}`}
+                            >Designer</button>
+                            <button 
+                                onClick={() => setReceivedByRole('admin')}
+                                className={`py-1 px-2 text-xs font-bold rounded ${receivedByRole === 'admin' ? 'bg-red-100 text-red-700' : 'bg-gray-50 text-gray-500'}`}
+                            >Admin</button>
+                            <button 
+                                onClick={() => setReceivedByRole('other')}
+                                className={`py-1 px-2 text-xs font-bold rounded ${receivedByRole === 'other' ? 'bg-gray-100 text-gray-700' : 'bg-gray-50 text-gray-500'}`}
+                            >Other</button>
+                        </div>
+                      </div>
+                      {receivedByRole === 'client' && (
+                        <div>
+                          <label className="text-xs font-bold text-gray-500 uppercase">Select Client</label>
+                          <select 
+                              className={`${getInputClass(false)} mt-1`}
+                              value={paidByName || ''}
+                              onChange={e => setPaidByName(e.target.value)}
+                              title="Select a client from the project"
+                          >
+                              <option value="">Select a client...</option>
+                              {projectTeam.filter(u => u.role === Role.CLIENT).map(client => (
+                                <option key={client.id} value={client.name}>
+                                  {client.name}
+                                </option>
+                              ))}
+                          </select>
+                        </div>
+                      )}
+                      {receivedByRole === 'vendor' && (
+                        <div>
+                          <label className="text-xs font-bold text-gray-500 uppercase">Select Vendor</label>
+                          <select 
+                              className={`${getInputClass(false)} mt-1`}
+                              value={paidByName || ''}
+                              onChange={e => setPaidByName(e.target.value)}
+                              title="Select a vendor from the project"
+                          >
+                              <option value="">Select a vendor...</option>
+                              {projectTeam.filter(u => u.role === Role.VENDOR).map(vendor => (
+                                <option key={vendor.id} value={vendor.name}>
+                                  {vendor.name}
+                                </option>
+                              ))}
+                          </select>
+                        </div>
+                      )}
+                      {receivedByRole === 'designer' && (
+                        <div>
+                          <label className="text-xs font-bold text-gray-500 uppercase">Select Designer</label>
+                          <select 
+                              className={`${getInputClass(false)} mt-1`}
+                              value={paidByName || ''}
+                              onChange={e => setPaidByName(e.target.value)}
+                              title="Select a designer from the project"
+                          >
+                              <option value="">Select a designer...</option>
+                              {projectTeam.filter(u => u.role === Role.DESIGNER).map(designer => (
+                                <option key={designer.id} value={designer.name}>
+                                  {designer.name}
+                                </option>
+                              ))}
+                          </select>
+                        </div>
+                      )}
+                      {receivedByRole === 'admin' && (
+                        <div>
+                          <label className="text-xs font-bold text-gray-500 uppercase">Select Admin</label>
+                          <select 
+                              className={`${getInputClass(false)} mt-1`}
+                              value={paidByName || ''}
+                              onChange={e => setPaidByName(e.target.value)}
+                              title="Select an admin from the list"
+                          >
+                              <option value="">Select an admin...</option>
+                              {users.filter(u => u.role === Role.ADMIN).map(admin => (
+                                <option key={admin.id} value={admin.name}>
+                                  {admin.name}
+                                </option>
+                              ))}
+                          </select>
+                        </div>
+                      )}
+                      {receivedByRole === 'other' && (
+                        <div>
+                          <label className="text-xs font-bold text-gray-500 uppercase">Paid By (Name & Role)</label>
+                          <input 
+                              type="text" 
+                              className={`${getInputClass(false)} mt-1`}
+                              placeholder="e.g. John Smith (Partner) or Supplier (Vendor)"
+                              title="Enter who paid (name and role in parentheses)"
+                              value={paidByName || ''}
+                              onChange={e => setPaidByName(e.target.value)}
+                          />
+                        </div>
+                      )}
+                      <div>
+                        <label className="text-xs font-bold text-gray-500 uppercase">Received By</label>
+                        <div className="flex gap-2 mt-1 flex-wrap">
+                            <button 
+                                onClick={() => setReceivedByRole('')}
+                                className={`py-1 px-2 text-xs font-bold rounded ${receivedByRole === '' ? 'bg-gray-100 text-gray-700' : 'bg-gray-50 text-gray-500'}`}
+                            >Project</button>
+                            <button 
+                                onClick={() => setReceivedByRole('vendor-received')}
+                                className={`py-1 px-2 text-xs font-bold rounded ${receivedByRole === 'vendor-received' ? 'bg-purple-100 text-purple-700' : 'bg-gray-50 text-gray-500'}`}
+                            >Vendor</button>
+                            <button 
+                                onClick={() => setReceivedByRole('designer-received')}
+                                className={`py-1 px-2 text-xs font-bold rounded ${receivedByRole === 'designer-received' ? 'bg-orange-100 text-orange-700' : 'bg-gray-50 text-gray-500'}`}
+                            >Designer</button>
+                            <button 
+                                onClick={() => setReceivedByRole('admin-received')}
+                                className={`py-1 px-2 text-xs font-bold rounded ${receivedByRole === 'admin-received' ? 'bg-red-100 text-red-700' : 'bg-gray-50 text-gray-500'}`}
+                            >Admin</button>
+                            <button 
+                                onClick={() => setReceivedByRole('other-received')}
+                                className={`py-1 px-2 text-xs font-bold rounded ${receivedByRole === 'other-received' ? 'bg-gray-100 text-gray-700' : 'bg-gray-50 text-gray-500'}`}
+                            >Other</button>
+                        </div>
+                      </div>
+                      {receivedByRole === 'vendor-received' && (
+                        <div>
+                          <label className="text-xs font-bold text-gray-500 uppercase">Select Vendor</label>
+                          <select 
+                              className={`${getInputClass(false)} mt-1`}
+                              value={receivedByName || ''}
+                              onChange={e => setReceivedByName(e.target.value)}
+                              title="Select a vendor from the project"
+                          >
+                              <option value="">Select a vendor...</option>
+                              {projectTeam.filter(u => u.role === Role.VENDOR).map(vendor => (
+                                <option key={vendor.id} value={vendor.name}>
+                                  {vendor.name}
+                                </option>
+                              ))}
+                          </select>
+                        </div>
+                      )}
+                      {receivedByRole === 'designer-received' && (
+                        <div>
+                          <label className="text-xs font-bold text-gray-500 uppercase">Select Designer</label>
+                          <select 
+                              className={`${getInputClass(false)} mt-1`}
+                              value={receivedByName || ''}
+                              onChange={e => setReceivedByName(e.target.value)}
+                              title="Select a designer from the project"
+                          >
+                              <option value="">Select a designer...</option>
+                              {projectTeam.filter(u => u.role === Role.DESIGNER).map(designer => (
+                                <option key={designer.id} value={designer.name}>
+                                  {designer.name}
+                                </option>
+                              ))}
+                          </select>
+                        </div>
+                      )}
+                      {receivedByRole === 'admin-received' && (
+                        <div>
+                          <label className="text-xs font-bold text-gray-500 uppercase">Select Admin</label>
+                          <select 
+                              className={`${getInputClass(false)} mt-1`}
+                              value={receivedByName || ''}
+                              onChange={e => setReceivedByName(e.target.value)}
+                              title="Select an admin from the list"
+                          >
+                              <option value="">Select an admin...</option>
+                              {users.filter(u => u.role === Role.ADMIN).map(admin => (
+                                <option key={admin.id} value={admin.name}>
+                                  {admin.name}
+                                </option>
+                              ))}
+                          </select>
+                        </div>
+                      )}
+                      {receivedByRole === 'other-received' && (
+                        <div>
+                          <label className="text-xs font-bold text-gray-500 uppercase">Received By (Name & Role)</label>
+                          <input 
+                              type="text" 
+                              className={`${getInputClass(false)} mt-1`}
+                              placeholder="e.g. John Smith (Contractor) or Supplier (Vendor)"
+                              title="Enter who received (name and role in parentheses)"
+                              value={receivedByName || ''}
+                              onChange={e => setReceivedByName(e.target.value)}
+                          />
+                        </div>
+                      )}
+                    </>
+                 )}
+
+                 <div className="grid grid-cols-3 gap-3">
                     <div>
                         <label className="text-xs font-bold text-gray-500 uppercase">Category</label>
                         <select 
                             className={`${getInputClass(showTransactionErrors && !newTransaction.category)} mt-1 text-xs`}
                             value={newTransaction.category || ''}
-                            onChange={e => setNewTransaction({...newTransaction, category: e.target.value})}
+                            onChange={e => {
+                              setNewTransaction({...newTransaction, category: e.target.value});
+                              if (e.target.value !== 'Others') setCustomCategory('');
+                            }}
                             aria-label="Transaction category"
                         >
                             <option value="">Select...</option>
                             {newTransaction.type === 'income' ? (
                                 <>
-                                    <option value="Retainer">Retainer</option>
+                                    <option value="Advance">Advance</option>
                                     <option value="Milestone 1">Milestone 1</option>
                                     <option value="Milestone 2">Milestone 2</option>
                                     <option value="Final Payment">Final Payment</option>
-                                    <option value="Reimbursement">Reimbursement</option>
+                                    <option value="Additional Budget">Additional Budget</option>
+                                    <option value="Others">Others (please specify)</option>
                                 </>
                             ) : (
                                 <>
@@ -3283,11 +5538,40 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                             )}
                         </select>
                     </div>
+                    {newTransaction.type === 'income' && newTransaction.category === 'Others' && (
+                        <div>
+                            <label className="text-xs font-bold text-gray-500 uppercase">Specify Category</label>
+                            <input 
+                                type="text"
+                                className={`${getInputClass(showTransactionErrors && !customCategory)} mt-1 text-xs`}
+                                placeholder="Enter custom category"
+                                value={customCategory}
+                                onChange={e => setCustomCategory(e.target.value)}
+                            />
+                        </div>
+                    )}
+                    <div>
+                        <label className="text-xs font-bold text-gray-500 uppercase">Mode</label>
+                        <select 
+                            className={`${getInputClass(false)} mt-1 text-xs`}
+                            value={newTransaction.paymentMode || ''}
+                            onChange={e => setNewTransaction({...newTransaction, paymentMode: e.target.value as any})}
+                            aria-label="Payment mode"
+                        >
+                            <option value="">Select...</option>
+                            <option value="cash">Cash</option>
+                            <option value="upi">UPI</option>
+                            <option value="bank_transfer">Bank Transfer</option>
+                            <option value="cheque">Cheque</option>
+                            <option value="credit_card">Credit Card</option>
+                            <option value="other">Other</option>
+                        </select>
+                    </div>
                     <div>
                         <label className="text-xs font-bold text-gray-500 uppercase">Status</label>
                         <select 
                             className={`${getInputClass(false)} mt-1 text-xs`}
-                            value={newTransaction.status}
+                            value={newTransaction.status || 'pending'}
                             onChange={e => setNewTransaction({...newTransaction, status: e.target.value as any})}
                             aria-label="Transaction status"
                         >
@@ -3298,11 +5582,105 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                     </div>
                  </div>
 
+                 {/* Approval Section for Additional Budgets */}
+                 {newTransaction.type === 'income' && newTransaction.category === 'Additional Budget' && (
+                    <div className="border-t border-gray-200 pt-3 mt-3">
+                      <p className="text-xs font-bold text-gray-700 uppercase mb-3">Approvals Required</p>
+                      <div className="space-y-2">
+                        <label className="flex items-center gap-2 cursor-pointer p-2 rounded hover:bg-gray-50 transition-all" style={{opacity: user?.role !== Role.CLIENT ? 0.5 : 1, pointerEvents: user?.role !== Role.CLIENT ? 'none' : 'auto'}}>
+                          <input 
+                            type="checkbox" 
+                            checked={newTransaction.clientApprovalForAdditionalBudget === 'approved'}
+                            onChange={e => setNewTransaction({
+                              ...newTransaction,
+                              clientApprovalForAdditionalBudget: e.target.checked ? 'approved' : 'pending'
+                            })}
+                            disabled={user?.role !== Role.CLIENT}
+                            className="w-4 h-4 disabled:opacity-50 disabled:cursor-not-allowed"
+                            title="Client approval for additional budget"
+                          />
+                          <span className="text-sm text-gray-700">
+                            Client Approval
+                            {newTransaction.clientApprovalForAdditionalBudget === 'approved' && <span className="ml-1 text-green-600 font-bold">✓</span>}
+                            {newTransaction.clientApprovalForAdditionalBudget === 'rejected' && <span className="ml-1 text-red-600 font-bold">✗</span>}
+                          </span>
+                        </label>
+                        <label className="flex items-center gap-2 cursor-pointer p-2 rounded hover:bg-gray-50 transition-all" style={{opacity: user?.role !== Role.ADMIN ? 0.5 : 1, pointerEvents: user?.role !== Role.ADMIN ? 'none' : 'auto'}}>
+                          <input 
+                            type="checkbox" 
+                            checked={newTransaction.adminApprovalForAdditionalBudget === 'approved'}
+                            onChange={e => setNewTransaction({
+                              ...newTransaction,
+                              adminApprovalForAdditionalBudget: e.target.checked ? 'approved' : 'pending'
+                            })}
+                            disabled={user?.role !== Role.ADMIN}
+                            className="w-4 h-4 disabled:opacity-50 disabled:cursor-not-allowed"
+                            title="Admin approval for additional budget"
+                          />
+                          <span className="text-sm text-gray-700">
+                            Admin Approval
+                            {newTransaction.adminApprovalForAdditionalBudget === 'approved' && <span className="ml-1 text-green-600 font-bold">✓</span>}
+                            {newTransaction.adminApprovalForAdditionalBudget === 'rejected' && <span className="ml-1 text-red-600 font-bold">✗</span>}
+                          </span>
+                        </label>
+                      </div>
+                    </div>
+                 )}
+
+                 {/* Approval Section for Received Payments from Client */}
+                 {newTransaction.type === 'income' && newTransaction.category !== 'Additional Budget' && (
+                    <div className="border-t border-gray-200 pt-3 mt-3">
+                      <p className="text-xs font-bold text-gray-700 uppercase mb-3">Payment Approvals</p>
+                      <div className="space-y-2">
+                        <label className="flex items-center gap-2 cursor-pointer p-2 rounded hover:bg-gray-50 transition-all" style={{opacity: user?.role !== Role.CLIENT ? 0.5 : 1, pointerEvents: user?.role !== Role.CLIENT ? 'none' : 'auto'}}>
+                          <input 
+                            type="checkbox" 
+                            checked={newTransaction.clientApprovalForPayment === 'approved'}
+                            onChange={e => setNewTransaction({
+                              ...newTransaction,
+                              clientApprovalForPayment: e.target.checked ? 'approved' : 'pending'
+                            })}
+                            disabled={user?.role !== Role.CLIENT}
+                            className="w-4 h-4 disabled:opacity-50 disabled:cursor-not-allowed"
+                            title="Client confirmation of payment"
+                          />
+                          <span className="text-sm text-gray-700">
+                            Client Confirmation
+                            {newTransaction.clientApprovalForPayment === 'approved' && <span className="ml-1 text-green-600 font-bold">✓</span>}
+                            {newTransaction.clientApprovalForPayment === 'rejected' && <span className="ml-1 text-red-600 font-bold">✗</span>}
+                          </span>
+                        </label>
+                        <label className="flex items-center gap-2 cursor-pointer p-2 rounded hover:bg-gray-50 transition-all" style={{opacity: user?.role !== Role.ADMIN ? 0.5 : 1, pointerEvents: user?.role !== Role.ADMIN ? 'none' : 'auto'}}>
+                          <input 
+                            type="checkbox" 
+                            checked={newTransaction.adminApprovalForPayment === 'approved'}
+                            onChange={e => setNewTransaction({
+                              ...newTransaction,
+                              adminApprovalForPayment: e.target.checked ? 'approved' : 'pending'
+                            })}
+                            disabled={user?.role !== Role.ADMIN}
+                            className="w-4 h-4 disabled:opacity-50 disabled:cursor-not-allowed"
+                            title="Admin approval of payment"
+                          />
+                          <span className="text-sm text-gray-700">
+                            Admin Approval
+                            {newTransaction.adminApprovalForPayment === 'approved' && <span className="ml-1 text-green-600 font-bold">✓</span>}
+                            {newTransaction.adminApprovalForPayment === 'rejected' && <span className="ml-1 text-red-600 font-bold">✗</span>}
+                          </span>
+                        </label>
+                      </div>
+                    </div>
+                 )}
+
                  <div className="pt-2 flex gap-3">
                     <button onClick={() => {
                       setIsTransactionModalOpen(false);
                       setShowTransactionErrors(false);
                       setEditingTransactionId(null);
+                      setPaidByName('');
+                      setReceivedByName('');
+                      setReceivedByRole('');
+                      setCustomCategory('');
                     }} className="flex-1 py-1.5 text-xs text-gray-500 hover:bg-gray-100 rounded font-medium disabled:opacity-50 disabled:cursor-not-allowed" disabled={isSavingTransaction} title="Close transaction modal">Cancel</button>
                     <button onClick={handleSaveTransaction} disabled={isSavingTransaction} className="flex-1 py-1.5 text-xs bg-gray-900 text-white rounded font-bold hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed transition-all" title="Save transaction entry">
                       {isSavingTransaction ? 'Saving...' : (editingTransactionId ? 'Update Entry' : 'Add Entry')}
@@ -3317,66 +5695,137 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       {/* Document Upload Modal */}
       {isDocModalOpen && createPortal(
          <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-            <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6 animate-fade-in">
-               <h3 className="text-lg font-bold mb-4 flex items-center gap-2 text-gray-900"><Upload className="w-5 h-5"/> Upload Document</h3>
-               <div className="space-y-4">
+            <div className="bg-white rounded-xl shadow-xl w-full max-w-md max-h-[90vh] flex flex-col animate-fade-in">
+               {/* Fixed Header */}
+               <div className="p-6 border-b border-gray-100 flex-shrink-0">
+                   <h3 className="text-lg font-bold flex items-center gap-2 text-gray-900"><Upload className="w-5 h-5"/> Upload Document</h3>
+               </div>
+               
+               {/* Scrollable Content */}
+               <div className="flex-1 overflow-y-auto p-6 scrollbar-thin space-y-4">
                   <input 
-                    type="text" placeholder="Document Name (e.g. FloorPlan.pdf)" 
-                    className={getInputClass(showDocErrors && !newDoc.name && !selectedFile)}
+                    type="text" placeholder="Document Name (e.g. FloorPlan.pdf) - optional when uploading files" 
+                    className={getInputClass(showDocErrors && !newDoc.name && selectedFiles.length === 0)}
                     value={newDoc.name} onChange={e => setNewDoc({...newDoc, name: e.target.value})}
                   />
                   {/* ... rest of doc modal ... */}
                   <div>
-                     <label className="text-xs font-bold text-gray-500 uppercase mb-2 block">Share With:</label>
-                     <div className="space-y-2">
-                        {[Role.CLIENT, Role.VENDOR, Role.DESIGNER].map(role => (
-                           <label key={role} className="flex items-center gap-2 cursor-pointer hover:bg-gray-50 p-2 rounded border border-transparent hover:border-gray-200">
-                              <input 
-                                type="checkbox" 
-                                checked={newDoc.sharedWith.includes(role)}
-                                onChange={e => {
-                                   if (e.target.checked) setNewDoc({...newDoc, sharedWith: [...newDoc.sharedWith, role]});
-                                   else setNewDoc({...newDoc, sharedWith: newDoc.sharedWith.filter(r => r !== role)});
-                                }}
-                              />
-                              <span className="capitalize text-gray-800">{role}</span>
-                           </label>
-                        ))}
+                     <label className="text-xs font-bold text-gray-500 uppercase mb-2 block">Share With Project Team:</label>
+                     <div className="space-y-3 max-h-48 overflow-y-auto border border-gray-200 rounded-lg p-3 bg-gray-50">
+                        {[Role.CLIENT, Role.VENDOR, Role.DESIGNER].map(role => {
+                           const teamMembersWithRole = projectTeam.filter(u => u.role === role);
+                           if (teamMembersWithRole.length === 0) return null;
+                           return (
+                              <div key={role}>
+                                 <p className="text-xs font-bold text-gray-600 uppercase mb-2">{role}s</p>
+                                 <div className="space-y-1 ml-2">
+                                    {teamMembersWithRole.map(person => (
+                                       <label key={person.id} className="flex items-center gap-2 cursor-pointer hover:bg-white p-1.5 rounded border border-transparent hover:border-gray-200">
+                                          <input 
+                                            type="checkbox" 
+                                            checked={newDoc.sharedWith.includes(person.id)}
+                                            onChange={e => {
+                                               if (e.target.checked) setNewDoc({...newDoc, sharedWith: [...newDoc.sharedWith, person.id]});
+                                               else setNewDoc({...newDoc, sharedWith: newDoc.sharedWith.filter(id => id !== person.id)});
+                                            }}
+                                          />
+                                          <span className="text-sm text-gray-800">{person.name}</span>
+                                       </label>
+                                    ))}
+                                 </div>
+                              </div>
+                           );
+                        })}
                      </div>
                   </div>
+
+                  {currentTasks.length > 0 && (
+                    <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+                       <label htmlFor="attach-task-select" className="text-xs font-bold text-blue-600 uppercase mb-2 block">Attach to Task (Optional):</label>
+                       <select 
+                         id="attach-task-select"
+                         title="Select a task to attach documents to"
+                         aria-label="Select a task to attach documents to"
+                         value={newDoc.attachToTaskId || ''}
+                         onChange={e => {
+                           setNewDoc({...newDoc, attachToTaskId: e.target.value || undefined});
+                         }}
+                         className="w-full p-2 border border-blue-300 rounded bg-white text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                       >
+                         <option value="">-- Don't attach to any task --</option>
+                         {currentTasks.map(task => (
+                           <option key={task.id} value={task.id}>
+                             {task.title} ({task.status})
+                           </option>
+                         ))}
+                       </select>
+                    </div>
+                  )}
 
                   <div 
                     className="bg-gray-50 p-6 rounded-lg border-2 border-dashed border-gray-300 text-center text-sm text-gray-500 hover:bg-gray-100 hover:border-gray-400 transition-colors cursor-pointer relative"
                     onClick={() => fileInputRef.current?.click()}
                   >
-                     {selectedFile ? (
-                       <div className="flex flex-col items-center">
-                          <FileIcon className="w-8 h-8 text-blue-500 mb-2" />
-                          <p className="font-bold text-gray-800">{selectedFile.name}</p>
-                          <p className="text-xs text-gray-400">{(selectedFile.size / 1024).toFixed(1)} KB</p>
+                     {selectedFiles.length > 0 ? (
+                       <div className="flex flex-col items-start gap-2">
+                          <div className="w-full flex items-center gap-2">
+                            <FileIcon className="w-8 h-8 text-blue-500 flex-shrink-0" />
+                            <div className="flex-1 text-left">
+                              <p className="font-bold text-gray-800">{selectedFiles.length} file(s) selected</p>
+                              <p className="text-xs text-gray-400">
+                                Total size: {(selectedFiles.reduce((sum, f) => sum + f.size, 0) / 1024).toFixed(1)} KB
+                              </p>
+                            </div>
+                          </div>
+                          <div className="w-full mt-2 max-h-32 overflow-y-auto border-t border-gray-200 pt-2">
+                            {selectedFiles.map((file, idx) => (
+                              <div key={idx} className="flex items-center justify-between text-xs text-gray-600 bg-white p-1.5 rounded mb-1">
+                                <span className="truncate flex-1">{file.name}</span>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setSelectedFiles(selectedFiles.filter((_, i) => i !== idx));
+                                  }}
+                                  className="ml-2 text-gray-400 hover:text-red-500 flex-shrink-0"
+                                  title="Remove file"
+                                >
+                                  ×
+                                </button>
+                              </div>
+                            ))}
+                          </div>
                        </div>
                      ) : (
                        <div className="flex flex-col items-center">
                           <Upload className="w-8 h-8 text-gray-300 mb-2" />
-                          <p>Click to select file</p>
-                          <p className="text-xs text-gray-400 mt-1">or drag and drop here</p>
+                          <p>Click to select files</p>
+                          <p className="text-xs text-gray-400 mt-1">or drag and drop here (multiple files supported)</p>
                        </div>
                      )}
                      <input 
-                       type="file" 
+                       type="file"
+                       multiple
                        ref={fileInputRef}
                        onChange={(e) => {
-                          const file = e.target.files?.[0];
-                          if (file) setSelectedFile(file);
+                          const files = Array.from(e.target.files || []);
+                          setSelectedFiles(files);
                        }}
                        className="hidden"
-                       title="Select file to upload"
+                       title="Select files to upload"
                      />
                   </div>
 
                   <div className="flex gap-2 pt-2">
                      <button onClick={() => setIsDocModalOpen(false)} className="flex-1 py-2 text-gray-500 hover:bg-gray-100 rounded">Cancel</button>
-                     <button onClick={handleUploadDocument} className="flex-1 py-2 bg-gray-900 text-white rounded font-bold hover:bg-gray-800">Upload</button>
+                     <button onClick={handleUploadDocument} className="flex-1 py-2 bg-gray-900 text-white rounded font-bold hover:bg-gray-800" disabled={isUploadingDocument}>
+                       {isUploadingDocument ? (
+                         <span className="flex items-center justify-center gap-2">
+                           <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"></path></svg>
+                           Uploading...
+                         </span>
+                       ) : 'Upload'}
+                     </button>
                   </div>
                </div>
             </div>
@@ -3420,11 +5869,27 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                   </div>
               )}
 
+              {/* Mobile Tabs */}
+              <div className="flex md:hidden border-b border-gray-200 bg-white flex-shrink-0">
+                <button 
+                  onClick={() => setMobileTaskTab('details')}
+                  className={`flex-1 py-3 text-sm font-bold text-center ${mobileTaskTab === 'details' ? 'text-gray-900 border-b-2 border-gray-900' : 'text-gray-500'}`}
+                >
+                  Details
+                </button>
+                <button 
+                  onClick={() => setMobileTaskTab('activity')}
+                  className={`flex-1 py-3 text-sm font-bold text-center ${mobileTaskTab === 'activity' ? 'text-gray-900 border-b-2 border-gray-900' : 'text-gray-500'}`}
+                >
+                  Activity
+                </button>
+              </div>
+
               {/* Modal Body: Split View */}
-              <div className={`flex-1 flex overflow-hidden ${isEditingFrozen ? 'pointer-events-none opacity-80 bg-gray-50' : ''}`}>
+              <div className={`flex-1 flex flex-col md:flex-row overflow-hidden ${isEditingFrozen ? 'pointer-events-none opacity-80 bg-gray-50' : ''}`}>
                  
                  {/* LEFT: Task Info Form */}
-                 <div className="w-1/2 p-6 overflow-y-auto border-r border-gray-100 bg-white">
+                 <div className={`w-full md:w-1/2 p-6 overflow-y-auto border-r border-gray-100 bg-white ${mobileTaskTab === 'activity' ? 'hidden md:block' : 'block'}`}>
                     <div className="space-y-4">
                        {/* ADMIN ACTIONS */}
                        {isAdmin && (
@@ -3505,27 +5970,35 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                             <label className="text-xs font-bold text-gray-500 uppercase">Start Date <span className="text-red-500">*</span></label>
                             {canEditProject ? (
                                <input 
-                                  type="date" 
+                                  type="text" 
+                                  placeholder="DD/MM/YYYY"
                                   className={`${getInputClass(showTaskErrors && !editingTask.startDate, isEditingFrozen)} mt-1`} 
-                                  title="Start date"
-                                  value={editingTask.startDate || ''} 
-                                  onChange={e => setEditingTask({...editingTask, startDate: e.target.value})} 
+                                  title="Start date in DD/MM/YYYY format"
+                                  value={formatDateToIndian(editingTask.startDate)} 
+                                  onChange={e => {
+                                    const isoDate = formatIndianToISO(e.target.value);
+                                    setEditingTask({...editingTask, startDate: isoDate || e.target.value})
+                                  }} 
                                   disabled={isEditingFrozen}
                                />
-                            ) : <p className="text-sm mt-1 text-gray-800">{editingTask.startDate}</p>}
+                            ) : <p className="text-sm mt-1 text-gray-800">{formatDateToIndian(editingTask.startDate)}</p>}
                           </div>
                           <div>
                             <label className="text-xs font-bold text-gray-500 uppercase">Due Date <span className="text-red-500">*</span></label>
                             {canEditProject ? (
                                <input 
-                                  type="date" 
+                                  type="text" 
+                                  placeholder="DD/MM/YYYY"
                                   className={`${getInputClass(showTaskErrors && !editingTask.dueDate, isEditingFrozen)} mt-1`} 
-                                  title="Due date"
-                                  value={editingTask.dueDate || ''} 
-                                  onChange={e => setEditingTask({...editingTask, dueDate: e.target.value})} 
+                                  title="Due date in DD/MM/YYYY format"
+                                  value={formatDateToIndian(editingTask.dueDate)} 
+                                  onChange={e => {
+                                    const isoDate = formatIndianToISO(e.target.value);
+                                    setEditingTask({...editingTask, dueDate: isoDate || e.target.value})
+                                  }} 
                                   disabled={isEditingFrozen}
                                />
-                            ) : <p className="text-sm mt-1 text-gray-800">{editingTask.dueDate}</p>}
+                            ) : <p className="text-sm mt-1 text-gray-800">{formatDateToIndian(editingTask.dueDate)}</p>}
                           </div>
                        </div>
 
@@ -3585,38 +6058,6 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                </select>
                              ) : <p className="flex-1 text-sm bg-gray-50 p-2 rounded text-gray-800">{getAssigneeName(editingTask.assigneeId || '')}</p>}
 
-                             {/* Task Link & WhatsApp Share Button */}
-                             {editingTask.id && (
-                               <>
-                                 <button
-                                   onClick={() => {
-                                     copyTaskLink(editingTask.id);
-                                   }}
-                                   className="px-3 py-2 border border-blue-200 bg-blue-50 hover:bg-blue-100 rounded text-blue-700 flex items-center gap-2 transition-colors text-sm font-medium"
-                                   title="Copy task link"
-                                 >
-                                   <Link2 className="w-4 h-4" />
-                                   Copy Link
-                                 </button>
-                                 {editingTask.assigneeId && (() => {
-                                   const assignee = users.find(u => u.id === editingTask.assigneeId);
-                                   return assignee && assignee.phone ? (
-                                     <button
-                                       onClick={() => {
-                                         const message = `Hi ${assignee.name},\n\nTask: "${editingTask.title}"\nProject: "${project.name}"\nDue: ${new Date(editingTask.dueDate || '').toLocaleDateString('en-IN')}\nStatus: ${editingTask.status}\n\nPlease check the task details.`;
-                                         openWhatsAppChat(assignee, message);
-                                       }}
-                                       className="px-3 py-2 border border-green-200 bg-green-50 hover:bg-green-100 rounded text-green-700 flex items-center gap-2 transition-colors text-sm font-medium"
-                                       title={`Share on WhatsApp: ${assignee.phone}`}
-                                     >
-                                       <MessageCircle className="w-4 h-4" />
-                                       WhatsApp
-                                     </button>
-                                   ) : null;
-                                 })()}
-                               </>
-                             )}
-
                              {canEditProject ? (
                                <select 
                                  className={`w-32 p-2 border rounded border-gray-300 focus:outline-none focus:ring-2 focus:ring-gray-900 ${isEditingFrozen ? 'bg-gray-100 text-gray-500' : 'bg-white text-gray-900'}`}
@@ -3639,16 +6080,16 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                               <span>{editingTask.status || TaskStatus.TODO}</span>
                               {editingTask.status === TaskStatus.REVIEW && (
                                 <div className="flex gap-1 flex-wrap">
-                                  {editingTask.approvals?.completion?.client?.status === 'approved' && editingTask.approvals?.completion?.designer?.status === 'approved' && (
+                                  {editingTask.approvals?.completion?.client?.status === 'approved' && editingTask.approvals?.completion?.admin?.status === 'approved' && (
                                     <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded font-normal">Approved by Both</span>
                                   )}
-                                  {editingTask.approvals?.completion?.client?.status === 'approved' && !editingTask.approvals?.completion?.designer?.status && (
-                                    <span className="text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded font-normal">Waiting for Designer Approval</span>
+                                  {editingTask.approvals?.completion?.client?.status === 'approved' && !editingTask.approvals?.completion?.admin?.status && (
+                                    <span className="text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded font-normal">Waiting for Admin Approval</span>
                                   )}
-                                  {editingTask.approvals?.completion?.designer?.status === 'approved' && !editingTask.approvals?.completion?.client?.status && (
+                                  {editingTask.approvals?.completion?.admin?.status === 'approved' && !editingTask.approvals?.completion?.client?.status && (
                                     <span className="text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded font-normal">Waiting for Client Approval</span>
                                   )}
-                                  {!editingTask.approvals?.completion?.client?.status && !editingTask.approvals?.completion?.designer?.status && (
+                                  {!editingTask.approvals?.completion?.client?.status && !editingTask.approvals?.completion?.admin?.status && (
                                     <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded font-normal">Under Review</span>
                                   )}
                                   {editingTask.approvals?.completion?.client?.status === 'rejected' && (
@@ -3666,22 +6107,11 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                        </div>
 
                        {/* Subtasks */}
-                       <div className="pt-4 border-t border-gray-100">
-                         <div className="flex justify-between items-center mb-2">
-                           <label className="text-xs font-bold text-gray-700 uppercase">Checklist</label>
-                           {canEditProject && !isEditingFrozen && (
-                             <button 
-                               onClick={() => {
-                                  const newSub: SubTask = { id: Math.random().toString(), title: 'New Item', isCompleted: false };
-                                  setEditingTask({ ...editingTask, subtasks: [...(editingTask.subtasks || []), newSub] });
-                               }}
-                               className="text-xs text-blue-600 hover:underline flex items-center gap-1"
-                             ><Plus className="w-3 h-3"/> Add</button>
-                           )}
-                         </div>
-                         <div className="space-y-2 max-h-64 overflow-y-auto pr-2">
+                       <div className="pt-4 border-t border-gray-100 flex flex-col h-64">
+                         <label className="text-xs font-bold text-gray-700 uppercase mb-2 block">Checklist</label>
+                         <div className="space-y-2 flex-1 overflow-y-auto pr-2">
                             {editingTask.subtasks?.map((st, idx) => (
-                              <div key={st.id} className="flex items-center gap-2">
+                              <div key={st.id} className="flex items-center gap-2 p-2 rounded transition-opacity" style={{opacity: ((!canEditProject && user.id !== editingTask.assigneeId) || isTaskBlocked(editingTask) || isEditingFrozen) ? 0.5 : 1}}>
                                  <input 
                                    type="checkbox" 
                                    checked={st.isCompleted} 
@@ -3693,6 +6123,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                       newSubs[idx].isCompleted = !newSubs[idx].isCompleted;
                                       setEditingTask({...editingTask, subtasks: newSubs});
                                    }}
+                                   className="disabled:opacity-50 disabled:cursor-not-allowed"
                                  />
                                  {canEditProject ? (
                                    <input 
@@ -3705,9 +6136,9 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                          newSubs[idx].title = e.target.value;
                                          setEditingTask({...editingTask, subtasks: newSubs});
                                       }}
-                                      className="flex-1 p-1 border-b border-transparent focus:border-gray-300 outline-none text-sm bg-white text-gray-900 disabled:bg-gray-100 disabled:text-gray-500"
+                                      className="flex-1 p-1 border-b border-transparent focus:border-gray-300 outline-none text-sm bg-white text-gray-900 disabled:bg-gray-100 disabled:text-gray-500 disabled:cursor-not-allowed"
                                     />
-                                 ) : <span className={`flex-1 text-sm ${st.isCompleted ? 'line-through text-gray-400' : 'text-gray-800'}`}>{st.title}</span>}
+                                 ) : <span className={`flex-1 text-sm pointer-events-none ${st.isCompleted ? 'line-through text-gray-400' : 'text-gray-800'}`}>{st.title}</span>}
                                  
                                  {canEditProject && !isEditingFrozen && (
                                    <button 
@@ -3726,12 +6157,21 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                             ))}
                             {(!editingTask.subtasks || editingTask.subtasks.length === 0) && <p className="text-xs text-gray-400 italic">No checklist items</p>}
                          </div>
+                         {canEditProject && !isEditingFrozen && (
+                           <button 
+                             onClick={() => {
+                                const newSub: SubTask = { id: Math.random().toString(), title: 'New Item', isCompleted: false };
+                                setEditingTask({ ...editingTask, subtasks: [...(editingTask.subtasks || []), newSub] });
+                             }}
+                             className="text-xs text-blue-600 hover:text-blue-700 flex items-center gap-1 mt-2 pt-2 border-t border-gray-100"
+                           ><Plus className="w-3 h-3"/> Add</button>
+                         )}
                        </div>
                     </div>
                  </div>
 
                  {/* RIGHT: Approvals & Comments */}
-                 <div className="w-1/2 flex flex-col bg-gray-50/50">
+                 <div className={`w-full md:w-1/2 flex flex-col bg-gray-50/50 ${mobileTaskTab === 'details' ? 'hidden md:flex' : 'flex'}`}>
                     {/* ... (Approvals & Comments UI unchanged) ... */}
                     {/* Approvals Section */}
                     {editingTask.approvals && (
@@ -3749,7 +6189,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                  {/* Client Vote */}
                                  <div className="flex justify-between items-center">
                                     <span className="text-xs text-gray-600">Client</span>
-                                    {editingTask.approvals.start.client.status === 'pending' ? (
+                                    {editingTask.approvals?.start?.client?.status === 'pending' ? (
                                       isClient && !isEditingFrozen ? (
                                         <div className="flex gap-1 pointer-events-auto">
                                           <button onClick={() => handleApproval('start', 'approve')} className="p-1 hover:bg-green-100 text-green-600 rounded" title="Approve start"><ThumbsUp className="w-3 h-3"/></button>
@@ -3757,25 +6197,35 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                         </div>
                                       ) : <span className="text-xs text-gray-400 italic">Pending</span>
                                     ) : (
-                                       <span className={`text-xs font-bold px-1.5 py-0.5 rounded capitalize ${editingTask.approvals.start.client.status === 'approved' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
-                                          {editingTask.approvals.start.client.status}
-                                       </span>
+                                       <div className="flex items-center gap-1">
+                                         <span className={`text-xs font-bold px-1.5 py-0.5 rounded capitalize ${editingTask.approvals?.start?.client?.status === 'approved' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                                            {editingTask.approvals?.start?.client?.status}
+                                         </span>
+                                         {isAdmin && !isEditingFrozen && !(editingTask.approvals?.start?.client?.status === 'approved' && editingTask.approvals?.start?.admin?.status === 'approved') && (
+                                           <button onClick={() => handleApproval('start', 'revoke', 'client')} className="p-1 hover:bg-gray-100 text-gray-600 rounded text-[10px] font-bold" title="Revoke approval">✕</button>
+                                         )}
+                                       </div>
                                     )}
                                  </div>
-                                 {/* Designer Vote */}
+                                 {/* Admin Vote */}
                                  <div className="flex justify-between items-center">
-                                    <span className="text-xs text-gray-600">Designer</span>
-                                    {editingTask.approvals.start.designer.status === 'pending' ? (
-                                      (isLeadDesigner || isAdmin) && !isEditingFrozen ? (
+                                    <span className="text-xs text-gray-600">Admin</span>
+                                    {editingTask.approvals?.start?.admin?.status === 'pending' ? (
+                                      isAdmin && !isEditingFrozen ? (
                                         <div className="flex gap-1 pointer-events-auto">
                                           <button onClick={() => handleApproval('start', 'approve')} className="p-1 hover:bg-green-100 text-green-600 rounded" title="Approve start"><ThumbsUp className="w-3 h-3"/></button>
                                           <button onClick={() => handleApproval('start', 'reject')} className="p-1 hover:bg-red-100 text-red-600 rounded" title="Reject start"><ThumbsDown className="w-3 h-3"/></button>
                                         </div>
                                       ) : <span className="text-xs text-gray-400 italic">Pending</span>
                                     ) : (
-                                       <span className={`text-xs font-bold px-1.5 py-0.5 rounded capitalize ${editingTask.approvals.start.designer.status === 'approved' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
-                                          {editingTask.approvals.start.designer.status}
-                                       </span>
+                                       <div className="flex items-center gap-1">
+                                         <span className={`text-xs font-bold px-1.5 py-0.5 rounded capitalize ${editingTask.approvals?.start?.admin?.status === 'approved' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                                            {editingTask.approvals?.start?.admin?.status}
+                                         </span>
+                                         {isAdmin && !isEditingFrozen && !(editingTask.approvals?.start?.client?.status === 'approved' && editingTask.approvals?.start?.admin?.status === 'approved') && (
+                                           <button onClick={() => handleApproval('start', 'revoke', 'admin')} className="p-1 hover:bg-gray-100 text-gray-600 rounded text-[10px] font-bold" title="Revoke approval">✕</button>
+                                         )}
+                                       </div>
                                     )}
                                  </div>
                               </div>
@@ -3787,7 +6237,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                               <div className="space-y-2">
                                  <div className="flex justify-between items-center">
                                     <span className="text-xs text-gray-600">Client</span>
-                                    {editingTask.approvals.completion.client.status === 'pending' ? (
+                                    {editingTask.approvals?.completion?.client?.status === 'pending' ? (
                                       isClient && !isEditingFrozen ? (
                                         <div className="flex gap-1 pointer-events-auto">
                                           <button onClick={() => handleApproval('completion', 'approve')} className="p-1 hover:bg-green-100 text-green-600 rounded" title="Approve completion"><ThumbsUp className="w-3 h-3"/></button>
@@ -3795,24 +6245,34 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                         </div>
                                       ) : <span className="text-xs text-gray-400 italic">Pending</span>
                                     ) : (
-                                       <span className={`text-xs font-bold px-1.5 py-0.5 rounded capitalize ${editingTask.approvals.completion.client.status === 'approved' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
-                                          {editingTask.approvals.completion.client.status}
-                                       </span>
+                                       <div className="flex items-center gap-1">
+                                         <span className={`text-xs font-bold px-1.5 py-0.5 rounded capitalize ${editingTask.approvals?.completion?.client?.status === 'approved' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                                            {editingTask.approvals?.completion?.client?.status}
+                                         </span>
+                                         {isAdmin && !isEditingFrozen && !(editingTask.approvals?.completion?.client?.status === 'approved' && editingTask.approvals?.completion?.admin?.status === 'approved') && (
+                                           <button onClick={() => handleApproval('completion', 'revoke', 'client')} className="p-1 hover:bg-gray-100 text-gray-600 rounded text-[10px] font-bold" title="Revoke approval">✕</button>
+                                         )}
+                                       </div>
                                     )}
                                  </div>
                                  <div className="flex justify-between items-center">
-                                    <span className="text-xs text-gray-600">Designer</span>
-                                    {editingTask.approvals.completion.designer.status === 'pending' ? (
-                                      (isLeadDesigner || isAdmin) && !isEditingFrozen ? (
+                                    <span className="text-xs text-gray-600">Admin</span>
+                                    {editingTask.approvals?.completion?.admin?.status === 'pending' ? (
+                                      isAdmin && !isEditingFrozen ? (
                                         <div className="flex gap-1 pointer-events-auto">
                                           <button onClick={() => handleApproval('completion', 'approve')} className="p-1 hover:bg-green-100 text-green-600 rounded" title="Approve completion"><ThumbsUp className="w-3 h-3"/></button>
                                           <button onClick={() => handleApproval('completion', 'reject')} className="p-1 hover:bg-red-100 text-red-600 rounded" title="Reject completion"><ThumbsDown className="w-3 h-3"/></button>
                                         </div>
                                       ) : <span className="text-xs text-gray-400 italic">Pending</span>
                                     ) : (
-                                       <span className={`text-xs font-bold px-1.5 py-0.5 rounded capitalize ${editingTask.approvals.completion.designer.status === 'approved' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
-                                          {editingTask.approvals.completion.designer.status}
-                                       </span>
+                                       <div className="flex items-center gap-1">
+                                         <span className={`text-xs font-bold px-1.5 py-0.5 rounded capitalize ${editingTask.approvals?.completion?.admin?.status === 'approved' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                                            {editingTask.approvals?.completion?.admin?.status}
+                                         </span>
+                                         {isAdmin && !isEditingFrozen && !(editingTask.approvals?.completion?.client?.status === 'approved' && editingTask.approvals?.completion?.admin?.status === 'approved') && (
+                                           <button onClick={() => handleApproval('completion', 'revoke', 'admin')} className="p-1 hover:bg-gray-100 text-gray-600 rounded text-[10px] font-bold" title="Revoke approval">✕</button>
+                                         )}
+                                       </div>
                                     )}
                                  </div>
                               </div>
@@ -3820,6 +6280,29 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                         </div>
                       </div>
                     )}
+
+                    {/* Documents Section - Just Button */}
+                    <div className="p-4 border-b border-gray-200 bg-white">
+                       <button 
+                         onClick={() => {
+                            setSelectedDocument(null);
+                            setIsTaskDocModalOpen(true);
+                         }}
+                         className="w-full flex items-center justify-between p-3 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg transition-colors group"
+                         title="View task documents"
+                       >
+                          <div className="flex items-center gap-2">
+                             <FileIcon className="w-4 h-4 text-blue-600" />
+                             <span className="text-xs font-bold text-blue-900 uppercase">Task Documents</span>
+                             {editingTask.documents && getValidDocumentCount(editingTask.documents) > 0 && (
+                               <span className="bg-blue-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">
+                                 {getValidDocumentCount(editingTask.documents)}
+                               </span>
+                             )}
+                          </div>
+                          <ChevronRight className="w-4 h-4 text-blue-600 group-hover:translate-x-0.5 transition-transform" />
+                       </button>
+                    </div>
 
                     {/* Comments Section */}
                     <div className="flex-1 flex flex-col p-4 overflow-hidden">
@@ -3834,11 +6317,10 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                              const isMe = comment.userId === user.id;
                              return (
                                <div key={comment.id} className={`flex gap-2 ${isMe ? 'flex-row-reverse' : ''}`}>
-                                  {getAvatarComponent(comment.userId, 'sm')}
                                   <div className={`p-2 rounded-lg max-w-[85%] text-sm ${isMe ? 'bg-blue-100 text-blue-900' : 'bg-white border border-gray-200 text-gray-700'}`}>
-                                     <p className="text-[10px] font-bold opacity-70 mb-1">{getAssigneeName(comment.userId)}</p>
+                                     <p className="text-[10px] font-bold opacity-70 mb-1">{getAssigneeName(comment.userId, comment.userName)}</p>
                                      <p>{comment.text}</p>
-                                     <p className="text-[10px] opacity-60 mt-1 text-right">{new Date(comment.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</p>
+                                     <p className="text-[10px] opacity-60 mt-1 text-right">{formatRelativeTime(comment.timestamp)}</p>
                                   </div>
                                </div>
                              );
@@ -3918,13 +6400,36 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
               <div className="flex-1 overflow-hidden bg-gray-50 flex items-center justify-center">
                  {selectedDocument.type === 'image' ? (
                    <img src={selectedDocument.url || DEFAULT_AVATAR} alt={selectedDocument.name} className="max-h-full max-w-full object-contain" />
-                 ) : (
-                   <div className="text-center">
-                     <FileText className="w-16 h-16 text-gray-300 mx-auto mb-4" />
-                     <p className="text-gray-500 text-sm">{selectedDocument.type.toUpperCase()} File</p>
+                 ) : selectedDocument.type === 'pdf' ? (
+                   <div className="text-center space-y-4">
+                     <div className="w-24 h-32 mx-auto bg-gradient-to-br from-red-50 to-red-100 rounded-lg flex flex-col items-center justify-center border-2 border-red-200">
+                        <FileText className="w-12 h-12 text-red-500 mb-2" />
+                        <span className="text-xs font-bold text-red-600 uppercase">PDF</span>
+                     </div>
+                     <div>
+                        <p className="text-gray-700 font-medium mb-2">{selectedDocument.name}</p>
+                        <p className="text-gray-500 text-sm mb-4">PDF documents cannot be previewed in-browser</p>
+                     </div>
                      <button 
                        onClick={() => window.open(selectedDocument.url, '_blank')}
-                       className="mt-4 px-4 py-2 bg-gray-900 text-white rounded-lg text-sm font-medium hover:bg-gray-800"
+                       className="px-4 py-2 bg-gray-900 text-white rounded-lg text-sm font-medium hover:bg-gray-800"
+                     >
+                       Open PDF in New Tab
+                     </button>
+                   </div>
+                 ) : (
+                   <div className="text-center space-y-4">
+                     <div className="w-24 h-32 mx-auto bg-gradient-to-br from-blue-50 to-blue-100 rounded-lg flex flex-col items-center justify-center border-2 border-blue-200">
+                        <FileText className="w-12 h-12 text-blue-500 mb-2" />
+                        <span className="text-xs font-bold text-blue-600 uppercase">{selectedDocument.type}</span>
+                     </div>
+                     <div>
+                        <p className="text-gray-700 font-medium mb-2">{selectedDocument.name}</p>
+                        <p className="text-gray-500 text-sm mb-4">{selectedDocument.type.toUpperCase()} files cannot be previewed in-browser</p>
+                     </div>
+                     <button 
+                       onClick={() => window.open(selectedDocument.url, '_blank')}
+                       className="px-4 py-2 bg-gray-900 text-white rounded-lg text-sm font-medium hover:bg-gray-800"
                      >
                        Open in New Tab
                      </button>
@@ -3941,11 +6446,10 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                    ) : (
                      selectedDocument.comments?.map(comment => (
                        <div key={comment.id} className="flex gap-2">
-                          {getAvatarComponent(comment.userId, 'sm')}
                           <div className="flex-1">
-                             <p className="text-[10px] font-bold text-gray-700">{getAssigneeName(comment.userId)}</p>
+                             <p className="text-[10px] font-bold text-gray-700">{getAssigneeName(comment.userId, comment.userName)}</p>
                              <p className="text-xs text-gray-600 mt-0.5">{comment.text}</p>
-                             <p className="text-[9px] text-gray-400 mt-1">{new Date(comment.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</p>
+                             <p className="text-[9px] text-gray-400 mt-1">{formatRelativeTime(comment.timestamp)}</p>
                           </div>
                        </div>
                      ))
@@ -4031,6 +6535,120 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
         document.body
       )}
 
+      {/* Meeting Delete Confirmation Modal */}
+      {isMeetingDeleteConfirmOpen && deletingMeeting && createPortal(
+        <div className="fixed inset-0 bg-black/50 z-[60] flex items-start justify-center pt-20 p-4">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md animate-fade-in border border-gray-200">
+            {/* Header */}
+            <div className="p-6 border-b border-gray-100 bg-red-50">
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 rounded-full bg-red-100 flex items-center justify-center">
+                  <AlertCircle className="w-6 h-6 text-red-600" />
+                </div>
+                <div>
+                  <h2 className="text-lg font-bold text-gray-900">Delete Meeting?</h2>
+                  <p className="text-sm text-gray-600 mt-1">This action cannot be undone.</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Content */}
+            <div className="p-6">
+              <p className="text-sm text-gray-700 mb-4">
+                Are you sure you want to delete the meeting <span className="font-bold text-gray-900">"{deletingMeeting.title}"</span>? 
+              </p>
+              <div className="bg-red-50 border border-red-200 rounded-lg p-3">
+                <p className="text-xs text-red-700">
+                  <span className="font-bold">⚠️ Warning:</span> This meeting and all associated comments will be removed from the project immediately.
+                </p>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="p-6 border-t border-gray-100 flex gap-3 justify-end bg-gray-50 rounded-b-xl">
+              <button
+                onClick={() => {
+                  setIsMeetingDeleteConfirmOpen(false);
+                  setDeletingMeeting(null);
+                }}
+                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+                title="Cancel deletion"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  if (deletingMeeting) {
+                    handleDeleteMeeting(deletingMeeting.id, deletingMeeting.title);
+                    setIsMeetingDeleteConfirmOpen(false);
+                    setDeletingMeeting(null);
+                  }
+                }}
+                className="px-4 py-2 text-sm font-bold text-white bg-red-600 rounded-lg hover:bg-red-700 transition-colors flex items-center gap-2"
+                title="Confirm meeting deletion"
+              >
+                <Ban className="w-4 h-4" /> Delete Meeting
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* Document Delete Confirmation Modal */}
+      {isDocDeleteConfirmOpen && deletingDoc && createPortal(
+        <div className="fixed inset-0 bg-black/50 z-[60] flex items-start justify-center pt-20 p-4">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md animate-fade-in border border-gray-200">
+            {/* Header */}
+            <div className="p-6 border-b border-gray-100 bg-red-50">
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 rounded-full bg-red-100 flex items-center justify-center">
+                  <AlertCircle className="w-6 h-6 text-red-600" />
+                </div>
+                <div>
+                  <h2 className="text-lg font-bold text-gray-900">Delete Document?</h2>
+                  <p className="text-sm text-gray-600 mt-1">This action cannot be undone.</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Content */}
+            <div className="p-6">
+              <p className="text-sm text-gray-700 mb-4">
+                Are you sure you want to delete the document <span className="font-bold text-gray-900">"{deletingDoc.name}"</span>? 
+              </p>
+              <div className="bg-red-50 border border-red-200 rounded-lg p-3">
+                <p className="text-xs text-red-700">
+                  <span className="font-bold">Warning:</span> This document will be permanently removed from the project and any tasks it is attached to.
+                </p>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="p-6 border-t border-gray-100 flex gap-3 justify-end bg-gray-50 rounded-b-xl">
+              <button
+                onClick={() => {
+                  setIsDocDeleteConfirmOpen(false);
+                  setDeletingDoc(null);
+                }}
+                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+                title="Cancel deletion"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmDeleteDocument}
+                className="px-4 py-2 text-sm font-bold text-white bg-red-600 rounded-lg hover:bg-red-700 transition-colors flex items-center gap-2"
+                title="Confirm document deletion"
+              >
+                <Trash2 className="w-4 h-4" /> Delete Document
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
       {/* Vendor Billing Report Modal */}
       {selectedVendorForBilling && createPortal(
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
@@ -4038,7 +6656,6 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
             {/* Header */}
             <div className="p-6 border-b border-gray-100 bg-gray-50 flex justify-between items-center">
               <div className="flex items-center gap-4">
-                <AvatarCircle avatar={selectedVendorForBilling.avatar} name={selectedVendorForBilling.name} size="md" />
                 <div>
                   <h2 className="text-lg font-bold text-gray-900">{selectedVendorForBilling.name}</h2>
                   <p className="text-sm text-gray-500">Billing Report</p>
@@ -4055,12 +6672,22 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
 
             {/* Content */}
             <div className="flex-1 overflow-y-auto p-6">
-                {currentFinancials.filter(f => 
-                    ((f.type === 'expense' && f.paidBy === 'vendor') || (f.type === 'income' && f.paidBy === 'vendor')) && 
-                    f.vendorName === selectedVendorForBilling.name
-                ).length === 0 ? (
+                {currentFinancials.filter(f => {
+                    // Approval logic: both admin and client must approve
+                    const approved = f.adminApproved && f.clientApproved;
+                    // Vendor association logic
+                    const cleanName = (name: string | undefined) => name ? (name.includes('(') ? name.split('(')[0].trim() : name.trim()) : '';
+                    
+                    return approved && (
+                        f.vendorName === selectedVendorForBilling.name || 
+                        cleanName(f.receivedByName) === selectedVendorForBilling.name || 
+                        cleanName(f.paidByOther) === selectedVendorForBilling.name ||
+                        f.paidTo === selectedVendorForBilling.name ||
+                        f.receivedBy === selectedVendorForBilling.name
+                    );
+                }).length === 0 ? (
                     <div className="text-center py-10 text-gray-400 border-2 border-dashed border-gray-100 rounded-xl">
-                        No billing records found for this vendor.
+                        No approved billing records found for this vendor.
                     </div>
                 ) : (
                     <div className="overflow-x-auto border border-gray-200 rounded-lg">
@@ -4068,36 +6695,229 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                             <thead className="bg-gray-50 border-b border-gray-200 text-gray-600 font-semibold">
                                 <tr>
                                     <th className="px-4 py-3">Date</th>
+                                    <th className="px-4 py-3">Paid By</th>
+                                    <th className="px-4 py-3">Received By</th>
                                     <th className="px-4 py-3">Description</th>
-                                    <th className="px-4 py-3 text-center">Type</th>
                                     <th className="px-4 py-3 text-right">Amount</th>
-                                    <th className="px-4 py-3 text-center">Status</th>
+                                    <th className="px-4 py-3 text-center">Approvals</th>
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-gray-100">
                                 {currentFinancials
-                                    .filter(f => 
-                                        ((f.type === 'expense' && f.paidBy === 'vendor') || (f.type === 'income' && f.paidBy === 'vendor')) && 
-                                        f.vendorName === selectedVendorForBilling.name
-                                    )
+                                    .filter(f => {
+                                        // Approval logic: both admin and client must approve
+                                        const approved = f.adminApproved && f.clientApproved;
+                                        // Vendor association logic
+                                        const cleanName = (name: string | undefined) => name ? (name.includes('(') ? name.split('(')[0].trim() : name.trim()) : '';
+                                        
+                                        return approved && (
+                                            f.vendorName === selectedVendorForBilling.name || 
+                                            cleanName(f.receivedByName) === selectedVendorForBilling.name || 
+                                            cleanName(f.paidByOther) === selectedVendorForBilling.name ||
+                                            f.paidTo === selectedVendorForBilling.name ||
+                                            f.receivedBy === selectedVendorForBilling.name
+                                        );
+                                    })
                                     .sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime())
                                     .map(fin => (
                                     <tr key={fin.id} className="hover:bg-gray-50">
                                         <td className="px-4 py-3 text-gray-600 whitespace-nowrap">{fin.date}</td>
-                                        <td className="px-4 py-3 font-medium text-gray-900">{fin.description}</td>
-                                        <td className="px-4 py-3 text-center">
-                                            <span className={`px-2 py-1 rounded text-xs font-bold ${fin.type === 'income' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
-                                                {fin.type === 'income' ? 'In' : 'Out'}
-                                            </span>
+                                        <td className="px-4 py-3">
+                                            <div className="flex flex-col gap-0.5">
+                                              <div className="font-bold text-gray-900 text-xs">{fin.type === 'income' ? (fin.paidTo || fin.paidByOther || '-') : (fin.vendorName || '-')}</div>
+                                              <div className="flex items-center gap-1 text-xs">
+                                                <span className="text-gray-400">|</span>
+                                                <span className={`flex-shrink-0 font-medium text-sm md:text-xs ${
+                                                  fin.paidBy === 'client' ? 'text-blue-700' :
+                                                  fin.paidBy === 'vendor' ? 'text-purple-700' :
+                                                  fin.paidBy === 'designer' ? 'text-orange-700' :
+                                                  fin.paidBy === 'admin' ? 'text-red-700' :
+                                                  'text-gray-700'
+                                                }`}>
+                                                  {fin.type === 'income' ? (
+                                                    (() => {
+                                                      const paidByUser = users.find(u => u.name === (fin.paidTo || fin.paidByOther));
+                                                      return paidByUser?.role === Role.CLIENT ? 'Client' :
+                                                             paidByUser?.role === Role.VENDOR ? 'Vendor' :
+                                                             paidByUser?.role === Role.DESIGNER ? 'Designer' :
+                                                             paidByUser?.role === Role.ADMIN ? 'Admin' :
+                                                             (fin.paidBy === 'client' ? 'Client' :
+                                                              fin.paidBy === 'vendor' ? 'Vendor' :
+                                                              fin.paidBy === 'designer' ? 'Designer' :
+                                                              fin.paidBy === 'admin' ? 'Admin' : 'N/A');
+                                                    })()
+                                                  ) : (
+                                                    fin.paidBy === 'client' ? 'Client' :
+                                                    fin.paidBy === 'vendor' ? 'Vendor' :
+                                                    fin.paidBy === 'designer' ? 'Designer' :
+                                                    fin.paidBy === 'admin' ? 'Admin' :
+                                                    'N/A'
+                                                  )}
+                                                </span>
+                                              </div>
+                                            </div>
                                         </td>
+                                        <td className="px-4 py-3">
+                                            <div className="flex flex-col gap-0.5">
+                                              <div className="font-bold text-gray-900 text-xs">
+                                                {fin.receivedBy ? (
+                                                  fin.receivedBy.includes('(') ? fin.receivedBy.split('(')[0].trim() : fin.receivedBy
+                                                ) : '-'}
+                                              </div>
+                                              <div className="flex flex-col gap-1 text-xs">
+                                                <div className="flex items-center gap-1">
+                                                  <span className="text-gray-400">|</span>
+                                                  <span className={`flex-shrink-0 font-medium text-xs ${
+                                                    fin.receivedBy ? (
+                                                      (() => {
+                                                        const receivedUser = users.find(u => u.name === (fin.receivedBy?.includes('(') ? fin.receivedBy.split('(')[0].trim() : fin.receivedBy));
+                                                        const role = receivedUser?.role || (fin.receivedBy?.includes('(') ? fin.receivedBy.split('(')[1].replace(')', '').trim() : '');
+                                                        if (role === Role.CLIENT || role === 'Client') return 'text-blue-700';
+                                                        if (role === Role.VENDOR || role === 'Vendor') return 'text-purple-700';
+                                                        if (role === Role.DESIGNER || role === 'Designer') return 'text-orange-700';
+                                                        if (role === Role.ADMIN || role === 'Admin') return 'text-red-700';
+                                                        return 'text-gray-700';
+                                                      })()
+                                                    ) : 'text-gray-700'
+                                                  }`}>
+                                                    {fin.receivedBy && fin.receivedBy.includes('(') ? (
+                                                      fin.receivedBy.split('(')[1].replace(')', '').trim()
+                                                    ) : (users.find(m => m.name === fin.receivedBy)?.role || 'Vendor')}
+                                                  </span>
+                                                </div>
+                                              </div>
+                                            </div>
+                                        </td>
+                                        <td className="px-4 py-3 font-medium text-gray-900">{fin.description}</td>
                                         <td className="px-4 py-3 text-right font-bold text-gray-800">₹{fin.amount.toLocaleString()}</td>
                                         <td className="px-4 py-3 text-center">
-                                            <span className={`px-2 py-1 rounded-full text-xs font-medium capitalize
-                                                ${fin.status === 'paid' ? 'bg-green-100 text-green-700' : 
-                                                  fin.status === 'pending' ? 'bg-yellow-100 text-yellow-700' : 
-                                                  'bg-red-100 text-red-700'}`}>
-                                                {fin.status}
-                                            </span>
+                                            {/* Approval Status for Received Payments and Additional Budgets */}
+                                            {(fin.isClientPayment || fin.type === 'income') && (
+                                              <div className="flex items-center gap-3 justify-center">
+                                                {/* Client Payment Approval */}
+                                                <div className="flex items-center gap-1">
+                                                  <span className="text-xs font-semibold text-blue-600">C:</span>
+                                                  {(fin.clientApprovalForPayment === 'approved' || fin.clientApproved === true) && (
+                                                    <span className="bg-green-100 text-green-700 px-1.5 py-0.5 rounded font-bold text-xs">✓</span>
+                                                  )}
+                                                  {(fin.clientApprovalForPayment === 'rejected') && (
+                                                    <span className="bg-red-100 text-red-700 px-1.5 py-0.5 rounded font-bold text-xs">✗</span>
+                                                  )}
+                                                  {(fin.clientApprovalForPayment === 'pending' || fin.clientApprovalForPayment === undefined || fin.clientApprovalForPayment === null) && !fin.clientApproved && user?.role === Role.CLIENT && (
+                                                    <div className="flex gap-0.5">
+                                                      <button 
+                                                        onClick={() => handleApprovePayment(fin.id, 'client', 'approved')}
+                                                        className="text-white bg-green-600 hover:bg-green-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer"
+                                                        title="Confirm payment"
+                                                      >✓</button>
+                                                      <button 
+                                                        onClick={() => handleApprovePayment(fin.id, 'client', 'rejected')}
+                                                        className="text-white bg-red-600 hover:bg-red-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer"
+                                                        title="Dispute payment"
+                                                      >✗</button>
+                                                    </div>
+                                                  )}
+                                                  {(fin.clientApprovalForPayment === 'pending' || fin.clientApprovalForPayment === undefined || fin.clientApprovalForPayment === null) && !fin.clientApproved && user?.role !== Role.CLIENT && (
+                                                    <span className="text-gray-400 text-xs">-</span>
+                                                  )}
+                                                </div>
+                                                
+                                                <span className="text-gray-300">|</span>
+                                                
+                                                {/* Admin Payment Approval */}
+                                                <div className="flex items-center gap-1">
+                                                  <span className="text-xs font-semibold text-purple-600">A:</span>
+                                                  {(fin.adminApprovalForPayment === 'approved' || fin.adminApproved === true) && (
+                                                    <span className="bg-green-100 text-green-700 px-1.5 py-0.5 rounded font-bold text-xs">✓</span>
+                                                  )}
+                                                  {(fin.adminApprovalForPayment === 'rejected') && (
+                                                    <span className="bg-red-100 text-red-700 px-1.5 py-0.5 rounded font-bold text-xs">✗</span>
+                                                  )}
+                                                  {(fin.adminApprovalForPayment === 'pending' || fin.adminApprovalForPayment === undefined || fin.adminApprovalForPayment === null) && !fin.adminApproved && user?.role === Role.ADMIN && (
+                                                    <div className="flex gap-0.5">
+                                                      <button 
+                                                        onClick={() => handleApprovePayment(fin.id, 'admin', 'approved')}
+                                                        className="text-white bg-green-600 hover:bg-green-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer"
+                                                        title="Approve payment"
+                                                      >✓</button>
+                                                      <button 
+                                                        onClick={() => handleApprovePayment(fin.id, 'admin', 'rejected')}
+                                                        className="text-white bg-red-600 hover:bg-red-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer"
+                                                        title="Reject payment"
+                                                      >✗</button>
+                                                    </div>
+                                                  )}
+                                                  {(fin.adminApprovalForPayment === 'pending' || fin.adminApprovalForPayment === undefined || fin.adminApprovalForPayment === null) && !fin.adminApproved && user?.role !== Role.ADMIN && (
+                                                    <span className="text-gray-400 text-xs">-</span>
+                                                  )}
+                                                </div>
+                                              </div>
+                                            )}
+                                            {/* Approval Status for Expenses */}
+                                            {fin.type === 'expense' && (
+                                              <div className="flex items-center gap-3 justify-center">
+                                                {/* Client Approval for Expenses */}
+                                                <div className="flex items-center gap-1">
+                                                  <span className="text-xs font-semibold text-blue-600">C:</span>
+                                                  {fin.clientApproved === true && (
+                                                    <span className="bg-green-100 text-green-700 px-1.5 py-0.5 rounded font-bold text-xs">✓</span>
+                                                  )}
+                                                  {fin.clientApproved === false && (
+                                                    <span className="bg-red-100 text-red-700 px-1.5 py-0.5 rounded font-bold text-xs">✗</span>
+                                                  )}
+                                                  {(fin.clientApproved === undefined || fin.clientApproved === null) && user?.role === Role.CLIENT && (
+                                                    <div className="flex gap-0.5">
+                                                      <button 
+                                                        onClick={() => handleApproveExpense(fin.id, 'client', true)}
+                                                        className="text-white bg-green-600 hover:bg-green-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer"
+                                                        title="Approve expense"
+                                                      >✓</button>
+                                                      <button 
+                                                        onClick={() => handleApproveExpense(fin.id, 'client', false)}
+                                                        className="text-white bg-red-600 hover:bg-red-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer"
+                                                        title="Reject expense"
+                                                      >✗</button>
+                                                    </div>
+                                                  )}
+                                                  {(fin.clientApproved === undefined || fin.clientApproved === null) && user?.role !== Role.CLIENT && (
+                                                    <span className="text-gray-400 text-xs">-</span>
+                                                  )}
+                                                </div>
+                                                
+                                                <span className="text-gray-300">|</span>
+                                                
+                                                {/* Admin Approval for Expenses */}
+                                                <div className="flex items-center gap-1">
+                                                  <span className="text-xs font-semibold text-purple-600">A:</span>
+                                                  {fin.adminApproved === true && (
+                                                    <span className="bg-green-100 text-green-700 px-1.5 py-0.5 rounded font-bold text-xs">✓</span>
+                                                  )}
+                                                  {fin.adminApproved === false && (
+                                                    <span className="bg-red-100 text-red-700 px-1.5 py-0.5 rounded font-bold text-xs">✗</span>
+                                                  )}
+                                                  {(fin.adminApproved === undefined || fin.adminApproved === null) && user?.role === Role.ADMIN && (
+                                                    <div className="flex gap-0.5">
+                                                      <button 
+                                                        onClick={() => handleApproveExpense(fin.id, 'admin', true)}
+                                                        className="text-white bg-green-600 hover:bg-green-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer"
+                                                        title="Approve expense"
+                                                      >✓</button>
+                                                      <button 
+                                                        onClick={() => handleApproveExpense(fin.id, 'admin', false)}
+                                                        className="text-white bg-red-600 hover:bg-red-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer"
+                                                        title="Reject expense"
+                                                      >✗</button>
+                                                    </div>
+                                                  )}
+                                                  {(fin.adminApproved === undefined || fin.adminApproved === null) && user?.role !== Role.ADMIN && (
+                                                    <span className="text-gray-400 text-xs">-</span>
+                                                  )}
+                                                </div>
+                                              </div>
+                                            )}
+                                            {!fin.isAdditionalBudget && !fin.isClientPayment && fin.type !== 'expense' && (
+                                              <span className="text-xs text-gray-300">-</span>
+                                            )}
                                         </td>
                                     </tr>
                                 ))}
@@ -4108,16 +6928,715 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
             </div>
             
             {/* Footer Summary */}
-            <div className="p-6 border-t border-gray-100 bg-gray-50 flex justify-between items-center">
-                <div className="text-sm text-gray-500">
-                    Total Transactions: {currentFinancials.filter(f => ((f.type === 'expense' && f.paidBy === 'vendor') || (f.type === 'income' && f.paidBy === 'vendor')) && f.vendorName === selectedVendorForBilling.name).length}
+            <div className="p-6 border-t border-gray-100 bg-gray-50">
+                {/* Calculation Logic */}
+                {(() => {
+                    const vendorTransactions = currentFinancials.filter(f => {
+                        // Approval logic: both admin and client must approve
+                        const approved = f.adminApproved && f.clientApproved;
+                        // Vendor association logic
+                        const cleanName = (name: string | undefined) => name ? (name.includes('(') ? name.split('(')[0].trim() : name.trim()) : '';
+                        
+                        return approved && (
+                            f.vendorName === selectedVendorForBilling.name || 
+                            cleanName(f.receivedByName) === selectedVendorForBilling.name || 
+                            cleanName(f.paidByOther) === selectedVendorForBilling.name ||
+                            f.paidTo === selectedVendorForBilling.name ||
+                            f.receivedBy === selectedVendorForBilling.name
+                        );
+                    });
+
+                    // Total Paid TO Vendor (Vendor is Recipient)
+                    const totalPaidToVendor = vendorTransactions
+                        .filter(f => {
+                            const cleanName = (name: string | undefined) => name ? (name.includes('(') ? name.split('(')[0].trim() : name.trim()) : '';
+                            return cleanName(f.receivedByName) === selectedVendorForBilling.name || f.receivedBy === selectedVendorForBilling.name;
+                        })
+                        .reduce((acc, curr) => acc + curr.amount, 0);
+
+                    // Total Paid BY Vendor (Vendor is Payer)
+                    const totalPaidByVendor = vendorTransactions
+                        .filter(f => {
+                            const cleanName = (name: string | undefined) => name ? (name.includes('(') ? name.split('(')[0].trim() : name.trim()) : '';
+                            return f.vendorName === selectedVendorForBilling.name || 
+                                   cleanName(f.paidByOther) === selectedVendorForBilling.name ||
+                                   f.paidTo === selectedVendorForBilling.name;
+                        })
+                        .reduce((acc, curr) => acc + curr.amount, 0);
+
+                    const netAmount = totalPaidToVendor - totalPaidByVendor;
+                    const designerChargesAmount = netAmount * (designerChargesPercent / 100);
+                    const finalTotal = netAmount + designerChargesAmount;
+
+                    return (
+                        <div className="space-y-2">
+                            <div className="flex justify-between items-center text-sm">
+                                <span className="text-gray-600">Total Paid To Vendor (Received):</span>
+                                <span className="font-medium text-gray-900">₹{totalPaidToVendor.toLocaleString()}</span>
+                            </div>
+                            <div className="flex justify-between items-center text-sm">
+                                <span className="text-gray-600">Less: Paid By Vendor (Expenses):</span>
+                                <span className="font-medium text-red-600">- ₹{totalPaidByVendor.toLocaleString()}</span>
+                            </div>
+                            <div className="flex justify-between items-center pt-2 border-t border-gray-200">
+                                <span className="font-bold text-gray-800">Net Amount:</span>
+                                <span className="font-bold text-gray-900">₹{netAmount.toLocaleString()}</span>
+                            </div>
+
+                            {/* Designer Charges Section - Only for Designing Projects */}
+                            {project.type === 'Designing' && (
+                                <>
+                                    <div className="flex justify-between items-center pt-2 border-t border-gray-200 border-dashed">
+                                        <div className="flex items-center gap-2">
+                                            <span className="text-sm font-bold text-gray-700">Designer Charges</span>
+                                            {user.role === Role.ADMIN ? (
+                                                <div className="flex items-center gap-1">
+                                                    <input 
+                                                        type="number" 
+                                                        min="0"
+                                                        max="100"
+                                                        value={designerChargesPercent}
+                                                        onChange={(e) => setDesignerChargesPercent(parseFloat(e.target.value) || 0)}
+                                                        className="w-16 px-2 py-1 text-xs border border-gray-300 rounded focus:outline-none focus:border-blue-500"
+                                                        aria-label="Designer Charges Percentage"
+                                                        title="Enter designer charges percentage"
+                                                        placeholder="0"
+                                                    />
+                                                    <span className="text-sm text-gray-500">%</span>
+                                                </div>
+                                            ) : (
+                                                <span className="text-sm text-gray-500">({designerChargesPercent}%)</span>
+                                            )}
+                                        </div>
+                                        <div className="text-md font-semibold text-orange-700">
+                                            + ₹{designerChargesAmount.toLocaleString(undefined, {maximumFractionDigits: 2})}
+                                        </div>
+                                    </div>
+
+                                    {/* Final Total */}
+                                    <div className="flex justify-between items-center pt-3 border-t border-gray-300">
+                                        <div className="text-base font-bold text-gray-800">Final Payable</div>
+                                        <div className="text-xl font-bold text-gray-900">
+                                            ₹{finalTotal.toLocaleString(undefined, {maximumFractionDigits: 2})}
+                                        </div>
+                                    </div>
+                                </>
+                            )}
+                        </div>
+                    );
+                })()}
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* Designer Details Modal */}
+      {selectedDesignerForDetails && createPortal(
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-4xl max-h-[90vh] flex flex-col animate-fade-in overflow-hidden">
+            {/* Header */}
+            <div className="p-6 border-b border-gray-100 bg-gray-50 flex justify-between items-center">
+              <div className="flex items-center gap-4">
+                <div>
+                  <h2 className="text-lg font-bold text-gray-900">{selectedDesignerForDetails.name}</h2>
+                  <p className="text-sm text-gray-500">Designer Details & Projects</p>
                 </div>
-                <div className="text-lg font-bold text-gray-900">
-                    Net Total: ₹{currentFinancials
-                        .filter(f => ((f.type === 'expense' && f.paidBy === 'vendor') || (f.type === 'income' && f.paidBy === 'vendor')) && f.vendorName === selectedVendorForBilling.name)
-                        .reduce((acc, curr) => curr.type === 'income' ? acc + curr.amount : acc - curr.amount, 0)
-                        .toLocaleString()}
+              </div>
+              <div className="flex items-center gap-2">
+                {canEditProject && (
+                  <button 
+                    onClick={() => {
+                      // Open edit modal for designer (you can add edit functionality)
+                      addNotification('Info', 'Designer edit functionality coming soon', 'info');
+                    }}
+                    className="text-emerald-600 hover:text-emerald-700 text-sm font-medium px-3 py-1.5 hover:bg-emerald-50 rounded transition-colors"
+                    title="Edit designer details"
+                  >
+                    Edit
+                  </button>
+                )}
+                <button 
+                  onClick={() => setSelectedDesignerForDetails(null)}
+                  className="text-gray-400 hover:text-gray-600 p-2 hover:bg-gray-100 rounded-full transition-colors"
+                  title="Close designer details"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+
+            {/* Content */}
+            <div className="flex-1 overflow-y-auto p-6">
+              {/* Designer Info Card */}
+              <div className="bg-gray-50 rounded-lg p-4 mb-6 border border-gray-100">
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <p className="text-xs text-gray-500 font-semibold uppercase">Name</p>
+                    <p className="text-sm font-bold text-gray-900 mt-1">{selectedDesignerForDetails.name}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-gray-500 font-semibold uppercase">Specialty</p>
+                    <p className="text-sm font-bold text-gray-900 mt-1">{selectedDesignerForDetails.specialty || 'General Design'}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-gray-500 font-semibold uppercase">Email</p>
+                    <p className="text-sm text-gray-700 mt-1">{selectedDesignerForDetails.email}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-gray-500 font-semibold uppercase">Phone</p>
+                    <p className="text-sm text-gray-700 mt-1">{selectedDesignerForDetails.phone || 'N/A'}</p>
+                  </div>
                 </div>
+              </div>
+
+              {/* Projects Assigned to Designer */}
+              <div>
+                <h3 className="text-sm font-bold text-gray-800 mb-4">Assigned Projects</h3>
+                {project.tasks.filter(t => t.assigneeId === selectedDesignerForDetails.id).length === 0 ? (
+                  <div className="text-center py-8 text-gray-400 border-2 border-dashed border-gray-100 rounded-lg">
+                    No tasks assigned to this designer in this project.
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto border border-gray-200 rounded-lg">
+                    <table className="w-full text-sm">
+                      <thead className="bg-gray-100 border-b border-gray-200">
+                        <tr>
+                          <th className="px-4 py-3 text-left font-bold text-gray-700 text-sm">Project Name</th>
+                          <th className="px-4 py-3 text-center font-bold text-gray-700 text-sm">Work Progress</th>
+                          <th className="px-4 py-3 text-center font-bold text-gray-700 text-sm">Percentage</th>
+                          <th className="px-4 py-3 text-center font-bold text-gray-700 text-sm">Deadline</th>
+                          <th className="px-4 py-3 text-center font-bold text-gray-700 text-sm">Pending Tasks</th>
+                          <th className="px-4 py-3 text-center font-bold text-gray-700 text-sm">Completed Tasks</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {/* This project's tasks assigned to designer */}
+                        {(() => {
+                          const designerTasks = project.tasks.filter(t => t.assigneeId === selectedDesignerForDetails.id);
+                          const completedCount = designerTasks.filter(t => t.status === TaskStatus.DONE).length;
+                          const pendingCount = designerTasks.filter(t => t.status !== TaskStatus.DONE && t.status !== TaskStatus.REVIEW).length;
+                          const progressPercentage = designerTasks.length > 0 
+                            ? Math.round((completedCount / designerTasks.length) * 100)
+                            : 0;
+
+                          return (
+                            <tr className="border-b border-gray-100 hover:bg-gray-50">
+                              <td className="px-4 py-3 text-left text-gray-900 font-medium text-xs">{project.name}</td>
+                              <td className="px-4 py-3 text-center">
+                                <div className="w-full bg-gray-200 rounded-full h-2 max-w-xs mx-auto">
+                                  <div 
+                                    className="bg-blue-500 h-2 rounded-full transition-all" 
+                                    style={{width: `${progressPercentage}%`}}
+                                  ></div>
+                                </div>
+                              </td>
+                              <td className="px-4 py-3 text-center font-semibold text-gray-900 text-xs">{progressPercentage}%</td>
+                              <td className="px-4 py-3 text-center text-gray-600 text-xs whitespace-nowrap">{formatDateToIndian(project.deadline)}</td>
+                              <td className="px-4 py-3 text-center">
+                                <span className="inline-flex items-center justify-center px-2.5 py-1 rounded-full text-xs font-semibold bg-yellow-100 text-yellow-800">
+                                  {pendingCount}
+                                </span>
+                              </td>
+                              <td className="px-4 py-3 text-center">
+                                <span className="inline-flex items-center justify-center px-2.5 py-1 rounded-full text-xs font-semibold bg-green-100 text-green-800">
+                                  {completedCount}
+                                </span>
+                              </td>
+                            </tr>
+                          );
+                        })()}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Summary Footer */}
+            <div className="p-6 border-t border-gray-100 bg-gray-50">
+              {(() => {
+                const designerTasks = project.tasks.filter(t => t.assigneeId === selectedDesignerForDetails.id);
+                const completedCount = designerTasks.filter(t => t.status === TaskStatus.DONE).length;
+                const totalCount = designerTasks.length;
+
+                return (
+                  <div className="grid grid-cols-3 gap-4 text-center">
+                    <div>
+                      <p className="text-xs text-gray-500 uppercase font-semibold">Total Tasks</p>
+                      <p className="text-2xl font-bold text-gray-900 mt-1">{totalCount}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-gray-500 uppercase font-semibold">Completed</p>
+                      <p className="text-2xl font-bold text-green-600 mt-1">{completedCount}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-gray-500 uppercase font-semibold">Remaining</p>
+                      <p className="text-2xl font-bold text-orange-600 mt-1">{totalCount - completedCount}</p>
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* Additional Budget Modal */}
+      {isAdditionalBudgetModalOpen && createPortal(
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-md max-h-[90vh] flex flex-col animate-fade-in overflow-hidden">
+            {/* Header */}
+            <div className="p-6 border-b border-gray-200 bg-gradient-to-r from-emerald-50 to-green-50 flex-shrink-0">
+              <h3 className="text-lg font-bold text-gray-900 flex items-center gap-2">
+                <Plus className="w-5 h-5 text-emerald-600" /> Add Additional Budget
+              </h3>
+              <p className="text-sm text-gray-600 mt-1">Increase the project budget with client approval</p>
+            </div>
+
+            {/* Content */}
+            <div className="p-6 space-y-4 flex-1 overflow-y-auto scrollbar-thin">
+              {/* Amount Field */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Budget Amount <span className="text-red-500">*</span>
+                </label>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-500 font-semibold">₹</span>
+                  <input
+                    type="number"
+                    value={additionalBudgetAmount}
+                    onChange={(e) => setAdditionalBudgetAmount(e.target.value)}
+                    placeholder="Enter amount"
+                    className="w-full pl-7 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none"
+                    min="0"
+                  />
+                </div>
+              </div>
+
+              {/* Description Field */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Reason/Description
+                </label>
+                <textarea
+                  value={additionalBudgetDescription}
+                  onChange={(e) => setAdditionalBudgetDescription(e.target.value)}
+                  placeholder="Why is additional budget needed? (optional)"
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none resize-none"
+                  rows={3}
+                />
+              </div>
+
+              {/* Preview */}
+              {additionalBudgetAmount && (
+                <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-4">
+                  <div className="space-y-2">
+                    <div className="flex justify-between">
+                      <span className="text-sm text-gray-600">Current Budget:</span>
+                      <span className="text-sm font-semibold text-gray-900">₹{project.budget.toLocaleString()}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-sm text-gray-600">Additional Amount:</span>
+                      <span className="text-sm font-semibold text-emerald-600">+₹{parseFloat(additionalBudgetAmount || '0').toLocaleString()}</span>
+                    </div>
+                    <div className="border-t border-emerald-200 pt-2 flex justify-between">
+                      <span className="text-sm font-medium text-gray-900">New Total:</span>
+                      <span className="text-sm font-bold text-emerald-700">₹{(project.budget + parseFloat(additionalBudgetAmount || '0')).toLocaleString()}</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="p-6 border-t border-gray-200 bg-gray-50 flex gap-3 justify-end">
+              <button
+                onClick={() => {
+                  setIsAdditionalBudgetModalOpen(false);
+                  setAdditionalBudgetAmount('');
+                  setAdditionalBudgetDescription('');
+                }}
+                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={async () => {
+                  if (!additionalBudgetAmount || isNaN(parseFloat(additionalBudgetAmount))) {
+                    addNotification('Validation', 'Please enter a valid budget amount', 'error', project.clientId, project.id, project.name);
+                    return;
+                  }
+
+                  const additional = parseFloat(additionalBudgetAmount);
+                  
+                  try {
+                    // Get client and admin details
+                    const clientUser = users.find(u => u.id === project.clientId);
+                    const clientName = clientUser?.name || 'Client';
+                    const adminUser = users.find(u => u.role === Role.ADMIN);
+                    const adminName = adminUser?.name || 'Admin';
+                    
+                    // Create a financial record for the additional budget in Firestore
+                    const recordId = await createProjectFinancialRecord(project.id, {
+                      date: new Date().toISOString().split('T')[0],
+                      timestamp: new Date().toISOString(),
+                      description: additionalBudgetDescription || `Additional Budget Increase: ₹${additional.toLocaleString()}`,
+                      amount: additional,
+                      type: 'income',
+                      category: 'Additional Budget',
+                      status: 'pending',
+                      paidBy: 'client',
+                      paidByOther: clientName,
+                      receivedBy: adminName,
+                      receivedByName: adminName,
+                      receivedByRole: 'admin-received',
+                      isAdditionalBudget: true,
+                      clientApprovalForAdditionalBudget: 'pending',
+                      adminApprovalForAdditionalBudget: 'pending'
+                    });
+
+                    // Log timeline event for budget request
+                    logTimelineEvent(
+                      project.id,
+                      `Budget Increase Requested: ₹${additional.toLocaleString()}`,
+                      `Budget increase of ₹${additional.toLocaleString()} requested by ${user.name}. Reason: ${additionalBudgetDescription || 'Not specified'}. Awaiting Client and Admin approval.`,
+                      'in-progress',
+                      new Date().toISOString(),
+                      new Date().toISOString()
+                    );
+                    
+                    // Log activity
+                    logActivity('Budget', `Budget increase of ₹${additional.toLocaleString()} requested by ${user.name}. Awaiting approvals. Reason: ${additionalBudgetDescription || 'Not specified'}`);
+                    
+                    addNotification('Request', `Budget increase of ₹${additional.toLocaleString()} requested. Awaiting Client and Admin approval.`, 'success', project.clientId, project.id, project.name);
+
+                    // Close modal
+                    setIsAdditionalBudgetModalOpen(false);
+                    setAdditionalBudgetAmount('');
+                    setAdditionalBudgetDescription('');
+                  } catch (error) {
+                    console.error('Error creating additional budget record:', error);
+                    addNotification('Error', 'Failed to create additional budget record', 'error', project.clientId, project.id, project.name);
+                  }
+                }}
+                className="px-4 py-2 text-sm font-bold text-white bg-emerald-600 rounded-lg hover:bg-emerald-700 transition-colors flex items-center gap-2"
+              >
+                <Plus className="w-4 h-4" /> Add Budget
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* Meeting Form Modal */}
+      <MeetingForm
+        isOpen={isMeetingModalOpen}
+        onClose={() => {
+          setIsMeetingModalOpen(false);
+          setEditingMeeting(null);
+        }}
+        onSubmit={handleMeetingSubmit}
+        onUpdate={handleMeetingUpdate}
+        teamMembers={projectTeam}
+        isLoading={isSavingMeeting}
+        editingMeeting={editingMeeting}
+      />
+
+      {/* Task Documents Modal */}
+      {isTaskDocModalOpen && editingTask && createPortal(
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-5xl h-[80vh] flex flex-col">
+            <div className="flex items-center justify-between p-4 border-b border-gray-200 bg-gradient-to-r from-blue-50 to-indigo-50">
+              <div className="flex items-center gap-2">
+                <FileIcon className="w-5 h-5 text-blue-600" />
+                <h3 className="text-lg font-bold text-gray-900">Task Documents</h3>
+                {editingTask.documents && getValidDocumentCount(editingTask.documents) > 0 && (
+                  <span className="bg-blue-600 text-white text-xs font-bold px-2 py-1 rounded-full">
+                    {getValidDocumentCount(editingTask.documents)}
+                  </span>
+                )}
+              </div>
+              <button 
+                type="button"
+                onClick={() => setIsTaskDocModalOpen(false)}
+                className="text-gray-500 hover:text-gray-700 p-1 hover:bg-gray-100 rounded transition-colors"
+                title="Close modal"
+                aria-label="Close documents modal"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-6">
+              {getValidDocumentCount(editingTask.documents) > 0 ? (
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
+                  {getValidDocuments(editingTask.documents)
+                    .filter(doc => {
+                      // Only show to Admin/Designer if pending
+                      if (doc.approvalStatus === 'pending') {
+                        return user.role === Role.ADMIN || user.role === Role.DESIGNER || doc.uploadedBy === user.id;
+                      }
+                      // Approved: show to shared users, client, vendor
+                      if (doc.approvalStatus === 'approved') {
+                        return (Array.isArray(doc.sharedWith) && doc.sharedWith.includes(user.id)) || user.role === Role.ADMIN || doc.uploadedBy === user.id;
+                      }
+                      // Rejected: only show to admin/designer/uploader
+                      if (doc.approvalStatus === 'rejected') {
+                        return user.role === Role.ADMIN || user.role === Role.DESIGNER || doc.uploadedBy === user.id;
+                      }
+                      // Fallback: only show to admin
+                      return user.role === Role.ADMIN;
+                    })
+                    .map(doc => (
+                      <div key={doc.id} className="group relative bg-white border border-gray-200 rounded-xl overflow-hidden hover:shadow-lg transition-shadow">
+                        {/* Overlay Actions */}
+                        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center gap-2 z-10">
+                          <div className="flex items-center justify-center gap-2">
+                            <button 
+                              className="p-2 bg-white rounded-full text-gray-900 hover:bg-gray-100" 
+                              title="Comments"
+                              onClick={() => handleOpenDocumentDetail(doc)}
+                            >
+                              <MessageSquare className="w-4 h-4" />
+                            </button>
+                            <button 
+                              className="p-2 bg-white rounded-full text-gray-900 hover:bg-gray-100" 
+                              title="View"
+                              onClick={() => window.open(doc.url, '_blank')}
+                            >
+                              <Eye className="w-4 h-4" />
+                            </button>
+                            <button 
+                              className="p-2 bg-white rounded-full text-gray-900 hover:bg-gray-100" 
+                              title="Download"
+                              onClick={() => handleDownloadDocument(doc)}
+                            >
+                              <Download className="w-4 h-4" />
+                            </button>
+                            {(doc.uploadedBy === user.id || canEditProject) && (
+                              <button 
+                                className="p-2 bg-white rounded-full text-red-600 hover:bg-red-50" 
+                                title="Delete"
+                                onClick={() => handleDeleteDocument(doc)}
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            )}
+                          </div>
+                          {user.role === Role.ADMIN && doc.approvalStatus === 'pending' && (
+                            <div className="flex items-center justify-center gap-2">
+                              <button 
+                                className="p-2 bg-white rounded-full text-green-600 hover:bg-green-50" 
+                                title="Approve"
+                                onClick={() => handleApproveDocument(doc)}
+                              >
+                                 <Check className="w-4 h-4" />
+                              </button>
+                              <button 
+                                className="p-2 bg-white rounded-full text-red-600 hover:bg-red-50" 
+                                title="Reject"
+                                onClick={() => handleRejectDocument(doc)}
+                              >
+                                 <X className="w-4 h-4" />
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                        
+                        <div className="h-32 bg-gray-100 flex items-center justify-center overflow-hidden relative group">
+                          {doc.type === 'image' ? (
+                            <img 
+                              src={doc.url || DEFAULT_AVATAR} 
+                              alt={doc.name} 
+                              className="w-full h-full object-cover" 
+                              onError={(e) => {
+                                e.currentTarget.src = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9IiNjY2MiIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIj48cmVjdCB4PSIzIiB5PSIzIiB3aWR0aD0iMTgiIGhlaWdodD0iMTgiIHJ4PSIyIiByeT0iMiI+PC9yZWN0PjxjaXJjbGUgY3g9IjguNSIgY3k9IjguNSIgcj0iMS41Ij48L2NpcmNsZT48cG9seWxpbmUgcG9pbnRzPSIyMSAxNSAxNiAxMCA1IDIxIj48L3BvbHlsaW5lPjwvc3ZnPg==';
+                                e.currentTarget.className = "w-12 h-12 opacity-50";
+                                e.currentTarget.parentElement?.classList.add("flex", "items-center", "justify-center");
+                              }}
+                            />
+                          ) : doc.type === 'pdf' ? (
+                            <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-red-50 to-red-100">
+                              <FileText className="w-12 h-12 text-red-400 mb-2" />
+                              <span className="text-xs font-bold text-red-600 uppercase">PDF</span>
+                            </div>
+                          ) : (
+                            <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-blue-50 to-blue-100">
+                              <FileText className="w-12 h-12 text-blue-400 mb-2" />
+                              <span className="text-xs font-bold text-blue-600 uppercase">{doc.type}</span>
+                            </div>
+                          )}
+                        </div>
+                        <div className="p-3">
+                          <p className="text-sm font-bold text-gray-800 truncate" title={doc.name}>{doc.name}</p>
+                          <div className="flex justify-between items-center mt-2">
+                            <span className="text-xs text-gray-400">{new Date(doc.uploadDate).toLocaleDateString('en-IN')}</span>
+                            {/* Approval Status Indicator */}
+                            <span className={`text-xs font-bold px-2 py-0.5 rounded ${doc.approvalStatus === 'pending' ? 'bg-yellow-100 text-yellow-700' : doc.approvalStatus === 'approved' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>{doc.approvalStatus === 'pending' ? 'Approval Pending' : doc.approvalStatus === 'approved' ? 'Approved' : 'Rejected'}</span>
+                          </div>
+                          {/* Approval Actions for Admin */}
+                          <div className="mt-2 flex gap-1 flex-wrap">
+                             {(Array.isArray(doc.sharedWith) ? doc.sharedWith : []).map(userId => {
+                                const sharedUser = users.find(u => u.id === userId);
+                                return (
+                                   <span key={userId} className="text-[8px] bg-blue-100 text-blue-600 px-1.5 py-0.5 rounded" title={sharedUser?.name}>
+                                      {sharedUser?.name?.split(' ')[0] || 'Unknown'}
+                                   </span>
+                                );
+                             })}
+                          </div>
+                          {doc.comments && doc.comments.length > 0 && (
+                            <div className="mt-2 text-xs text-blue-600 font-medium">
+                              {doc.comments.length} {doc.comments.length === 1 ? 'comment' : 'comments'}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ))
+                  }
+                </div>
+              ) : (
+                <div className="flex flex-col items-center justify-center py-12 text-center">
+                  <FileIcon className="w-16 h-16 text-gray-300 mb-3" />
+                  <p className="text-gray-400 font-medium">No documents attached to this task</p>
+                  <p className="text-sm text-gray-300 mt-1">Upload documents and attach them to this task</p>
+                </div>
+              )}
+            </div>
+
+            {canEditProject && !isEditingFrozen && (
+              <div className="p-4 border-t border-gray-200 bg-gray-50 flex justify-end">
+                <button 
+                  onClick={() => {
+                    setIsTaskDocModalOpen(false);
+                    setIsDocModalOpen(true);
+                    setNewDoc({...newDoc, attachToTaskId: editingTask.id});
+                  }}
+                  className="flex items-center gap-2 px-4 py-2 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors font-semibold text-sm"
+                  title="Add documents to task"
+                >
+                  <Plus className="w-4 h-4" /> Add Documents
+                </button>
+              </div>
+            )}
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* Project Delete Confirmation Modal */}
+      {isProjectDeleteConfirmOpen && createPortal(
+        <div className="fixed inset-0 bg-black/50 z-[60] flex items-start justify-center pt-20 p-4">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md animate-fade-in border border-gray-200">
+            {/* Header */}
+            <div className="p-6 border-b border-gray-100 bg-red-50">
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 rounded-full bg-red-100 flex items-center justify-center">
+                  <AlertCircle className="w-6 h-6 text-red-600" />
+                </div>
+                <div>
+                  <h2 className="text-lg font-bold text-gray-900">Delete Project?</h2>
+                  <p className="text-sm text-gray-600 mt-1">This action cannot be undone.</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Content */}
+            <div className="p-6">
+              <p className="text-sm text-gray-700 mb-4">
+                Are you sure you want to delete the project <span className="font-bold text-gray-900">"{project.name}"</span>? 
+              </p>
+              <div className="bg-red-50 border border-red-200 rounded-lg p-3">
+                <p className="text-xs text-red-700">
+                  <span className="font-bold">⚠️ Warning:</span> This project and all associated data (tasks, documents, meetings, financials) will be permanently deleted.
+                </p>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="p-6 border-t border-gray-100 flex gap-3 justify-end bg-gray-50 rounded-b-xl">
+              <button
+                onClick={() => setIsProjectDeleteConfirmOpen(false)}
+                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+                title="Cancel deletion"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleDeleteProject}
+                className="px-4 py-2 text-sm font-bold text-white bg-red-600 rounded-lg hover:bg-red-700 transition-colors flex items-center gap-2"
+                title="Confirm project deletion"
+              >
+                <Trash2 className="w-4 h-4" /> Delete Project
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* Transaction Delete Confirmation Modal */}
+      {isTransactionDeleteConfirmOpen && createPortal(
+        <div className="fixed inset-0 bg-black/50 z-[60] flex items-start justify-center pt-20 p-4">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md animate-fade-in border border-gray-200">
+            {/* Header */}
+            <div className="p-6 border-b border-gray-100 bg-red-50">
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 rounded-full bg-red-100 flex items-center justify-center">
+                  <AlertCircle className="w-6 h-6 text-red-600" />
+                </div>
+                <div>
+                  <h2 className="text-lg font-bold text-gray-900">Delete Transaction?</h2>
+                  <p className="text-sm text-gray-600 mt-1">This action cannot be undone.</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Content */}
+            <div className="p-6">
+              <p className="text-sm text-gray-700 mb-4">
+                Are you sure you want to delete this transaction?
+              </p>
+              <div className="bg-red-50 border border-red-200 rounded-lg p-3">
+                <p className="text-xs text-red-700">
+                  <span className="font-bold">⚠️ Warning:</span> This financial record will be permanently removed from the project ledger.
+                </p>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="p-6 border-t border-gray-100 flex gap-3 justify-end bg-gray-50 rounded-b-xl">
+              <button
+                onClick={() => {
+                  setIsTransactionDeleteConfirmOpen(false);
+                  setDeleteConfirmTransactionId(null);
+                }}
+                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+                title="Cancel deletion"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={async () => {
+                  if (deleteConfirmTransactionId) {
+                    try {
+                      await deleteFinancialRecord(deleteConfirmTransactionId);
+                      addNotification('Transaction Deleted', 'The transaction was deleted successfully.', 'success');
+                      setIsTransactionDeleteConfirmOpen(false);
+                      setDeleteConfirmTransactionId(null);
+                    } catch (err) {
+                      addNotification('Error', 'Failed to delete transaction.', 'error');
+                    }
+                  }
+                }}
+                className="px-4 py-2 text-sm font-bold text-white bg-red-600 rounded-lg hover:bg-red-700 transition-colors flex items-center gap-2"
+                title="Confirm transaction deletion"
+              >
+                <Trash2 className="w-4 h-4" /> Delete Transaction
+              </button>
             </div>
           </div>
         </div>,

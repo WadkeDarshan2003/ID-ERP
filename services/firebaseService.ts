@@ -13,7 +13,155 @@ import {
   Unsubscribe
 } from "firebase/firestore";
 import { db } from "./firebaseConfig";
-import { Project, User, Task } from "../types";
+import { Project, User, Task, TaskStatus, FinancialRecord } from "../types";
+
+// ============ VENDOR EARNINGS SYNC ============
+
+/**
+ * Aggregates vendor earnings and designer charges from all projects and updates each vendor's Firestore document.
+ * Adds fields: totalEarnings, totalDesignerCharges, projectBreakdown (per project) to each vendor doc.
+ */
+export async function syncAllVendorsEarnings() {
+  try {
+    // Fetch all projects
+    const projectsSnap = await getDocs(collection(db, 'projects'));
+    const projects: Project[] = projectsSnap.docs.map(snap => ({ ...snap.data(), id: snap.id } as Project));
+
+    // Map: vendorId -> { totalEarnings, totalDesignerCharges, projectBreakdown }
+    const vendorMap: Record<string, {
+      totalEarnings: number;
+      totalDesignerCharges: number;
+      projectBreakdown: Record<string, { projectName: string; earnings: number; designerCharges: number; }>
+    }> = {};
+
+    for (const project of projects) {
+      const designerChargePercent = project.designerChargePercentage || 0;
+      if (!project.financials) continue;
+      for (const fin of project.financials) {
+        if (fin.type === 'expense' && fin.vendorId) {
+          if (!vendorMap[fin.vendorId]) {
+            vendorMap[fin.vendorId] = {
+              totalEarnings: 0,
+              totalDesignerCharges: 0,
+              projectBreakdown: {}
+            };
+          }
+          // Add to totals
+          vendorMap[fin.vendorId].totalEarnings += fin.amount;
+          const designerCharge = (fin.amount * designerChargePercent) / 100;
+          vendorMap[fin.vendorId].totalDesignerCharges += designerCharge;
+          // Per-project breakdown
+          if (!vendorMap[fin.vendorId].projectBreakdown[project.id]) {
+            vendorMap[fin.vendorId].projectBreakdown[project.id] = {
+              projectName: project.name,
+              earnings: 0,
+              designerCharges: 0
+            };
+          }
+          vendorMap[fin.vendorId].projectBreakdown[project.id].earnings += fin.amount;
+          vendorMap[fin.vendorId].projectBreakdown[project.id].designerCharges += designerCharge;
+        }
+      }
+    }
+
+    // Update each vendor doc in Firestore
+    for (const [vendorId, data] of Object.entries(vendorMap)) {
+      await setDoc(doc(db, 'vendors', vendorId), {
+        totalEarnings: data.totalEarnings,
+        totalDesignerCharges: data.totalDesignerCharges,
+        projectBreakdown: data.projectBreakdown
+      }, { merge: true });
+    }
+    
+    console.log('✅ Vendor earnings synced successfully');
+  } catch (error) {
+    console.error('❌ Error syncing vendor earnings:', error);
+    throw error;
+  }
+}
+
+// ============ VENDOR METRICS AGGREGATION ============
+
+/**
+ * Aggregates vendor metrics from all projects and stores them in each vendor's document
+ * This ensures all vendor data comes from one place (the vendor document itself)
+ */
+export async function syncAllVendorMetrics(): Promise<void> {
+  try {
+    // Fetch all projects
+    const projectsSnap = await getDocs(collection(db, 'projects'));
+    const projects: Project[] = projectsSnap.docs.map(snap => ({ ...snap.data(), id: snap.id } as Project));
+
+    // Map: vendorId -> { projectId -> { projectName, taskCount, netAmount } }
+    const vendorMetrics: Record<string, Record<string, {
+      projectName: string;
+      taskCount: number;
+      netAmount: number;
+    }>> = {};
+
+    // Process each project
+    for (const project of projects) {
+      // Get all distinct vendor IDs from tasks ONLY (not from names)
+      const vendorIds = new Set<string>();
+      
+      project.tasks?.forEach(task => {
+        if (task.assigneeId) vendorIds.add(task.assigneeId);
+      });
+
+      // Calculate metrics for each vendor in this project
+      for (const vendorId of vendorIds) {
+        if (!vendorMetrics[vendorId]) {
+          vendorMetrics[vendorId] = {};
+        }
+
+        // Count ALL tasks assigned to this vendor (not just DONE)
+        const allTaskCount = (project.tasks || []).filter(
+          t => t.assigneeId === vendorId
+        ).length;
+
+        // Calculate net amount from approved financials
+        const vendorFinancials = (project.financials || []).filter(f => 
+          (f.adminApproved && f.clientApproved) &&
+          (f.vendorId === vendorId)
+        );
+
+        const totalPaidToVendor = vendorFinancials
+          .filter(f => f.receivedByName && f.receivedByName.includes(vendorId))
+          .reduce((sum, f) => sum + f.amount, 0);
+
+        const totalPaidByVendor = vendorFinancials
+          .filter(f => f.vendorId === vendorId)
+          .reduce((sum, f) => sum + f.amount, 0);
+
+        const netAmount = totalPaidToVendor - totalPaidByVendor;
+
+        vendorMetrics[vendorId][project.id] = {
+          projectName: project.name,
+          taskCount: allTaskCount,
+          netAmount: netAmount
+        };
+      }
+    }
+
+    // Update each vendor's document with their project metrics
+    for (const [vendorId, projectMetrics] of Object.entries(vendorMetrics)) {
+      try {
+        await updateDoc(doc(db, 'users', vendorId), {
+          projectMetrics: projectMetrics
+        });
+      } catch (error: any) {
+        // Silently skip if user doesn't exist (vendor might not have account yet)
+        if (error.code !== 'not-found') {
+          console.warn(`⚠️ Could not update metrics for vendor ${vendorId}:`, error.message);
+        }
+      }
+    }
+
+    console.log('✅ All vendor metrics synced successfully');
+  } catch (error) {
+    console.error('❌ Error syncing vendor metrics:', error);
+  }
+}
 
 // ============ PROJECTS COLLECTION ============
 
@@ -99,6 +247,11 @@ export const subscribeToProjects = (callback: (projects: Project[]) => void): Un
   return onSnapshot(projectsRef, (snapshot) => {
     const projects = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as Project));
     callback(projects);
+  }, (error) => {
+    // Suppress permission-denied errors during logout - these are expected
+    if (error.code !== 'permission-denied') {
+      console.error('❌ Error in projects collection listener:', error);
+    }
   });
 };
 
@@ -121,6 +274,11 @@ export const subscribeToUserProjects = (
   return onSnapshot(q, (snapshot) => {
     const projects = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as Project));
     callback(projects);
+  }, (error) => {
+    // Suppress permission-denied errors during logout
+    if (error.code !== 'permission-denied') {
+      console.error('❌ Error in user projects listener:', error);
+    }
   });
 };
 
@@ -238,7 +396,10 @@ export const subscribeToDesigners = (callback: (designers: User[]) => void): Uns
     console.log(`📥 Real-time update from 'designers': ${designers.length} designers`);
     callback(designers);
   }, (error) => {
-    console.error('❌ Error in designers collection listener:', error);
+    // Suppress permission-denied errors during logout
+    if (error.code !== 'permission-denied') {
+      console.error('❌ Error in designers collection listener:', error);
+    }
   });
 };
 
@@ -250,7 +411,10 @@ export const subscribeToVendors = (callback: (vendors: User[]) => void): Unsubsc
     console.log(`📥 Real-time update from 'vendors': ${vendors.length} vendors`);
     callback(vendors);
   }, (error) => {
-    console.error('❌ Error in vendors collection listener:', error);
+    // Suppress permission-denied errors during logout
+    if (error.code !== 'permission-denied') {
+      console.error('❌ Error in vendors collection listener:', error);
+    }
   });
 };
 
@@ -262,6 +426,9 @@ export const subscribeToClients = (callback: (clients: User[]) => void): Unsubsc
     console.log(`📥 Real-time update from 'clients': ${clients.length} clients`);
     callback(clients);
   }, (error) => {
-    console.error('❌ Error in clients collection listener:', error);
+    // Suppress permission-denied errors during logout
+    if (error.code !== 'permission-denied') {
+      console.error('❌ Error in clients collection listener:', error);
+    }
   });
 };

@@ -1,0 +1,29 @@
+{
+  "name": "id-erp-functions",
+  "description": "Cloud Functions for ID ERP",
+  "type": "module",
+  "main": "lib/index.js",
+  "scripts": {
+    "build": "tsc",
+    "lint": "echo 'Linting skipped'",
+    "serve": "firebase emulators:start --only functions",
+    "shell": "firebase functions:shell",
+    "start": "npm run shell",
+    "deploy": "firebase deploy --only functions",
+    "logs": "firebase functions:log"
+  },
+  "engines": {
+    "node": "20"
+  },
+  "dependencies": {
+    "firebase-functions": "^6.0.0",
+    "nodemailer": "^6.9.13"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.3",
+    "@types/node": "^20.0.0",
+    "@types/cors": "^2.8.17",
+    "@types/nodemailer": "^6.4.14",
+    "firebase-functions-test": "^3.1.0"
+  }
+}

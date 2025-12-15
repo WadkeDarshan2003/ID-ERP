@@ -6,7 +6,15 @@ import { useAuth } from './AuthContext';
 interface NotificationContextType {
   notifications: Notification[];
   unreadCount: number;
-  addNotification: (title: string, message: string, type?: Notification['type'], recipientId?: string, projectId?: string, projectName?: string, targetTab?: string) => void;
+  addNotification: (
+    titleOrObj: string | { title: string; message: string; type?: Notification['type']; recipientId?: string; projectId?: string; projectName?: string; targetTab?: string },
+    message?: string,
+    type?: Notification['type'],
+    recipientId?: string,
+    projectId?: string,
+    projectName?: string,
+    targetTab?: string
+  ) => void;
   markAsRead: (id: string) => void;
   markAllAsRead: () => void;
   clearNotifications: () => void;
@@ -52,33 +60,57 @@ export const NotificationProvider: React.FC<{ children: ReactNode, projects?: Pr
   
   const unreadCount = visibleNotifications.filter(n => !n.read).length;
 
-  const addNotification = (title: string, message: string, type: Notification['type'] = 'info', recipientId?: string, projectId?: string, projectName?: string, targetTab?: string) => {
+  const addNotification = (
+    titleOrObj: string | { title: string; message: string; type?: Notification['type']; recipientId?: string; projectId?: string; projectName?: string; targetTab?: string },
+    message?: string,
+    type: Notification['type'] = 'info',
+    recipientId?: string,
+    projectId?: string,
+    projectName?: string,
+    targetTab?: string
+  ) => {
+    let notificationData: { title: string; message: string; type?: Notification['type']; recipientId?: string; projectId?: string; projectName?: string; targetTab?: string };
+
+    if (typeof titleOrObj === 'object') {
+      notificationData = titleOrObj;
+    } else {
+      notificationData = {
+        title: titleOrObj,
+        message: message!,
+        type,
+        recipientId,
+        projectId,
+        projectName,
+        targetTab
+      };
+    }
+
     const newNotification: Notification = {
       id: Math.random().toString(36).substr(2, 9),
-      title,
-      message,
-      type,
-      recipientId,
-      projectId,
-      projectName,
+      title: notificationData.title,
+      message: notificationData.message,
+      type: notificationData.type || 'info',
+      recipientId: notificationData.recipientId,
+      projectId: notificationData.projectId,
+      projectName: notificationData.projectName,
       timestamp: new Date(),
       read: false,
-      targetTab,
+      targetTab: notificationData.targetTab,
     };
     
     // Add to persistent store
     setNotifications(prev => [newNotification, ...prev]);
     
     // Add to toasts only if notification is targeted or project-specific (no global notifications)
-    if (recipientId) {
+    if (newNotification.recipientId) {
       // Show toast only to the targeted recipient
-      if (recipientId === user?.id) {
+      if (newNotification.recipientId === user?.id) {
         setToasts(prev => [...prev, newNotification]);
         setTimeout(() => {
           setToasts(prev => prev.filter(t => t.id !== newNotification.id));
         }, 5000);
       }
-    } else if (projectId && projectName) {
+    } else if (newNotification.projectId && newNotification.projectName) {
       // Show toast for project notifications if projectName is provided (proof of valid project)
       // This allows notifications to show even if projects array isn't fully synced
       if (user) {

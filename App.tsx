@@ -1,13 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { 
   LayoutDashboard, FolderKanban, Users, ShoppingBag, 
-  Palette, LogOut, Search, Bell, Menu, X, Tag
+  Palette, LogOut, Bell, Menu, X, Tag, Edit, Trash2
 } from 'lucide-react';
 import { MOCK_PROJECTS, MOCK_USERS } from './constants';
 import { Project, Role, User, ProjectStatus, ProjectType, ProjectCategory } from './types';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { NotificationProvider, useNotifications } from './contexts/NotificationContext';
-import { subscribeToProjects, subscribeToUsers, subscribeToDesigners, subscribeToVendors, subscribeToClients, seedDatabase, updateProject } from './services/firebaseService';
+import { subscribeToProjects, subscribeToUsers, subscribeToDesigners, subscribeToVendors, subscribeToClients, seedDatabase, updateProject, deleteProject, syncAllVendorMetrics } from './services/firebaseService';
 import { AvatarCircle } from './utils/avatarUtils';
 
 // Components
@@ -21,11 +21,26 @@ import NewProjectModal from './components/NewProjectModal';
 import { calculateProjectProgress } from './utils/taskUtils';
 
 // Helper for project list
-const ProjectList = ({ projects, onSelect }: { projects: Project[], onSelect: (p: Project) => void }) => {
+const ProjectList = ({ 
+  projects, 
+  onSelect,
+  user,
+  setEditingProject,
+  setIsNewProjectModalOpen,
+  onDeleteProject
+}: { 
+  projects: Project[], 
+  onSelect: (p: Project) => void,
+  user: User | null,
+  setEditingProject: (project: Project | null) => void,
+  setIsNewProjectModalOpen: (open: boolean) => void,
+  onDeleteProject: (project: Project) => void
+}) => {
   const getStatusColor = (status: ProjectStatus) => {
     switch (status) {
+      case ProjectStatus.DISCOVERY: return 'bg-teal-100 text-teal-700';
       case ProjectStatus.PLANNING: return 'bg-purple-100 text-purple-700';
-      case ProjectStatus.IN_PROGRESS: return 'bg-blue-100 text-blue-700';
+      case ProjectStatus.EXECUTION: return 'bg-blue-100 text-blue-700';
       case ProjectStatus.COMPLETED: return 'bg-green-100 text-green-700';
       case ProjectStatus.ON_HOLD: return 'bg-orange-100 text-orange-700';
       default: return 'bg-gray-100 text-gray-700';
@@ -72,6 +87,35 @@ const ProjectList = ({ projects, onSelect }: { projects: Project[], onSelect: (p
                 <div className="h-40 overflow-hidden relative">
                   <img src={project.thumbnail} alt={project.name} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" />
                   <div className="absolute top-3 left-3 flex gap-2">
+                    {user?.role === Role.ADMIN && (
+                      <>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setEditingProject(project);
+                            setIsNewProjectModalOpen(true);
+                          }}
+                          className="backdrop-blur-md p-2 rounded text-xs font-bold shadow-sm border border-white/20 hover:bg-white/20 transition-colors"
+                          title="Edit project"
+                        >
+                          <Edit className="w-4 h-4 text-gray-900" />
+                        </button>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (window.confirm(`Are you sure you want to delete project "${project.name}"? This action cannot be undone.`)) {
+                              onDeleteProject(project);
+                            }
+                          }}
+                          className="backdrop-blur-md p-2 rounded text-xs font-bold shadow-sm border border-white/20 hover:bg-red-500/20 transition-colors group/delete"
+                          title="Delete project"
+                        >
+                          <Trash2 className="w-4 h-4 text-red-600 group-hover/delete:text-red-700" />
+                        </button>
+                      </>
+                    )}
+                  </div>
+                  <div className="absolute top-3 left-14 flex gap-2">
                     <div className={`backdrop-blur-md px-2 py-1 rounded text-xs font-bold shadow-sm border border-white/20 ${getStatusColor(project.status)}`}>
                       {project.status}
                     </div>
@@ -150,14 +194,16 @@ interface AppContentProps {
 function AppContent({ projects, setProjects, users, setUsers }: AppContentProps) {
 
   const { user, logout, loading: authLoading } = useAuth();
-  const { unreadCount } = useNotifications();
+  const { unreadCount, addNotification } = useNotifications();
   
   const [currentView, setCurrentView] = useState<ViewState>('dashboard');
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
 
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isNotifOpen, setIsNotifOpen] = useState(false);
   const [isNewProjectModalOpen, setIsNewProjectModalOpen] = useState(false);
+  const [editingProject, setEditingProject] = useState<Project | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
   // Subscribe to Firebase real-time updates
@@ -170,6 +216,11 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
     const unsubscribeProjects = subscribeToProjects((firebaseProjects) => {
       console.log('🔄 Projects updated in App:', firebaseProjects.length);
       setProjects(firebaseProjects || []);
+      
+      // Sync all vendor metrics whenever projects change
+      syncAllVendorMetrics().catch((err: any) => {
+        console.error('Failed to sync vendor metrics:', err);
+      });
     });
 
     // Subscribe to users - combines from all role collections
@@ -248,6 +299,16 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
     }
   }, [user]);
 
+  // Sync selectedProject with real-time updates
+  useEffect(() => {
+    if (selectedProject) {
+      const updated = projects.find(p => p.id === selectedProject.id);
+      if (updated && JSON.stringify(updated) !== JSON.stringify(selectedProject)) {
+        setSelectedProject(updated);
+      }
+    }
+  }, [projects, selectedProject]);
+
   // If not logged in, show login screen
   if (!user) {
     return <Login users={users} />;
@@ -268,6 +329,10 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
     updateProject(updated.id, projectDataWithoutId as Partial<Project>).catch((err: any) => {
       console.error('Failed to save project update to Firebase:', err);
     });
+    // Sync vendor metrics after project change
+    syncAllVendorMetrics().catch((err: any) => {
+      console.error('Failed to sync vendor metrics:', err);
+    });
   };
 
   const handleAddUser = (newUser: User) => {
@@ -277,6 +342,16 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
   const handleAddProject = (newProject: Project) => {
     // Don't add to local state - let Firebase subscription handle it
     // This prevents duplicate projects
+  };
+
+  const handleDeleteProject = async (project: Project) => {
+    try {
+      await deleteProject(project.id);
+      addNotification('Success', `Project "${project.name}" deleted successfully`, 'success');
+    } catch (error: any) {
+      console.error('Error deleting project:', error);
+      addNotification('Error', `Failed to delete project: ${error.message}`, 'error');
+    }
   };
 
   // Filter Projects for List View based on Role
@@ -298,13 +373,14 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
         setSelectedProject(null);
         setIsSidebarOpen(false);
       }}
-      className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors mb-1
+      className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors mb-1 ${isSidebarCollapsed ? 'justify-center' : ''}
         ${currentView === view && !selectedProject 
           ? 'bg-gray-900 text-white shadow-lg' 
           : 'text-gray-500 hover:bg-gray-100 hover:text-gray-900'}`}
+      title={isSidebarCollapsed ? label : ""}
     >
-      <Icon className="w-5 h-5" />
-      <span className="font-medium">{label}</span>
+      <Icon className="w-5 h-5 flex-shrink-0" />
+      {!isSidebarCollapsed && <span className="font-medium">{label}</span>}
     </button>
   );
 
@@ -318,32 +394,45 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
 
       {/* Sidebar */}
       <aside className={`
-        fixed inset-y-0 left-0 z-30 w-64 bg-white border-r border-gray-200 transform transition-transform duration-300 ease-in-out md:relative md:translate-x-0
-        ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}
+        fixed inset-y-0 left-0 z-30 bg-white border-r border-gray-200 transform transition-all duration-300 ease-in-out md:relative md:translate-x-0
+        ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'} md:translate-x-0
+        ${isSidebarCollapsed ? 'md:w-20' : 'md:w-64 w-64'}
       `}>
         <div className="h-full flex flex-col">
           <div className="p-6 flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <div className="w-8 h-8 bg-gray-900 rounded-lg flex items-center justify-center text-white font-bold text-xl">L</div>
-              <span className="text-xl font-bold text-gray-900">BTW ERP</span>
-            </div>
+            {!isSidebarCollapsed && (
+              <div className="flex items-center gap-2">
+                <img src="/logo-header.png" alt="Btw Solutions Logo" className="h-8 w-8 rounded-lg" style={{ background: 'none', filter: 'invert(0)' }} />
+                <span className="text-xl font-bold text-gray-900">Btw Solutions</span>
+              </div>
+            )}
+            {isSidebarCollapsed && (
+              <img src="/logo-header.png" alt="Btw Solutions Logo" className="h-8 w-8" style={{ background: 'none', filter: 'invert(0)' }} />
+            )}
             <button className="md:hidden" onClick={() => setIsSidebarOpen(false)} title="Close sidebar">
               <X className="w-5 h-5 text-gray-500" />
+            </button>
+            <button 
+              onClick={() => setIsSidebarCollapsed(!isSidebarCollapsed)} 
+              className="hidden md:block p-1 text-gray-500 hover:bg-gray-100 rounded-lg transition-colors"
+              title={isSidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+            >
+              <Menu className="w-5 h-5" />
             </button>
           </div>
 
           <div className="px-4 flex-1 overflow-y-auto">
             <div className="mb-6">
-              <p className="px-4 text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Main</p>
+              {!isSidebarCollapsed && <p className="px-4 text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Main</p>}
               <SidebarItem view="dashboard" icon={LayoutDashboard} label="Dashboard" />
               {canSeeProjects && <SidebarItem view="projects" icon={FolderKanban} label="Projects" />}
             </div>
 
             {(canSeeClients || canSeeDesigners || canSeeVendors) && (
               <div className="mb-6">
-                <p className="px-4 text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">People</p>
+                {!isSidebarCollapsed && <p className="px-4 text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">People</p>}
                 {canSeeClients && <SidebarItem view="clients" icon={Users} label="Clients" />}
-                {canSeeDesigners && <SidebarItem view="designers" icon={Palette} label="Designers" />}
+                {canSeeDesigners && <SidebarItem view="designers" icon={Palette} label="Team" />}
                 {canSeeVendors && <SidebarItem view="vendors" icon={ShoppingBag} label="Vendors" />}
               </div>
             )}
@@ -359,9 +448,10 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
                 }
               }}
               className="w-full flex items-center gap-3 px-4 py-3 text-gray-500 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+              title={isSidebarCollapsed ? "Sign Out" : ""}
             >
-              <LogOut className="w-5 h-5" />
-              <span className="font-medium">Sign Out</span>
+              <LogOut className="w-5 h-5 flex-shrink-0" />
+              {!isSidebarCollapsed && <span className="font-medium">Sign Out</span>}
             </button>
           </div>
         </div>
@@ -376,14 +466,6 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
             <button onClick={() => setIsSidebarOpen(true)} className="md:hidden p-2 text-gray-500 hover:bg-gray-100 rounded-lg" title="Toggle sidebar menu">
               <Menu className="w-6 h-6" />
             </button>
-            <div className="relative hidden sm:block">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-              <input 
-                type="text" 
-                placeholder="Search..." 
-                className="pl-10 pr-4 py-2 bg-gray-100 border-transparent focus:bg-white focus:border-gray-300 focus:ring-0 rounded-lg text-sm w-64 transition-all"
-              />
-            </div>
           </div>
           <div className="flex items-center gap-4">
             <div className="relative">
@@ -418,7 +500,7 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
 
         {/* View Content */}
         <main 
-          className="flex-1 overflow-x-hidden overflow-y-auto bg-gray-50 p-4 sm:p-6 lg:p-8 relative z-0" 
+          className="flex-1 overflow-x-hidden overflow-y-auto bg-gray-50 p-4 sm:p-6 relative z-0" 
           onClick={() => isNotifOpen && setIsNotifOpen(false)}
         >
           {isLoading && (
@@ -441,7 +523,9 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
                  />
               ) : (
                 <>
-                  {currentView === 'dashboard' && <Dashboard projects={projects} users={users} onSelectProject={setSelectedProject} />}
+                  {currentView === 'dashboard' && <Dashboard projects={projects} users={users} onSelectProject={setSelectedProject} onSelectTask={(task, project) => {
+                    setSelectedProject(project);
+                  }} />}
                   
                   {currentView === 'projects' && (
                     <div className="space-y-6">
@@ -457,7 +541,14 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
                         )}
                       </div>
                       {visibleProjects.length > 0 ? (
-                        <ProjectList projects={visibleProjects} onSelect={setSelectedProject} />
+                        <ProjectList 
+                          projects={visibleProjects} 
+                          onSelect={setSelectedProject}
+                          user={user}
+                          setEditingProject={setEditingProject}
+                          setIsNewProjectModalOpen={setIsNewProjectModalOpen}
+                          onDeleteProject={handleDeleteProject}
+                        />
                       ) : (
                         <div className="text-center py-20 bg-white rounded-xl border border-dashed border-gray-300">
                           <p className="text-gray-500">No projects found for your account.</p>
@@ -466,9 +557,15 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
                     </div>
                   )}
 
-                  {currentView === 'clients' && <PeopleList users={users} roleFilter={Role.CLIENT} onAddUser={handleAddUser} projects={projects} />}
-                  {currentView === 'vendors' && <PeopleList users={users} roleFilter={Role.VENDOR} onAddUser={handleAddUser} projects={projects} />}
-                  {currentView === 'designers' && <PeopleList users={users} roleFilter={Role.DESIGNER} onAddUser={handleAddUser} projects={projects} />}
+                  {currentView === 'clients' && <PeopleList users={users} roleFilter={Role.CLIENT} onAddUser={handleAddUser} projects={projects} onSelectProject={setSelectedProject} onSelectTask={(task, project) => {
+                    setSelectedProject(project);
+                  }} />}
+                  {currentView === 'vendors' && <PeopleList users={users} roleFilter={Role.VENDOR} onAddUser={handleAddUser} projects={projects} onSelectProject={setSelectedProject} onSelectTask={(task, project) => {
+                    setSelectedProject(project);
+                  }} />}
+                  {currentView === 'designers' && <PeopleList users={users} roleFilter={Role.DESIGNER} onAddUser={handleAddUser} projects={projects} onSelectProject={setSelectedProject} onSelectTask={(task, project) => {
+                    setSelectedProject(project);
+                  }} />}
                 </>
               )}
             </>
@@ -479,8 +576,12 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
       {isNewProjectModalOpen && (
         <NewProjectModal 
           users={users}
-          onClose={() => setIsNewProjectModalOpen(false)}
+          onClose={() => {
+            setIsNewProjectModalOpen(false);
+            setEditingProject(null);
+          }}
           onSave={handleAddProject}
+          initialProject={editingProject}
         />
       )}
     </div>

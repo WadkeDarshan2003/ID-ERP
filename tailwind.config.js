@@ -7,6 +7,14 @@ export default {
   ],
   theme: {
     extend: {
+      fontSize: {
+        xs: '14px',
+        sm: '15px',
+        base: '16px',
+        lg: '17px',
+        xl: '18px',
+        '2xl': '22px'
+      },
       scrollbar: {
         thin: 'thin',
         none: 'none'

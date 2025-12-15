@@ -2,18 +2,9 @@ import { Project, User, Role, ProjectStatus, TaskStatus, ProjectType, ProjectCat
 
 // Construction Sequence / Category Order
 export const CATEGORY_ORDER = [
-  'Design & Planning',
-  'Procurement',
-  'Civil Works',
-  'Carpentry',
-  'Furniture',
-  'Electrical',
-  'Plumbing',
-  'Painting',
-  'Flooring',
-  'Glazing',
-  'HVAC',
-  'General'
+  'General',
+  'Design and Planning',
+  'Execution'
 ];
 
 // --- Users ---
@@ -23,10 +14,12 @@ export const MOCK_USERS: User[] = [];
 const createDefaultApprovals = () => ({
   start: {
     client: { status: 'pending' as const },
+    admin: { status: 'pending' as const },
     designer: { status: 'pending' as const }
   },
   completion: {
     client: { status: 'pending' as const },
+    admin: { status: 'pending' as const },
     designer: { status: 'pending' as const }
   }
 });

@@ -1,12 +1,46 @@
 import { createUserWithEmailAndPassword, signOut, signInWithEmailAndPassword } from 'firebase/auth';
 import { auth, db } from './firebaseConfig';
-import { setDoc, doc } from 'firebase/firestore';
+import { setDoc, doc, updateDoc } from 'firebase/firestore';
 import { User, Role } from '../types';
+
+/**
+ * Update an existing user's profile in Firestore
+ * Updates BOTH 'users' collection AND role-specific collection
+ * @param user - User data to update
+ */
+export const updateUserInFirebase = async (user: User): Promise<void> => {
+  try {
+    const userRef = doc(db, 'users', user.id);
+    const roleCollection = user.role.toLowerCase() + 's';
+    const roleRef = doc(db, roleCollection, user.id);
+
+    const updateData: any = {
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      phone: user.phone || '',
+    };
+
+    if (user.company) updateData.company = user.company;
+    if (user.specialty) updateData.specialty = user.specialty;
+
+    // Use setDoc with merge: true instead of updateDoc to handle cases where document might be missing
+    await setDoc(userRef, updateData, { merge: true });
+    console.log(`✅ Updated 'users' collection: ${user.email}`);
+
+    await setDoc(roleRef, updateData, { merge: true });
+    console.log(`✅ Updated '${roleCollection}' collection: ${user.email}`);
+
+  } catch (error: any) {
+    console.error('Error updating user in Firebase:', error);
+    throw new Error(error.message || 'Failed to update user');
+  }
+};
 
 /**
  * Create a new user in Firebase Authentication and save profile to Firestore
  * Saves to BOTH 'users' collection AND role-specific collection (designers/vendors/clients)
- * @param user - User data including email, aadhar (password), role, etc.
+ * @param user - User data including email, password (generated from last 6 digits of phone), role, etc.
  * @param adminEmail - Email of currently logged-in admin
  * @param adminPassword - Password of currently logged-in admin (needed to re-login after creating user)
  * @returns Promise with created user ID
@@ -23,7 +57,7 @@ export const createUserInFirebase = async (
     const authResult = await createUserWithEmailAndPassword(
       auth,
       user.email,
-      user.aadhar // Using aadhar as password
+      user.password! // Using password (last 6 digits of phone)
     );
 
     const firebaseUid = authResult.user.uid;
@@ -36,7 +70,7 @@ export const createUserInFirebase = async (
       email: user.email,
       role: user.role,
       phone: user.phone || '',
-      aadhar: user.aadhar
+      password: user.password
     };
 
     // Add optional fields only if they exist

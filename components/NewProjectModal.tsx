@@ -1,35 +1,58 @@
-import React, { useState } from 'react';
-import { User, Role, Project, ProjectStatus, ProjectType, ProjectCategory } from '../types';
-import { X, Calendar, DollarSign, Image as ImageIcon, Loader } from 'lucide-react';
+import React, { useState, useRef } from 'react';
+import { User, Role, Project, ProjectStatus, ProjectType, ProjectCategory, ProjectDocument } from '../types';
+import { X, Calendar, IndianRupee, Image as ImageIcon, Loader, Upload, Trash2 } from 'lucide-react';
 import { useNotifications } from '../contexts/NotificationContext';
 import { useProjectCrud } from '../hooks/useCrud';
+import { storage } from '../services/firebaseConfig';
+import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { createDocument } from '../services/projectDetailsService';
 
 interface NewProjectModalProps {
   users: User[];
   onClose: () => void;
   onSave: (project: Project) => void;
+  initialProject?: Project | null;
 }
 
-const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSave }) => {
+const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSave, initialProject }) => {
   const { addNotification } = useNotifications();
-  const { createNewProject, loading, error } = useProjectCrud();
+  const { createNewProject, updateExistingProject } = useProjectCrud();
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const isEditMode = !!initialProject;
   
   // Initialize dates with today's date in YYYY-MM-DD format
   const today = new Date().toISOString().split('T')[0];
   
-  const [formData, setFormData] = useState<Partial<Project>>({
-    name: '',
-    status: ProjectStatus.PLANNING,
-    type: ProjectType.DESIGNING,
-    category: ProjectCategory.COMMERCIAL,
-    description: '',
-    budget: undefined,
-    startDate: today,
-    deadline: today,
-    clientId: '',
-    leadDesignerId: ''
-  });
+  const [formData, setFormData] = useState<Partial<Project>>(
+    initialProject ? {
+      name: initialProject.name,
+      status: initialProject.status,
+      type: initialProject.type,
+      category: initialProject.category,
+      description: initialProject.description,
+      budget: initialProject.budget,
+      startDate: initialProject.startDate,
+      deadline: initialProject.deadline,
+      clientId: initialProject.clientId,
+      leadDesignerId: initialProject.leadDesignerId
+    } : {
+      name: '',
+      status: ProjectStatus.DISCOVERY,
+      type: ProjectType.DESIGNING,
+      category: ProjectCategory.COMMERCIAL,
+      description: '',
+      budget: undefined,
+      startDate: today,
+      deadline: today,
+      clientId: '',
+      leadDesignerId: ''
+    }
+  );
   const [showErrors, setShowErrors] = useState(false);
+  const [coverImageFile, setCoverImageFile] = useState<File | null>(null);
+  const [uploadedDocuments, setUploadedDocuments] = useState<{file: File, name: string}[]>([]);
+  const coverImageInputRef = useRef<HTMLInputElement>(null);
+  const documentInputRef = useRef<HTMLInputElement>(null);
 
   const validate = () => {
     if (!formData.name || !formData.clientId || !formData.leadDesignerId || !formData.startDate || !formData.deadline || !formData.budget) {
@@ -72,48 +95,198 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
     return true;
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!validate()) return;
 
-    const newProject: Omit<Project, 'id'> = {
-      name: formData.name!,
-      clientId: formData.clientId!,
-      leadDesignerId: formData.leadDesignerId!,
-      status: formData.status || ProjectStatus.PLANNING,
-      type: formData.type as ProjectType,
-      category: formData.category as ProjectCategory,
-      startDate: formData.startDate!,
-      deadline: formData.deadline!,
-      budget: Number(formData.budget),
-      thumbnail: `https://images.unsplash.com/photo-1552664730-d307ca884978?w=800&h=600&fit=crop`,
-      description: formData.description || '',
-      tasks: [],
-      financials: [],
-      meetings: [],
-      documents: [],
-      activityLog: [
-        {
-          id: `log_${Date.now()}`,
-          userId: 'system',
-          action: 'Project Created',
-          details: 'Project initialized via Admin Dashboard',
-          timestamp: new Date().toISOString(),
-          type: 'creation'
-        }
-      ]
-    };
+    setIsSubmitting(true);
 
-    createNewProject(newProject)
-      .then((projectId) => {
-        const savedProject = { ...newProject, id: projectId } as Project;
+    try {
+      if (isEditMode && initialProject) {
+        // Update mode
+        const updates: Partial<Project> = {
+          name: formData.name!,
+          clientId: formData.clientId!,
+          leadDesignerId: formData.leadDesignerId!,
+          status: formData.status || ProjectStatus.DISCOVERY,
+          type: formData.type as ProjectType,
+          category: formData.category as ProjectCategory,
+          startDate: formData.startDate!,
+          deadline: formData.deadline!,
+          budget: Number(formData.budget),
+          description: formData.description || ''
+        };
+
+        // Upload cover image if provided
+        if (coverImageFile) {
+          try {
+            const timestamp = Date.now();
+            const fileName = coverImageFile.name.replace(/\s+/g, '_');
+            const storageRef = ref(storage, `thumbnails/${initialProject.id}/${timestamp}_${fileName}`);
+            await uploadBytes(storageRef, coverImageFile);
+            updates.thumbnail = await getDownloadURL(storageRef);
+          } catch (error: any) {
+            console.error('Cover image upload failed:', error);
+            addNotification('Warning', 'Project updated but cover image upload failed.', 'warning');
+          }
+        }
+
+        // Upload documents if provided
+        if (uploadedDocuments.length > 0) {
+            const newDocs: ProjectDocument[] = [];
+            for (let i = 0; i < uploadedDocuments.length; i++) {
+              const doc = uploadedDocuments[i];
+              try {
+                const timestamp = Date.now();
+                const fileName = doc.file.name.replace(/\s+/g, '_');
+                const storageRef = ref(storage, `documents/${initialProject.id}/${timestamp}_${fileName}`);
+                await uploadBytes(storageRef, doc.file);
+                const fileUrl = await getDownloadURL(storageRef);
+                
+                let docType: 'image' | 'pdf' | 'other' = 'other';
+                if (doc.file.type.startsWith('image/')) docType = 'image';
+                else if (doc.file.type === 'application/pdf') docType = 'pdf';
+                
+                const projectDoc: ProjectDocument = {
+                  id: `doc_${timestamp}_${i}`,
+                  name: doc.name || doc.file.name,
+                  type: docType,
+                  url: fileUrl,
+                  uploadedBy: 'system',
+                  uploadDate: new Date().toISOString(),
+                  sharedWith: [Role.ADMIN, Role.DESIGNER, Role.CLIENT],
+                  approvalStatus: 'pending'
+                };
+
+                newDocs.push(projectDoc);
+
+                // Also save to documents subcollection so it appears in Documents tab
+                await createDocument(initialProject.id, projectDoc);
+              } catch (error: any) {
+                console.error(`Document upload failed for ${doc.name}:`, error);
+                addNotification('Warning', `Failed to upload document: ${doc.name}`, 'warning');
+              }
+            }
+            // Append to existing documents
+            updates.documents = [...(initialProject.documents || []), ...newDocs];
+        }
+
+        await updateExistingProject(initialProject.id, updates);
+        const updatedProject = { ...initialProject, ...updates } as Project;
+        onSave(updatedProject);
+        onClose();
+        addNotification('Success', `Project "${formData.name}" has been updated successfully.`, 'success');
+      } else {
+        // Create mode
+        const newProject: Omit<Project, 'id'> = {
+          name: formData.name!,
+          clientId: formData.clientId!,
+          leadDesignerId: formData.leadDesignerId!,
+          status: formData.status || ProjectStatus.DISCOVERY,
+          type: formData.type as ProjectType,
+          category: formData.category as ProjectCategory,
+          startDate: formData.startDate!,
+          deadline: formData.deadline!,
+          budget: Number(formData.budget),
+          thumbnail: '',
+          description: formData.description || '',
+          tasks: [],
+          financials: [],
+          meetings: [],
+          documents: [],
+          activityLog: [
+            {
+              id: `log_${Date.now()}`,
+              userId: 'system',
+              action: 'Project Created',
+              details: 'Project initialized via Admin Dashboard',
+              timestamp: new Date().toISOString(),
+              type: 'creation'
+            }
+          ]
+        };
+
+        // Create project first
+        const projectId = await createNewProject(newProject);
+        
+        let thumbnailUrl: string | undefined;
+        // Upload cover image if provided
+        if (coverImageFile) {
+          try {
+            const timestamp = Date.now();
+            const fileName = coverImageFile.name.replace(/\s+/g, '_');
+            const storageRef = ref(storage, `thumbnails/${projectId}/${timestamp}_${fileName}`);
+            await uploadBytes(storageRef, coverImageFile);
+            thumbnailUrl = await getDownloadURL(storageRef);
+          } catch (error: any) {
+            console.error('Cover image upload failed:', error);
+            addNotification('Warning', 'Project created but cover image upload failed. You can add it later.', 'warning');
+          }
+        }
+
+        // Upload documents if provided
+        const uploadedDocs: ProjectDocument[] = [];
+        for (let i = 0; i < uploadedDocuments.length; i++) {
+          const doc = uploadedDocuments[i];
+          try {
+            const timestamp = Date.now();
+            const fileName = doc.file.name.replace(/\s+/g, '_');
+            const storageRef = ref(storage, `documents/${projectId}/${timestamp}_${fileName}`);
+            await uploadBytes(storageRef, doc.file);
+            const fileUrl = await getDownloadURL(storageRef);
+            
+            let docType: 'image' | 'pdf' | 'other' = 'other';
+            if (doc.file.type.startsWith('image/')) docType = 'image';
+            else if (doc.file.type === 'application/pdf') docType = 'pdf';
+            
+            const projectDoc: ProjectDocument = {
+              id: `doc_${timestamp}_${i}`,
+              name: doc.name || doc.file.name,
+              type: docType,
+              url: fileUrl,
+              uploadedBy: 'system',
+              uploadDate: new Date().toISOString(),
+              sharedWith: [Role.ADMIN, Role.DESIGNER, Role.CLIENT],
+              approvalStatus: 'pending'
+            };
+
+            uploadedDocs.push(projectDoc);
+
+            // Also save to documents subcollection so it appears in Documents tab
+            await createDocument(projectId, projectDoc);
+          } catch (error: any) {
+            console.error(`Document upload failed for ${doc.name}:`, error);
+            addNotification('Warning', `Failed to upload document: ${doc.name}`, 'warning');
+          }
+        }
+        
+        // Update project with uploaded files if any
+        const updates: Partial<Project> = {};
+        if (thumbnailUrl) updates.thumbnail = thumbnailUrl;
+        if (uploadedDocs.length > 0) updates.documents = uploadedDocs;
+
+        if (Object.keys(updates).length > 0) {
+          await updateExistingProject(projectId, updates);
+        }
+        
+        // Return project with uploaded files
+        const savedProject = { 
+          ...newProject, 
+          id: projectId, 
+          thumbnail: thumbnailUrl,
+          documents: uploadedDocs 
+        } as Project;
+        
         onSave(savedProject);
         onClose();
-        addNotification('Success', `Project "${formData.name}" has been saved to the database.`, 'success');
-      })
-      .catch((err) => {
-        addNotification('Error', `Failed to create project: ${err.message}`, 'error');
-      });
+        addNotification('Success', `Project "${formData.name}" has been created with ${uploadedDocs.length} document(s).`, 'success');
+      }
+    } catch (error: any) {
+      console.error('Project operation failed:', error);
+      addNotification('Error', `Failed to ${isEditMode ? 'update' : 'create'} project: ${error.message}`, 'error');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const clients = users.filter(u => u.role === Role.CLIENT);
@@ -145,7 +318,7 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
     <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
       <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto animate-fade-in">
         <div className="flex justify-between items-center p-6 border-b border-gray-100 bg-white sticky top-0 z-10">
-          <h2 className="text-xl font-bold text-gray-900">Create New Project</h2>
+          <h2 className="text-xl font-bold text-gray-900">{isEditMode ? 'Edit Project' : 'Create New Project'}</h2>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600 transition-colors" title="Close modal">
             <X className="w-6 h-6" />
           </button>
@@ -160,7 +333,7 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
               <input 
                 type="text" 
                 className={getInputClass(formData.name)}
-                placeholder="e.g. Victorian Manor Renovation"
+                placeholder="e.g. House Renovation"
                 value={formData.name}
                 onChange={e => setFormData({...formData, name: e.target.value})}
               />
@@ -206,9 +379,9 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
           </div>
 
           {/* Project Type & Category */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <div>
-              <label className="block text-sm font-bold text-gray-700 mb-1">Project Type <span className="text-red-500">*</span></label>
+              <label className="block text-xs font-bold text-gray-700 mb-1">Project Type <span className="text-red-500">*</span></label>
               <select 
                 className={getInputClass(formData.type)}
                 value={formData.type || ''}
@@ -221,7 +394,7 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
               </select>
             </div>
             <div>
-              <label className="block text-sm font-bold text-gray-700 mb-1">Category <span className="text-red-500">*</span></label>
+              <label className="block text-xs font-bold text-gray-700 mb-1">Category <span className="text-red-500">*</span></label>
               <select 
                 className={getInputClass(formData.category)}
                 value={formData.category || ''}
@@ -236,10 +409,10 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
           </div>
 
           {/* Logistics */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <div className="grid grid-cols-3 gap-2">
              <div>
-               <label className="block text-sm font-bold text-gray-700 mb-1 flex items-center gap-1">
-                 <Calendar className="w-4 h-4 text-gray-400"/> Start Date <span className="text-red-500">*</span>
+               <label className="block text-xs font-bold text-gray-700 mb-1 flex items-center gap-0.5">
+                 <Calendar className="w-3 h-3 text-gray-400"/> Start Date <span className="text-red-500">*</span>
                </label>
                <input 
                  type="date" 
@@ -250,8 +423,8 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
                />
              </div>
              <div>
-               <label className="block text-sm font-bold text-gray-700 mb-1 flex items-center gap-1">
-                 <Calendar className="w-4 h-4 text-gray-400"/> Deadline <span className="text-red-500">*</span>
+               <label className="block text-xs font-bold text-gray-700 mb-1 flex items-center gap-0.5">
+                 <Calendar className="w-3 h-3 text-gray-400"/> Deadline <span className="text-red-500">*</span>
                </label>
                <input 
                  type="date" 
@@ -262,8 +435,8 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
                />
              </div>
              <div>
-               <label className="block text-sm font-bold text-gray-700 mb-1 flex items-center gap-1">
-                 <DollarSign className="w-4 h-4 text-gray-400"/> Budget <span className="text-red-500">*</span>
+               <label className="block text-xs font-bold text-gray-700 mb-1 flex items-center gap-0.5">
+                 <IndianRupee className="w-3 h-3 text-gray-400"/> Budget <span className="text-red-500">*</span>
                </label>
                <input 
                  type="number" 
@@ -276,38 +449,123 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
              </div>
           </div>
 
-          {/* Thumbnail Preview */}
-          <div className="bg-gray-50 rounded-lg p-4 flex items-center gap-4 border border-dashed border-gray-300">
-             <div className="w-16 h-12 bg-gray-200 rounded flex items-center justify-center text-gray-400">
-               <ImageIcon className="w-6 h-6" />
-             </div>
-             <div className="text-sm text-gray-500">
-               <p>A project thumbnail will be auto-generated.</p>
-               <p className="text-xs opacity-70">You can upload a specific image later.</p>
-             </div>
+          {/* Cover Image Upload */}
+          <div>
+            <label className="block text-xs font-bold text-gray-700 mb-1">Cover Image (Optional)</label>
+            <div className="flex gap-2 items-start">
+              <div className="flex-1">
+                <div 
+                  className="border-2 border-dashed border-gray-300 rounded-lg p-2 text-center cursor-pointer hover:bg-gray-50 transition-colors"
+                  onClick={() => coverImageInputRef.current?.click()}
+                >
+                  {coverImageFile ? (
+                    <div className="flex items-center justify-center gap-1">
+                      <ImageIcon className="w-3 h-3 text-blue-500" />
+                      <span className="text-xs text-gray-700 truncate">{coverImageFile.name}</span>
+                    </div>
+                  ) : (
+                    <div className="flex flex-col items-center gap-0.5">
+                      <ImageIcon className="w-4 h-4 text-gray-300" />
+                      <p className="text-xs text-gray-500">Upload image</p>
+                    </div>
+                  )}
+                  <input
+                    ref={coverImageInputRef}
+                    type="file"
+                    accept="image/*"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) setCoverImageFile(file);
+                    }}
+                    className="hidden"
+                    title="Upload cover image"
+                  />
+                </div>
+              </div>
+              {coverImageFile && (
+                <div className="w-16 h-16 rounded-lg border border-gray-200 overflow-hidden bg-gray-50 flex-shrink-0">
+                  <img 
+                    src={URL.createObjectURL(coverImageFile)}
+                    alt="Cover preview"
+                    className="w-full h-full object-cover"
+                  />
+                </div>
+              )}
+            </div>
           </div>
 
-          <div className="pt-4 border-t border-gray-100 flex justify-end gap-3">
+          {/* Documents Upload */}
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <label className="block text-xs font-bold text-gray-700">Attached Documents (Optional)</label>
+              {uploadedDocuments.length > 0 && (
+                <span className="text-[10px] text-gray-500">{uploadedDocuments.length} file(s)</span>
+              )}
+            </div>
+            <div className="space-y-1">
+              <button
+                type="button"
+                onClick={() => documentInputRef.current?.click()}
+                className="w-full border-2 border-dashed border-gray-300 rounded-lg p-2 text-center cursor-pointer hover:bg-gray-50 transition-colors flex items-center justify-center gap-1"
+              >
+                <Upload className="w-3 h-3 text-gray-500" />
+                <span className="text-xs text-gray-600">Add documents</span>
+              </button>
+              <input
+                ref={documentInputRef}
+                type="file"
+                multiple
+                onChange={(e) => {
+                  const files = e.target.files;
+                  if (files) {
+                    const newDocs = Array.from(files).map((f: File) => ({ file: f, name: f.name }));
+                    setUploadedDocuments([...uploadedDocuments, ...newDocs]);
+                  }
+                }}
+                className="hidden"
+                title="Upload documents"
+              />
+              {uploadedDocuments.length > 0 && (
+                <div className="space-y-0.5 max-h-24 overflow-y-auto bg-gray-50 p-1 rounded border border-gray-200">
+                  {uploadedDocuments.map((doc, idx) => (
+                    <div key={idx} className="flex items-center justify-between bg-white p-1 rounded border border-gray-200 text-[10px]">
+                      <span className="text-gray-700 truncate flex-1">{doc.name}</span>
+                      <button
+                        type="button"
+                        onClick={() => setUploadedDocuments(uploadedDocuments.filter((_, i) => i !== idx))}
+                        className="text-red-500 hover:text-red-700 transition-colors ml-1"
+                        title="Remove document"
+                      >
+                        <Trash2 className="w-2.5 h-2.5" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="pt-2 border-t border-gray-100 flex justify-end gap-2">
             <button 
               type="button" 
               onClick={onClose}
-              disabled={loading}
-              className="px-6 py-2.5 rounded-lg text-sm font-medium text-gray-600 hover:bg-gray-100 transition-colors disabled:opacity-50"
+              disabled={isSubmitting}
+              className="px-4 py-1.5 rounded-lg text-xs font-medium text-gray-600 hover:bg-gray-100 transition-colors disabled:opacity-50"
             >
               Cancel
             </button>
             <button 
               type="submit"
-              disabled={loading}
-              className="px-8 py-2.5 rounded-lg text-sm font-bold text-white bg-gray-900 hover:bg-gray-800 shadow-lg hover:shadow-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+              disabled={isSubmitting}
+              className="px-6 py-1.5 rounded-lg text-xs font-bold text-white bg-gray-900 hover:bg-gray-800 shadow-lg hover:shadow-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
             >
-              {loading ? (
+              {isSubmitting ? (
                 <>
-                  <Loader className="w-4 h-4 animate-spin" />
-                  Saving...
+                  <Loader className="w-3 h-3 animate-spin" />
+                  {isEditMode ? 'Updating...' : 'Saving...'}
                 </>
               ) : (
-                'Launch Project'
+                isEditMode ? 'Update Project' : 'Launch Project'
               )}
             </button>
           </div>

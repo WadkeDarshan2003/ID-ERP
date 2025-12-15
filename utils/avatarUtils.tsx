@@ -38,7 +38,7 @@ export const getInitialsBgColor = (initials: string): string => {
 };
 
 /**
- * Avatar component - shows initials circle or image
+ * Avatar component - shows initials circle (no image avatars)
  */
 export const AvatarCircle = ({ 
   avatar, 
@@ -57,16 +57,6 @@ export const AvatarCircle = ({
     md: 'w-12 h-12 text-sm',
     lg: 'w-16 h-16 text-lg'
   };
-
-  if (avatar) {
-    return (
-      <img 
-        src={avatar} 
-        alt={name} 
-        className={`${sizeClasses[size]} rounded-full object-cover border-2 border-gray-200`}
-      />
-    );
-  }
 
   return (
     <div 

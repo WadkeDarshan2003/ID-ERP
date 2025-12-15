@@ -31,35 +31,36 @@ export const logTimelineEvent = async (
   endDate?: string
 ): Promise<string> => {
   try {
-    // Validate and ensure dates are in YYYY-MM-DD format
-    const today = new Date().toISOString().split('T')[0];
+    // Get current timestamp with time
+    const now = new Date();
+    const todayFull = now.toISOString(); // Full ISO timestamp
     
-    let validStartDate = startDate || today;
-    let validEndDate = endDate || today;
+    let validStartDate = startDate || todayFull;
+    let validEndDate = endDate || todayFull;
     
-    // Validate startDate format (YYYY-MM-DD) and is a valid date
-    if (validStartDate && !/^\d{4}-\d{2}-\d{2}$/.test(validStartDate)) {
-      console.warn(`Invalid startDate format: ${validStartDate}, using today's date instead`);
-      validStartDate = today;
+    // Validate startDate format and is a valid date
+    if (validStartDate && !/^\d{4}-\d{2}-\d{2}/.test(validStartDate)) {
+      console.warn(`Invalid startDate format: ${validStartDate}, using current timestamp instead`);
+      validStartDate = todayFull;
     } else if (validStartDate) {
       // Check if date is actually valid
       const startDateObj = new Date(validStartDate);
       if (isNaN(startDateObj.getTime())) {
-        console.warn(`Invalid startDate value: ${validStartDate}, using today's date instead`);
-        validStartDate = today;
+        console.warn(`Invalid startDate value: ${validStartDate}, using current timestamp instead`);
+        validStartDate = todayFull;
       }
     }
     
-    // Validate endDate format (YYYY-MM-DD) and is a valid date
-    if (validEndDate && !/^\d{4}-\d{2}-\d{2}$/.test(validEndDate)) {
-      console.warn(`Invalid endDate format: ${validEndDate}, using today's date instead`);
-      validEndDate = today;
+    // Validate endDate format and is a valid date
+    if (validEndDate && !/^\d{4}-\d{2}-\d{2}/.test(validEndDate)) {
+      console.warn(`Invalid endDate format: ${validEndDate}, using current timestamp instead`);
+      validEndDate = todayFull;
     } else if (validEndDate) {
       // Check if date is actually valid
       const endDateObj = new Date(validEndDate);
       if (isNaN(endDateObj.getTime())) {
-        console.warn(`Invalid endDate value: ${validEndDate}, using today's date instead`);
-        validEndDate = today;
+        console.warn(`Invalid endDate value: ${validEndDate}, using current timestamp instead`);
+        validEndDate = todayFull;
       }
     }
     
@@ -114,10 +115,12 @@ export const updateTask = async (projectId: string, taskId: string, updates: Par
     const cleanedUpdates = Object.fromEntries(
       Object.entries({ ...updates }).filter(([_, v]) => v !== undefined)
     );
+    console.log(`📤 Updating task ${taskId} with:`, cleanedUpdates);
     await updateDoc(doc(db, "projects", projectId, "tasks", taskId), {
       ...cleanedUpdates,
       updatedAt: new Date()
     });
+    console.log(`✅ Task ${taskId} updated in Firestore`);
   } catch (error) {
     console.error("Error updating task:", error);
     throw error;
@@ -214,6 +217,67 @@ export const subscribeToProjectMeetings = (projectId: string, callback: (meeting
   });
 };
 
+// ============ MEETING COMMENTS SUBCOLLECTION ============
+
+export const addCommentToMeeting = async (
+  projectId: string,
+  meetingId: string,
+  comment: Omit<Comment, 'id'>
+): Promise<string> => {
+  try {
+    const commentsRef = collection(db, "projects", projectId, "meetings", meetingId, "comments");
+    const newCommentRef = doc(commentsRef);
+    // Remove undefined values before sending to Firebase
+    const cleanedComment = Object.fromEntries(
+      Object.entries({ ...comment }).filter(([_, v]) => v !== undefined)
+    );
+    await setDoc(newCommentRef, {
+      ...cleanedComment,
+      createdAt: new Date()
+    });
+    return newCommentRef.id;
+  } catch (error) {
+    console.error("Error adding comment to meeting:", error);
+    throw error;
+  }
+};
+
+export const deleteCommentFromMeeting = async (
+  projectId: string,
+  meetingId: string,
+  commentId: string
+): Promise<void> => {
+  try {
+    await deleteDoc(doc(db, "projects", projectId, "meetings", meetingId, "comments", commentId));
+  } catch (error) {
+    console.error("Error deleting meeting comment:", error);
+    throw error;
+  }
+};
+
+export const getMeetingComments = async (projectId: string, meetingId: string): Promise<Comment[]> => {
+  try {
+    const commentsRef = collection(db, "projects", projectId, "meetings", meetingId, "comments");
+    const snapshot = await getDocs(commentsRef);
+    const comments = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as Comment));
+    return comments;
+  } catch (error) {
+    console.error("Error fetching meeting comments:", error);
+    return [];
+  }
+};
+
+export const subscribeToMeetingComments = (
+  projectId: string,
+  meetingId: string,
+  callback: (comments: Comment[]) => void
+): Unsubscribe => {
+  return onSnapshot(collection(db, "projects", projectId, "meetings", meetingId, "comments"), (snapshot) => {
+    const comments = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as Comment));
+    callback(comments);
+  });
+};
+
 // ============ DOCUMENTS COLLECTION ============
 
 export const createDocument = async (projectId: string, document: Omit<ProjectDocument, 'id'>): Promise<string> => {
@@ -272,10 +336,41 @@ export const getProjectDocuments = async (projectId: string): Promise<ProjectDoc
 };
 
 export const subscribeToProjectDocuments = (projectId: string, callback: (documents: ProjectDocument[]) => void): Unsubscribe => {
-  return onSnapshot(collection(db, "projects", projectId, "documents"), (snapshot) => {
-    const documents = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as ProjectDocument));
-    callback(documents);
+  const documentsMap = new Map<string, ProjectDocument>();
+  const unsubscribers: Unsubscribe[] = [];
+  
+  // Subscribe to documents collection
+  const docsUnsubscribe = onSnapshot(collection(db, "projects", projectId, "documents"), (snapshot) => {
+    // Handle document changes (additions/updates/deletions)
+    snapshot.docs.forEach(docSnapshot => {
+      const docId = docSnapshot.id;
+      const docData = docSnapshot.data() as ProjectDocument;
+      
+      // Add or update document in map
+      // Use comments from document field (which is synced via arrayUnion)
+      documentsMap.set(docId, {
+        ...docData,
+        id: docId,
+        comments: docData.comments || []  // Use document field as source of truth
+      });
+    });
+    
+    // Remove deleted documents
+    documentsMap.forEach((_, docId) => {
+      if (!snapshot.docs.find(d => d.id === docId)) {
+        documentsMap.delete(docId);
+      }
+    });
+    
+    callback(Array.from(documentsMap.values()));
   });
+  
+  unsubscribers.push(docsUnsubscribe);
+  
+  // Return unsubscribe function that cleans up all listeners
+  return () => {
+    unsubscribers.forEach(unsubscribe => unsubscribe());
+  };
 };
 
 // ============ COMMENTS COLLECTION ============
@@ -286,17 +381,31 @@ export const addCommentToDocument = async (
   comment: Omit<Comment, 'id'>
 ): Promise<string> => {
   try {
-    const commentsRef = collection(db, "projects", projectId, "documents", documentId, "comments");
-    const newCommentRef = doc(commentsRef);
+    const documentRef = doc(db, "projects", projectId, "documents", documentId);
+    
     // Remove undefined values before sending to Firebase
     const cleanedComment = Object.fromEntries(
       Object.entries({ ...comment }).filter(([_, v]) => v !== undefined)
     );
-    await setDoc(newCommentRef, {
+    
+    // Generate a unique comment ID
+    const commentId = Math.random().toString(36).substr(2, 9);
+    
+    const newCommentWithId: Comment = {
+      id: commentId,
+      userId: (cleanedComment as any).userId || "",
+      text: (cleanedComment as any).text || "",
+      timestamp: (cleanedComment as any).timestamp || new Date().toISOString(),
       ...cleanedComment,
-      createdAt: new Date()
+    };
+    
+    // Store ONLY in document's comments array field (single source of truth)
+    // This avoids duplication and is simpler
+    await updateDoc(documentRef, {
+      comments: arrayUnion(newCommentWithId)
     });
-    return newCommentRef.id;
+    
+    return commentId;
   } catch (error) {
     console.error("Error adding comment:", error);
     throw error;
@@ -306,10 +415,21 @@ export const addCommentToDocument = async (
 export const deleteCommentFromDocument = async (
   projectId: string,
   documentId: string,
-  commentId: string
+  commentId: string,
+  comment?: Comment
 ): Promise<void> => {
   try {
+    // 1. Delete from subcollection
     await deleteDoc(doc(db, "projects", projectId, "documents", documentId, "comments", commentId));
+    
+    // 2. ALSO remove from document's comments array field
+    // If comment object is provided, use it; otherwise, create a minimal one
+    const commentToRemove = comment || { id: commentId, userId: '', text: '', timestamp: '' };
+    
+    const documentRef = doc(db, "projects", projectId, "documents", documentId);
+    await updateDoc(documentRef, {
+      comments: arrayRemove(commentToRemove)
+    });
   } catch (error) {
     console.error("Error deleting comment:", error);
     throw error;

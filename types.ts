@@ -6,9 +6,9 @@ export enum Role {
 }
 
 export enum ProjectStatus {
+  DISCOVERY = 'Discovery',
   PLANNING = 'Planning',
-  IN_PROGRESS = 'In Progress',
-  PROCUREMENT = 'Procurement',
+  EXECUTION = 'Execution',
   COMPLETED = 'Completed',
   ON_HOLD = 'On Hold'
 }
@@ -39,26 +39,47 @@ export interface User {
   role: Role;
   email: string; // Acts as Login ID
   password?: string; // Acts as Password (Aadhar)
-  aadhar?: string; // Explicit Aadhar Number
   phone?: string;
   avatar?: string;
   company?: string; // For vendors
   specialty?: string; // For designers/vendors
+  // Vendor project metrics - aggregated from all projects
+  projectMetrics?: Record<string, {
+    projectName: string;
+    taskCount: number; // Number of completed tasks in this project
+    netAmount: number; // Net amount (approved only) in this project
+  }>;
 }
 
 export interface FinancialRecord {
   id: string;
   date: string;
+  timestamp?: string; // ISO timestamp for sorting by date and time
   description: string;
   amount: number;
   type: 'income' | 'expense' | 'designer-charge'; // Income = From Client, Expense = To Vendor, Designer-Charge = Design Fee
   status: 'paid' | 'pending' | 'overdue' | 'hold';
   category: string;
+  vendorId?: string; // ID of vendor for expense tracking
   vendorName?: string; // Name of vendor for expense tracking
-  paidBy?: 'client' | 'vendor'; // Who collected the payment (for income/expenses)
-  paidTo?: string; // Recipient (vendor/designer name)
+  paidBy?: 'client' | 'vendor' | 'designer' | 'admin' | 'other'; // Who paid (for income/expenses)
+  paidByOther?: string; // Name and role for "other" paid by option (e.g., "John Smith (Partner)")
+  paidByRole?: 'client' | 'vendor' | 'designer' | 'admin' | 'other'; // Role of who paid for income transactions
+  receivedBy?: string; // Who received the payment (person/entity name)
+  receivedByName?: string; // Name of who received the payment (for expense transactions)
+  receivedByRole?: 'client' | 'vendor' | 'designer' | 'admin' | 'other' | 'client-received' | 'vendor-received' | 'designer-received' | 'admin-received' | 'other-received'; // Role of who received the payment
+  paidTo?: string; // Recipient (vendor/designer name) - kept for backward compatibility
   adminApproved?: boolean; // Admin approval for billing
   clientApproved?: boolean; // Client approval for billing
+  // Approvals for additional budgets
+  isAdditionalBudget?: boolean; // Flag to indicate this is an additional budget increase
+  clientApprovalForAdditionalBudget?: ApprovalStatus; // Client approval for additional budget
+  adminApprovalForAdditionalBudget?: ApprovalStatus; // Admin approval for additional budget
+  // Approvals for received payments from client
+  isClientPayment?: boolean; // Flag to indicate this is a payment received from client
+  clientApprovalForPayment?: ApprovalStatus; // Client approval for payment record
+  adminApprovalForPayment?: ApprovalStatus; // Admin approval for payment record
+  paymentMode?: 'cash' | 'upi' | 'bank_transfer' | 'cheque' | 'credit_card' | 'other';
 }
 
 export interface SubTask {
@@ -70,8 +91,10 @@ export interface SubTask {
 export interface Comment {
   id: string;
   userId: string;
+  userName?: string; // Store commenter's name for resilience when user data is unavailable
   text: string;
   timestamp: string;
+  status?: 'pending' | 'done'; // Mark comment as done or pending
 }
 
 export type ApprovalStatus = 'pending' | 'approved' | 'rejected';
@@ -84,7 +107,8 @@ export interface TaskApproval {
 
 export interface ApprovalFlow {
   client: TaskApproval;
-  designer: TaskApproval;
+  admin: TaskApproval;
+  designer?: TaskApproval;
 }
 
 export interface Task {
@@ -100,6 +124,7 @@ export interface Task {
   dependencies: string[]; // Array of Task IDs that must finish before this starts
   subtasks: SubTask[];
   comments: Comment[];
+  documents?: string[]; // Array of document IDs specific to this task
   approvals: {
     start: ApprovalFlow;
     completion: ApprovalFlow;
@@ -110,9 +135,10 @@ export interface Meeting {
   id: string;
   date: string;
   title: string;
-  attendees: string[]; // List of names
+  attendees: string[]; // List of user IDs
   notes: string;
-  type: 'Discovery' | 'Progress' | 'Site Visit' | 'Vendor Meet';
+  type: string; // Flexible meeting type (e.g., Discovery, Progress, Site Visit, etc.)
+  comments?: Comment[]; // Comments on the meeting
 }
 
 export interface Timeline {
@@ -148,8 +174,13 @@ export interface ProjectDocument {
   url: string;
   uploadedBy: string;
   uploadDate: string;
-  sharedWith: Role[]; // Roles that can see this file
+  sharedWith: string[]; // User IDs that can see this file
   comments?: Comment[]; // Comments on this document
+  approvalStatus: 'pending' | 'approved' | 'rejected'; // Document approval status
+  approvedBy?: string; // User ID of approver
+  rejectedBy?: string; // User ID of rejector
+  approvalDate?: string;
+  rejectionDate?: string;
 }
 
 export interface Project {
@@ -159,6 +190,8 @@ export interface Project {
   clientIds?: string[]; // Additional clients
   leadDesignerId: string;
   teamMembers?: string[]; // IDs of explicitly added members
+  team?: User[];
+  vendorIds?: string[];
   status: ProjectStatus;
   type: ProjectType; // Designing or Turnkey
   category: ProjectCategory; // Commercial or Residential
