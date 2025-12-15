@@ -2413,7 +2413,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                  notifyUser(editingTask.assigneeId, 'Work Approved', `Great job! "${editingTask.title}" is officially approved and done in "${project.name}".`, 'success', 'plan');
                  // Send task approval email
                  const assignee = projectTeam.find(u => u.id === editingTask.assigneeId);
-                 if (assignee && assignee.email) {
+                 if (assignee && assignee.email && editingTask.title) {
                    await sendTaskApprovalEmail(editingTask.title, assignee, project.name, user.name, 'completion');
                  }
              }
@@ -2422,7 +2422,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
              // Send approval email for this stage
              if (editingTask.assigneeId) {
                const assignee = projectTeam.find(u => u.id === editingTask.assigneeId);
-               if (assignee && assignee.email) {
+               if (assignee && assignee.email && editingTask.title) {
                  await sendTaskApprovalEmail(editingTask.title, assignee, project.name, user.name, 'completion');
                }
              }
@@ -2431,7 +2431,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
             // Send approval email for this stage
             if (editingTask.assigneeId) {
               const assignee = projectTeam.find(u => u.id === editingTask.assigneeId);
-              if (assignee && assignee.email) {
+              if (assignee && assignee.email && editingTask.title) {
                 await sendTaskApprovalEmail(editingTask.title, assignee, project.name, user.name, stage);
               }
             }

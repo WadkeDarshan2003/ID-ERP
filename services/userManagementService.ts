@@ -2,6 +2,7 @@ import { createUserWithEmailAndPassword, signOut, signInWithEmailAndPassword } f
 import { auth, db } from './firebaseConfig';
 import { setDoc, doc, updateDoc } from 'firebase/firestore';
 import { User, Role } from '../types';
+import { sendEmail } from './emailService';
 
 /**
  * Update an existing user's profile in Firestore
@@ -91,11 +92,55 @@ export const createUserInFirebase = async (
     console.log(`   Firebase UID: ${firebaseUid}`);
     console.log(`   Saved data:`, userProfile);
 
-    // Step 4: Re-login as admin if needed
-    // Firebase auto-logged in the new user, so we need to sign back in as admin
-    const newLoggedInUser = auth.currentUser?.email;
-    console.log(`📊 Current auth user: ${newLoggedInUser}`);
-    console.log(`📊 Admin email: ${adminEmail}`);
+    // Step 4: Send welcome email with credentials
+    try {
+      const htmlContent = `
+        <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 600px; margin: 0 auto; background-color: #f9fafb; padding: 20px;">
+          <div style="background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%); padding: 30px; border-radius: 8px 8px 0 0; text-align: center;">
+            <h2 style="color: #fff; margin: 0; font-size: 24px;">🎉 Welcome to Kydo Solutions!</h2>
+          </div>
+          
+          <div style="background-color: white; padding: 30px; border-radius: 0 0 8px 8px;">
+            <p style="color: #333; font-size: 16px;">Hi <strong>${user.name}</strong>,</p>
+            
+            <p style="color: #555; font-size: 14px;">Your account has been created on Kydo Solutions. Here are your login credentials:</p>
+            
+            <div style="background-color: #f3f4f6; padding: 20px; border-radius: 6px; margin: 20px 0; border-left: 4px solid #ef4444;">
+              <p style="margin: 0; color: #333; font-size: 14px;"><strong>Your ID (Email):</strong></p>
+              <p style="margin: 5px 0 15px 0; color: #1f2937; font-size: 16px; font-family: monospace; background: white; padding: 8px; border-radius: 4px;">${user.email}</p>
+              
+              <p style="margin: 0; color: #333; font-size: 14px;"><strong>Your Password:</strong></p>
+              <p style="margin: 5px 0 0 0; color: #1f2937; font-size: 16px; font-family: monospace; background: white; padding: 8px; border-radius: 4px;">${user.password}</p>
+            </div>
+            
+            <p style="color: #555; font-size: 14px;">
+              <strong>Keep these credentials safe!</strong> You can change your password after logging in for the first time.
+            </p>
+            
+            <div style="margin-top: 30px; text-align: center;">
+              <a href="https://btw-erp.web.app" style="background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%); color: white; padding: 12px 30px; border-radius: 6px; text-decoration: none; display: inline-block; font-weight: 600;">
+                Go to Kydo Solutions
+              </a>
+            </div>
+            
+            <p style="color: #9ca3af; font-size: 12px; margin-top: 30px; border-top: 1px solid #e5e7eb; padding-top: 20px;">
+              If you have any questions, please contact the administrator.
+            </p>
+          </div>
+        </div>
+      `;
+
+      await sendEmail({
+        to: user.email,
+        recipientName: user.name,
+        subject: 'Welcome to Kydo Solutions - Your Account Credentials',
+        htmlContent: htmlContent
+      });
+      console.log(`✅ Welcome email sent to ${user.email}`);
+    } catch (emailError: any) {
+      console.error(`⚠️ Failed to send welcome email to ${user.email}:`, emailError.message);
+      // Don't throw - user is created successfully, email is just a courtesy
+    }
     console.log(`📊 Has admin password: ${!!adminPassword}`);
     
     if (adminEmail && adminPassword) {

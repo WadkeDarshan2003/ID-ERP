@@ -398,28 +398,30 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
         ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'} md:translate-x-0
         ${isSidebarCollapsed ? 'md:w-20' : 'md:w-64 w-64'}
       `}>
-        <div className="h-full flex flex-col">
+        <div className="h-full flex flex-col relative">
           <div className="p-6 flex items-center justify-between">
             {!isSidebarCollapsed && (
               <div className="flex items-center gap-2">
-                <img src="/logo-header.png" alt="Btw Solutions Logo" className="h-8 w-8 rounded-lg" style={{ background: 'none', filter: 'invert(0)' }} />
-                <span className="text-xl font-bold text-gray-900">Btw Solutions</span>
+                <img src="/kydoicon.png" alt="Kydo Solutions Logo" className="h-8 w-8 rounded-lg" style={{ background: 'none', filter: 'invert(0)' }} />
+                <span className="text-xl font-bold text-gray-900">Kydo Solutions</span>
               </div>
             )}
             {isSidebarCollapsed && (
-              <img src="/logo-header.png" alt="Btw Solutions Logo" className="h-8 w-8" style={{ background: 'none', filter: 'invert(0)' }} />
+              <img src="/kydoicon.png" alt="Kydo Solutions Logo" className="h-8 w-8" style={{ background: 'none', filter: 'invert(0)' }} />
             )}
             <button className="md:hidden" onClick={() => setIsSidebarOpen(false)} title="Close sidebar">
               <X className="w-5 h-5 text-gray-500" />
             </button>
-            <button 
-              onClick={() => setIsSidebarCollapsed(!isSidebarCollapsed)} 
-              className="hidden md:block p-1 text-gray-500 hover:bg-gray-100 rounded-lg transition-colors"
-              title={isSidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-            >
-              <Menu className="w-5 h-5" />
-            </button>
           </div>
+
+          {/* Toggle Button - On Right Border */}
+          <button 
+            onClick={() => setIsSidebarCollapsed(!isSidebarCollapsed)} 
+            className="hidden md:flex absolute -right-3.5 top-6 w-7 h-7 text-gray-400 hover:text-gray-900 rounded items-center justify-center transition-colors"
+            title={isSidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+          >
+            <Menu className="w-5 h-5" />
+          </button>
 
           <div className="px-4 flex-1 overflow-y-auto">
             <div className="mb-6">

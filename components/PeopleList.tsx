@@ -447,7 +447,8 @@ const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, p
       {groupedVendors ? (
          // GROUPED VENDOR VIEW
          <div className="space-y-8">
-            {sortedCategories.map(cat => (
+            {sortedCategories.length > 0 ? (
+              sortedCategories.map(cat => (
                 <div key={cat}>
                     <h3 className="text-sm font-bold text-gray-500 uppercase tracking-wide mb-4 flex items-center gap-2 border-b border-gray-200 pb-2">
                         <Tag className="w-4 h-4" /> {cat}
@@ -460,16 +461,43 @@ const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, p
                         ))}
                     </div>
                 </div>
-            ))}
+              ))
+            ) : (
+              <div className="flex flex-col items-center justify-center py-20 px-4">
+                <div className="text-center">
+                  <Briefcase className="w-16 h-16 text-gray-300 mx-auto mb-4" />
+                  <h3 className="text-lg font-semibold text-gray-600 mb-2">No vendors yet</h3>
+                  <p className="text-gray-500">
+                    No vendors have been added yet. Click "Add Vendor" to create one.
+                  </p>
+                </div>
+              </div>
+            )}
          </div>
       ) : (
          // STANDARD GRID VIEW
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {filteredUsers.map(user => (
+            {filteredUsers.length > 0 ? (
+              filteredUsers.map(user => (
                 <div key={user.id}>
                   <UserCard user={user} isVendor={roleFilter === Role.VENDOR} hideRole={roleFilter === Role.CLIENT || roleFilter === Role.DESIGNER} />
                 </div>
-            ))}
+              ))
+            ) : (
+              <div className="col-span-full flex flex-col items-center justify-center py-20 px-4">
+                <div className="text-center">
+                  <Briefcase className="w-16 h-16 text-gray-300 mx-auto mb-4" />
+                  <h3 className="text-lg font-semibold text-gray-600 mb-2">
+                    No {roleFilter === 'All' ? 'team members' : roleFilter.toLowerCase() + 's'} yet
+                  </h3>
+                  <p className="text-gray-500">
+                    {roleFilter === 'All' 
+                      ? 'Team members will appear here once they are added.'
+                      : `${roleFilter}s will appear here once they are added.`}
+                  </p>
+                </div>
+              </div>
+            )}
         </div>
       )}
 
@@ -532,6 +560,9 @@ const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, p
                       <option value={Role.CLIENT}>Client</option>
                       <option value={Role.DESIGNER}>Designer</option>
                       <option value={Role.VENDOR}>Vendor</option>
+                      {currentUser?.role === Role.ADMIN && (
+                        <option value={Role.ADMIN}>Admin</option>
+                      )}
                     </select>
                   </div>
                 </div>
