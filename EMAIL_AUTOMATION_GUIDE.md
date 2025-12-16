@@ -157,8 +157,8 @@ Recipient Email Inbox
 
 **Environment Variables** (already set in `.env.local`):
 ```
-VITE_BREVO_API_KEY=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
-VITE_BREVO_SENDER_EMAIL=btwpune@gmail.com
+VITE_BREVO_API_KEY=YOUR_API_KEY_HERE
+VITE_BREVO_SENDER_EMAIL=
 ```
 
 ---

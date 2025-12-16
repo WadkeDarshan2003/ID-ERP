@@ -27,7 +27,7 @@ This installs:
 Your `.env.local` already has:
 ```
 VITE_EMAIL_USER=btwpune@gmail.com
-VITE_EMAIL_PASSWORD=yder iubp gmxf yuwf
+VITE_EMAIL_PASSWORD=YOUR_EMAIL_PASSWORD_HERE
 VITE_SMTP_HOST=smtp.gmail.com
 VITE_SMTP_PORT=587
 VITE_BACKEND_URL=http://localhost:5000

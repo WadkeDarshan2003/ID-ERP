@@ -76,7 +76,7 @@ Go to **Firebase Console** → **Project Settings** → **Functions**:
 
 ```
 EMAIL_USER = btwpune@gmail.com
-EMAIL_PASSWORD = yder iubp gmxf yuwf
+EMAIL_PASSWORD = YOUR_EMAIL_PASSWORD_HERE
 SMTP_HOST = smtp.gmail.com
 SMTP_PORT = 587
 ```
