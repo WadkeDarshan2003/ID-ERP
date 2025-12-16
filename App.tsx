@@ -7,8 +7,10 @@ import { MOCK_PROJECTS, MOCK_USERS } from './constants';
 import { Project, Role, User, ProjectStatus, ProjectType, ProjectCategory } from './types';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { NotificationProvider, useNotifications } from './contexts/NotificationContext';
+import { LoadingProvider } from './contexts/LoadingContext';
 import { subscribeToProjects, subscribeToUsers, subscribeToDesigners, subscribeToVendors, subscribeToClients, seedDatabase, updateProject, deleteProject, syncAllVendorMetrics } from './services/firebaseService';
 import { AvatarCircle } from './utils/avatarUtils';
+import { formatDateToIndian } from './utils/taskUtils';
 
 // Components
 import Dashboard from './components/Dashboard';
@@ -17,6 +19,7 @@ import PeopleList from './components/PeopleList';
 import Login from './components/Login';
 import NotificationPanel from './components/NotificationPanel';
 import NewProjectModal from './components/NewProjectModal';
+import Loader from './components/Loader';
 
 import { calculateProjectProgress } from './utils/taskUtils';
 
@@ -73,7 +76,7 @@ const ProjectList = ({
           <div className="flex items-center gap-2 mb-4">
             <Tag className="w-5 h-5 text-gray-600" />
             <h2 className="text-lg font-bold text-gray-800">{category}</h2>
-            <span className="text-xs font-bold bg-gray-100 text-gray-600 px-2 py-1 rounded-full">
+            <span className="text-xs font-bold bg-gray-100 text-gray-600 px-2 py-1 rounded-full mobile-increase">
               {groupedProjects[category as ProjectCategory].length} projects
             </span>
           </div>
@@ -86,40 +89,12 @@ const ProjectList = ({
               >
                 <div className="h-40 overflow-hidden relative">
                   <img src={project.thumbnail} alt={project.name} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" />
-                  <div className="absolute top-3 left-3 flex gap-2">
-                    {user?.role === Role.ADMIN && (
-                      <>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setEditingProject(project);
-                            setIsNewProjectModalOpen(true);
-                          }}
-                          className="backdrop-blur-md p-2 rounded text-xs font-bold shadow-sm border border-white/20 hover:bg-white/20 transition-colors"
-                          title="Edit project"
-                        >
-                          <Edit className="w-4 h-4 text-gray-900" />
-                        </button>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            if (window.confirm(`Are you sure you want to delete project "${project.name}"? This action cannot be undone.`)) {
-                              onDeleteProject(project);
-                            }
-                          }}
-                          className="backdrop-blur-md p-2 rounded text-xs font-bold shadow-sm border border-white/20 hover:bg-red-500/20 transition-colors group/delete"
-                          title="Delete project"
-                        >
-                          <Trash2 className="w-4 h-4 text-red-600 group-hover/delete:text-red-700" />
-                        </button>
-                      </>
-                    )}
-                  </div>
-                  <div className="absolute top-3 left-14 flex gap-2">
-                    <div className={`backdrop-blur-md px-2 py-1 rounded text-xs font-bold shadow-sm border border-white/20 ${getStatusColor(project.status)}`}>
+                  {/* Edit/Delete moved to card footer for left-aligned placement */}
+                  <div className="absolute top-3 right-3 flex gap-2 items-center">
+                    <div className={`backdrop-blur-md px-3 py-1 rounded text-sm font-bold md:px-2 md:text-xs md:font-bold shadow-sm border border-white/20 ${getStatusColor(project.status)}`}>
                       {project.status}
                     </div>
-                    <div className={`backdrop-blur-md px-2 py-1 rounded text-xs font-bold shadow-sm border border-white/20 ${getTypeColor(project.type)}`}>
+                    <div className={`backdrop-blur-md px-3 py-1 rounded text-sm font-bold md:px-2 md:text-xs md:font-bold shadow-sm border border-white/20 ${getTypeColor(project.type)}`}>
                       {project.type}
                     </div>
                   </div>
@@ -132,26 +107,54 @@ const ProjectList = ({
                   )}
                 </div>
                 <div className="p-5">
-                  <h3 className="font-bold text-gray-900 text-lg mb-1">{project.name}</h3>
-                  <p className="text-sm text-gray-500 mb-4 line-clamp-2">{project.description}</p>
-                  <div className="flex justify-between items-center border-t border-gray-100 pt-4">
-                    <div></div>
-                    <span className="text-xs font-medium text-gray-400">Due {new Date(project.deadline).toLocaleDateString()}</span>
-                  </div>
-                  {/* Progress Bar */}
-                  <div className="mt-4">
+                  <h3 className="font-bold text-gray-900 text-lg mb-1 mobile-increase">{project.name}</h3>
+                  <p className="text-base text-gray-600 md:text-sm md:text-gray-500 mb-4 line-clamp-2 mobile-increase">{project.description}</p>
+                  {/* Progress Bar (moved above due date) */}
+                  <div className="mt-2">
                      <div className="flex justify-between text-xs mb-1">
-                       <span className="text-gray-500">Progress</span>
-                       <span className="text-gray-900 font-bold">
-                         {calculateProjectProgress(project.tasks)}%
-                       </span>
-                     </div>
+                        <span className="text-gray-500 mobile-increase">Progress</span>
+                        <span className="text-gray-900 font-bold mobile-increase">
+                          {calculateProjectProgress(project.tasks)}%
+                        </span>
+                      </div>
                      <div className="w-full bg-gray-100 rounded-full h-1.5">
                        <div 
                          {...{ style: { width: `${calculateProjectProgress(project.tasks)}%` } }}
                          className="bg-gray-900 h-1.5 rounded-full transition-all duration-1000" 
                        />
                      </div>
+                  </div>
+                  <div className="flex justify-between items-center border-t border-gray-100 pt-4 mt-3">
+                    <div className="flex items-center gap-2">
+                      {user?.role === Role.ADMIN && (
+                        <>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setEditingProject(project);
+                              setIsNewProjectModalOpen(true);
+                            }}
+                            className="p-2 rounded text-xs font-bold shadow-sm border border-gray-200 hover:bg-gray-100 transition-colors"
+                            title="Edit project"
+                          >
+                            <Edit className="w-4 h-4 text-gray-900" />
+                          </button>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (window.confirm(`Are you sure you want to delete project "${project.name}"? This action cannot be undone.`)) {
+                                onDeleteProject(project);
+                              }
+                            }}
+                            className="p-2 rounded text-xs font-bold shadow-sm border border-gray-200 hover:bg-red-50 transition-colors"
+                            title="Delete project"
+                          >
+                            <Trash2 className="w-4 h-4 text-red-600" />
+                          </button>
+                        </>
+                      )}
+                    </div>
+                    <span className="text-sm font-medium text-gray-600 md:text-xs md:text-gray-400 mobile-increase">Due {formatDateToIndian(project.deadline)}</span>
                   </div>
                 </div>
               </div>
@@ -173,12 +176,14 @@ function App() {
   return (
     <AuthProvider>
       <NotificationProvider projects={projects}>
-        <AppContent 
-          projects={projects} 
-          setProjects={setProjects}
-          users={users}
-          setUsers={setUsers}
-        />
+        <LoadingProvider>
+          <AppContent 
+            projects={projects} 
+            setProjects={setProjects}
+            users={users}
+            setUsers={setUsers}
+          />
+        </LoadingProvider>
       </NotificationProvider>
     </AuthProvider>
   );
@@ -196,7 +201,10 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
   const { user, logout, loading: authLoading } = useAuth();
   const { unreadCount, addNotification } = useNotifications();
   
-  const [currentView, setCurrentView] = useState<ViewState>('dashboard');
+  const [currentView, setCurrentView] = useState<ViewState>(() => {
+    // Default clients to Projects view, others to Dashboard
+    return (user && user.role === Role.CLIENT) ? 'projects' : 'dashboard';
+  });
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
 
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
@@ -214,7 +222,7 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
 
     // Subscribe to projects (will be empty initially)
     const unsubscribeProjects = subscribeToProjects((firebaseProjects) => {
-      console.log('🔄 Projects updated in App:', firebaseProjects.length);
+      if (process.env.NODE_ENV !== 'production') console.log('🔄 Projects updated in App:', firebaseProjects.length);
       setProjects(firebaseProjects || []);
       
       // Sync all vendor metrics whenever projects change
@@ -225,59 +233,38 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
 
     // Subscribe to users - combines from all role collections
     const unsubscribeUsers = subscribeToUsers((firebaseUsers) => {
-      console.log('🔄 Users updated in App:', firebaseUsers.length, firebaseUsers);
+      if (process.env.NODE_ENV !== 'production') console.log('🔄 Users updated in App:', firebaseUsers.length, firebaseUsers);
       setUsers(firebaseUsers || []);
     });
 
     // Also subscribe to role-specific collections for redundancy/updates
     const unsubscribeDesigners = subscribeToDesigners((designers) => {
-      console.log('🔄 Designers updated:', designers.length);
-      // Merge with existing users
+      if (process.env.NODE_ENV !== 'production') console.log('🔄 Designers updated:', designers.length);
+      // Replace all designers with the new list, ensuring no ID duplicates
       setUsers(prev => {
-        const merged = [...prev];
-        designers.forEach(designer => {
-          const index = merged.findIndex(u => u.id === designer.id);
-          if (index >= 0) {
-            merged[index] = designer;
-          } else {
-            merged.push(designer);
-          }
-        });
-        return merged;
+        const newIds = new Set(designers.map(d => d.id));
+        const others = prev.filter(u => !newIds.has(u.id));
+        return [...others, ...designers];
       });
     });
 
     const unsubscribeVendors = subscribeToVendors((vendors) => {
-      console.log('🔄 Vendors updated:', vendors.length);
-      // Merge with existing users
+      if (process.env.NODE_ENV !== 'production') console.log('🔄 Vendors updated:', vendors.length);
+      // Replace all vendors with the new list, ensuring no ID duplicates
       setUsers(prev => {
-        const merged = [...prev];
-        vendors.forEach(vendor => {
-          const index = merged.findIndex(u => u.id === vendor.id);
-          if (index >= 0) {
-            merged[index] = vendor;
-          } else {
-            merged.push(vendor);
-          }
-        });
-        return merged;
+        const newIds = new Set(vendors.map(v => v.id));
+        const others = prev.filter(u => !newIds.has(u.id));
+        return [...others, ...vendors];
       });
     });
 
     const unsubscribeClients = subscribeToClients((clients) => {
-      console.log('🔄 Clients updated:', clients.length);
-      // Merge with existing users
+      if (process.env.NODE_ENV !== 'production') console.log('🔄 Clients updated:', clients.length);
+      // Replace all clients with the new list, ensuring no ID duplicates
       setUsers(prev => {
-        const merged = [...prev];
-        clients.forEach(client => {
-          const index = merged.findIndex(u => u.id === client.id);
-          if (index >= 0) {
-            merged[index] = client;
-          } else {
-            merged.push(client);
-          }
-        });
-        return merged;
+        const newIds = new Set(clients.map(c => c.id));
+        const others = prev.filter(u => !newIds.has(u.id));
+        return [...others, ...clients];
       });
     });
 
@@ -294,7 +281,8 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
   // Reset view to dashboard on login
   useEffect(() => {
     if (user) {
-      setCurrentView('dashboard');
+      // Send clients directly to Projects, other roles to Dashboard
+      setCurrentView(user.role === Role.CLIENT ? 'projects' : 'dashboard');
       setSelectedProject(null);
     }
   }, [user]);
@@ -386,7 +374,7 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
 
   return (
     <div className="flex h-screen bg-gray-50 overflow-hidden">
-      
+      <Loader />
       {/* Mobile Overlay */}
       {isSidebarOpen && (
         <div className="fixed inset-0 bg-black/50 z-20 md:hidden" onClick={() => setIsSidebarOpen(false)} />
@@ -417,16 +405,37 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
           {/* Toggle Button - On Right Border */}
           <button 
             onClick={() => setIsSidebarCollapsed(!isSidebarCollapsed)} 
-            className="hidden md:flex absolute -right-3.5 top-6 w-7 h-7 text-gray-400 hover:text-gray-900 rounded items-center justify-center transition-colors"
+            className="hidden md:flex absolute -right-3 top-6 w-7 h-7 bg-white text-gray-900 rounded-full items-center justify-center hover:bg-gray-100 transition-colors shadow-md border border-gray-200 z-40"
             title={isSidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+            aria-label="Toggle sidebar"
           >
-            <Menu className="w-5 h-5" />
+            <span className="relative w-4 h-4 block">
+              <span
+                className={`absolute left-1/2 top-1/2 w-4 h-0.5 bg-gray-900 rounded transition-all duration-300 ease-in-out
+                  ${!isSidebarCollapsed ? 'rotate-45 -translate-x-1/2 -translate-y-1/2' : '-translate-x-1/2'}
+                `}
+                style={{transform: !isSidebarCollapsed ? 'translate(-50%, -50%) rotate(45deg)' : 'translate(-50%, -5px) rotate(0deg)'}}
+              />
+              <span
+                className={`absolute left-1/2 top-1/2 w-4 h-0.5 bg-gray-900 rounded transition-all duration-300 ease-in-out
+                  ${!isSidebarCollapsed ? '-rotate-45 -translate-x-1/2 -translate-y-1/2' : '-translate-x-1/2 translate-y-1/2'}
+                `}
+                style={{transform: !isSidebarCollapsed ? 'translate(-50%, -50%) rotate(-45deg)' : 'translate(-50%, 5px) rotate(0deg)'}}
+              />
+              <span
+                className={`absolute left-1/2 top-1/2 w-4 h-0.5 bg-gray-900 rounded transition-all duration-300 ease-in-out
+                  ${!isSidebarCollapsed ? 'opacity-0' : '-translate-x-1/2 -translate-y-1/2'}
+                `}
+                style={{opacity: !isSidebarCollapsed ? 0 : 1, transform: !isSidebarCollapsed ? 'translate(-50%, -50%) scaleX(0)' : 'translate(-50%, 0) scaleX(1)'}}
+              />
+            </span>
           </button>
 
           <div className="px-4 flex-1 overflow-y-auto">
-            <div className="mb-6">
+              <div className="mb-6">
               {!isSidebarCollapsed && <p className="px-4 text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Main</p>}
-              <SidebarItem view="dashboard" icon={LayoutDashboard} label="Dashboard" />
+              {/* Hide Dashboard for clients; clients should see Projects directly */}
+              {user.role !== Role.CLIENT && <SidebarItem view="dashboard" icon={LayoutDashboard} label="Dashboard" />}
               {canSeeProjects && <SidebarItem view="projects" icon={FolderKanban} label="Projects" />}
             </div>
 

@@ -24,6 +24,7 @@ import {
   File as FileIcon, Eye, Download, Pencil, Mail, Filter, IndianRupee, Bell, MessageCircle, Users, MessageCircle as CommentIcon, Trash2, Edit3, Check
 } from 'lucide-react';
 import { useNotifications } from '../contexts/NotificationContext';
+import { useLoading } from '../contexts/LoadingContext';
 
 interface ProjectDetailProps {
   project: Project;
@@ -41,6 +42,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
   const { addNotification } = useNotifications();
   const { updateExistingProject, deleteExistingProject, loading: projectLoading } = useProjectCrud();
   const { createNewRecord: createFinancialRecord, updateExistingRecord: updateFinancialRecord, deleteExistingRecord: deleteFinancialRecord, loading: financialLoading } = useFinancialCrud(project.id);
+  const { showLoading, hideLoading } = useLoading();
 
   // Helper to recalculate and update project budget in Firestore
   const syncProjectBudget = async (projectId: string, financials: FinancialRecord[]) => {
@@ -50,7 +52,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       const totalExpense = financials.filter(f => f.type === 'expense').reduce((sum, f) => sum + f.amount, 0);
       const newBudget = totalIncome - totalExpense;
       await updateDoc(doc(db, 'projects', projectId), { budget: newBudget });
-      console.log('✅ Project budget synced:', newBudget);
+      if (process.env.NODE_ENV !== 'production') console.log('✅ Project budget synced:', newBudget);
     } catch (error) {
       console.error('❌ Error syncing project budget:', error);
       // Don't throw - allow operation to continue even if sync fails
@@ -60,6 +62,8 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
   // Wrap financial record changes to also sync vendor earnings and project budget
   const createFinancialRecordAndSync = async (record: Omit<FinancialRecord, 'id'>) => {
     try {
+      // show loader for financial operations
+      showLoading('Saving transaction...');
       const id = await createFinancialRecord(record);
       const newRecord = { ...record, id } as FinancialRecord;
       // Sync after successful creation
@@ -71,6 +75,9 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
     } catch (error) {
       console.error('❌ Error creating financial record:', error);
       throw error;
+    }
+    finally {
+      hideLoading();
     }
   };
   const updateFinancialRecordAndSync = async (recordId: string, updates: Partial<FinancialRecord>) => {
@@ -219,8 +226,8 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
   const displayTasks = useMemo(() => {
     if (user?.role === Role.VENDOR) {
       const vendorTasks = currentTasks.filter(task => task.assigneeId === user.id);
-      console.log("Vendor filter - user.id:", user.id, "current tasks:", currentTasks.length, "vendor tasks:", vendorTasks.length);
-      console.log("All task assigneeIds:", currentTasks.map(t => ({ id: t.id, assigneeId: t.assigneeId, title: t.title })));
+      if (process.env.NODE_ENV !== 'production') console.log("Vendor filter - user.id:", user.id, "current tasks:", currentTasks.length, "vendor tasks:", vendorTasks.length);
+      if (process.env.NODE_ENV !== 'production') console.log("All task assigneeIds:", currentTasks.map(t => ({ id: t.id, assigneeId: t.assigneeId, title: t.title })));
       return vendorTasks;
     }
     return currentTasks;
@@ -368,7 +375,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
         const totalAdditionalBudgetAmount = currentFinancials
           .filter(f => f.type === 'income' && f.category === 'Additional Budget')
           .reduce((sum, f) => sum + f.amount, 0);
-        const newBudget = (project.initialBudget || 0) + totalAdditionalBudgetAmount;
+        const newBudget = (project.initialBudget || project.budget) + totalAdditionalBudgetAmount;
         
         // Update Firestore project doc
         await updateDoc(doc(db, 'projects', project.id), { budget: newBudget });
@@ -376,7 +383,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
         // Update local state immediately for instant UI feedback
         onUpdateProject({ ...project, budget: newBudget });
         
-        console.log('✅ Project budget synced in real-time:', newBudget);
+        if (process.env.NODE_ENV !== 'production') console.log('✅ Project budget synced in real-time:', newBudget);
       } catch (error) {
         console.error('❌ Error syncing project budget in real-time:', error);
       }
@@ -1753,7 +1760,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       comments: editingTask.comments || [],
       approvals: editingTask.approvals as any || defaultApprovals
     };
-    console.log("Task data being saved:", taskData);
+    if (process.env.NODE_ENV !== 'production') console.log("Task data being saved:", taskData);
 
     // Cycle Detection Check
     if (taskData.dependencies?.includes(taskData.id)) {
@@ -1943,6 +1950,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
     }
 
     setSendingEmailFor(task.id);
+    showLoading('Sending reminder...');
     try {
       const result = await sendTaskReminder(
         assignee.email,
@@ -1962,6 +1970,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       addNotification('Error', 'Failed to send email reminder', 'error');
     } finally {
       setSendingEmailFor(null);
+        hideLoading();
     }
   };
 
@@ -1989,7 +1998,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
     // Try modern clipboard API first
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(taskLink).then(() => {
-        addNotification('Success', 'Task link copied to clipboard!', 'success');
+        addNotification('Success', 'Task link copied to clipboard!', 'success', user?.id, project.id, project.name);
       }).catch(() => {
         // Fallback to old method if clipboard fails
         copyToClipboardFallback(taskLink);
@@ -2009,9 +2018,9 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
     textarea.select();
     try {
       document.execCommand('copy');
-      addNotification('Success', 'Task link copied to clipboard!', 'success');
+      addNotification('Success', 'Task link copied to clipboard!', 'success', user?.id, project.id, project.name);
     } catch (err) {
-      addNotification('Error', 'Failed to copy task link', 'error');
+      addNotification('Error', 'Failed to copy task link', 'error', user?.id, project.id, project.name);
     }
     document.body.removeChild(textarea);
   };
@@ -2022,6 +2031,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       return;
     }
 
+    showLoading('Sending payment reminder...');
     try {
       const result = await sendPaymentReminder(
         client.email,
@@ -2038,6 +2048,9 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       console.error('Error sending payment reminder:', error);
       addNotification('Error', 'Failed to send payment reminder', 'error');
     }
+      finally {
+        hideLoading();
+      }
   };
 
   const handleKanbanStatusUpdate = async (taskId: string, newStatus: TaskStatus) => {
@@ -2342,13 +2355,13 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       
       if (editingTask.id) {
         try {
-          console.log(`🔄 Revoking ${stage}/${targetRole} approval...`);
-          console.log(`📝 Updated approvals:`, updatedApprovals);
+          if (process.env.NODE_ENV !== 'production') console.log(`🔄 Revoking ${stage}/${targetRole} approval...`);
+          if (process.env.NODE_ENV !== 'production') console.log(`📝 Updated approvals:`, updatedApprovals);
           
           await updateTask(project.id, editingTask.id, { 
             approvals: updatedApprovals
           });
-          console.log(`✅ Approval updated in Firebase`);
+          if (process.env.NODE_ENV !== 'production') console.log(`✅ Approval updated in Firebase`);
           
           const revokeNow = new Date().toISOString();
           await logTimelineEvent(
@@ -2359,7 +2372,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
             revokeNow,
             revokeNow
           );
-          console.log(`✅ Timeline event logged`);
+          if (process.env.NODE_ENV !== 'production') console.log(`✅ Timeline event logged`);
           
           addNotification('Approval Revoked', `${targetRole} approval for ${stage} stage revoked.`, 'info');
         } catch (error) {
@@ -2751,7 +2764,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
               )}
             </div>
             <div className="flex flex-wrap items-center gap-3 md:gap-4 text-base md:text-sm text-gray-600 mt-3 md:mt-3">
-              <span className="flex items-center gap-1 whitespace-nowrap"><Calendar className="w-4 h-4 flex-shrink-0" /> Due: {project.deadline}</span>
+              <span className="flex items-center gap-1 whitespace-nowrap"><Calendar className="w-4 h-4 flex-shrink-0" /> Due: {formatDateToIndian(project.deadline)}</span>
               {!isVendor && (
                 <span className="flex items-center gap-1 whitespace-nowrap"><IndianRupee className="w-4 h-4 flex-shrink-0" /> Budget: ₹{project.budget.toLocaleString()}</span>
               )}
@@ -2841,7 +2854,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       <div ref={tabsContainerRef} className="border-b border-gray-200 bg-gray-50 overflow-x-auto md:overflow-hidden [&::-webkit-scrollbar]:h-2 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-gray-300 [&::-webkit-scrollbar-thumb]:rounded [&:hover::-webkit-scrollbar-thumb]:bg-gray-400 hover:[scrollbar-color:rgb(107_114_128)_transparent]" style={{scrollbarWidth: 'thin', scrollbarColor: 'transparent transparent'}}>
         <div className="flex gap-1 md:gap-6 px-4 md:px-6 min-w-max md:min-w-0 md:w-full md:justify-center">
           {[
-            { id: 'discovery', label: '1. Discovery', icon: FileText, hidden: isVendor },
+            { id: 'discovery', label: '1. Meetings', icon: FileText, hidden: isVendor },
             { id: 'plan', label: '2. Plan', icon: Layout },
             { id: 'documents', label: 'Documents', icon: FileIcon },
             { id: 'financials', label: '3. Financials', icon: IndianRupee, hidden: !canViewFinancials },
@@ -2876,23 +2889,23 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
         onTouchEnd={onTouchEnd}
       >
         
-        {/* PHASE 1: DISCOVERY & MEETINGS */}
+        {/* PHASE 1: MEETINGS */}
         {activeTab === 'discovery' && !isVendor && (
           <div className="max-w-5xl mx-auto space-y-6 p-4 md:p-6">
 
             <div className="bg-white p-4 md:p-6 rounded-xl border border-gray-200 shadow-sm">
               <div className="flex flex-col md:flex-row items-start md:items-center justify-between mb-4 gap-3 md:gap-0">
                 <div className="w-full">
-                  <h3 className="text-lg md:text-xl font-bold text-gray-800">Phase 1: Project Discovery</h3>
+                  <h3 className="text-lg md:text-xl font-bold text-gray-800">Phase 1: Meetings</h3>
                   <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 sm:gap-4 mt-2">
-                    <div className="flex items-center gap-2 text-sm text-gray-600">
-                      <Calendar className="w-4 h-4 flex-shrink-0" />
+                    <div className="flex items-center gap-2 text-base md:text-sm text-gray-600">
+                      <Calendar className="w-5 h-5 md:w-4 md:h-4 flex-shrink-0" />
                       <span className="font-medium">{realTimeMeetings.length} Meeting{realTimeMeetings.length !== 1 ? 's' : ''} Held</span>
                     </div>
                     {realTimeMeetings.length > 0 && (
                       <div className="flex items-center gap-2 text-sm text-gray-500">
                         <Clock className="w-3.5 h-3.5 flex-shrink-0" />
-                        <span className="whitespace-nowrap">Latest: {new Date(realTimeMeetings[0]?.date || '').toLocaleDateString('en-IN')}</span>
+                        <span className="whitespace-nowrap">Latest: {formatDateToIndian(realTimeMeetings[0]?.date || '')}</span>
                       </div>
                     )}
                   </div>
@@ -2902,7 +2915,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
               <div className="space-y-3 md:space-y-4">
                 {realTimeMeetings.length === 0 ? (
                    <div className="text-center py-8 md:py-10 border-2 border-dashed border-gray-100 rounded-lg">
-                      <p className="text-sm text-gray-400">No meetings recorded yet.</p>
+                     <p className="text-base md:text-sm text-gray-400">No meetings recorded yet.</p>
                    </div>
                 ) : realTimeMeetings.map(meeting => (
                   <div key={meeting.id} className="border border-gray-100 rounded-lg hover:shadow-md transition-shadow bg-white overflow-hidden">
@@ -2911,7 +2924,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                         <div className="flex flex-col sm:flex-row sm:justify-between sm:items-start gap-2">
                            <div className="flex items-center gap-2 flex-wrap">
                              <h4 className="font-bold text-lg md:text-base text-gray-800 break-words">{meeting.title}</h4>
-                             <span className="bg-gray-100 text-gray-600 text-sm md:text-xs px-2 py-1 rounded whitespace-nowrap">{new Date(meeting.date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: '2-digit' })}</span>
+                             <span className="bg-gray-100 text-gray-600 text-sm md:text-xs px-2 py-1 rounded whitespace-nowrap">{formatDateToIndian(meeting.date)}</span>
                            </div>
                            <div className="flex items-center gap-2 flex-shrink-0">
                              <span className="bg-purple-100 text-purple-700 text-sm md:text-xs px-2 py-0.5 rounded-full whitespace-nowrap">{meeting.type}</span>
@@ -3404,7 +3417,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                             
                             <h4 className="font-bold text-lg text-gray-800 mb-1 cursor-pointer hover:text-blue-600" onClick={() => handleOpenTask(task)}>{task.title}</h4>
                             <p className="text-sm text-gray-500 mb-4">
-                                {new Date(task.startDate).toLocaleDateString('en-IN')} - {new Date(task.dueDate).toLocaleDateString('en-IN')}
+                                {formatDateToIndian(task.startDate)} - {formatDateToIndian(task.dueDate)}
                             </p>
                             
                             {/* Progress Bar (Duplicate removed) */}
@@ -3558,7 +3571,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                             <button
                                               onClick={(e) => {
                                                 e.stopPropagation();
-                                                const message = `Hi ${assignee.name},\n\nTask: "${task.title}"\nProject: "${project.name}"\nDue: ${new Date(task.dueDate).toLocaleDateString('en-IN')}\n\nPlease update the status.`;
+                                                const message = `Hi ${assignee.name},\n\nTask: "${task.title}"\nProject: "${project.name}"\nDue: ${formatDateToIndian(task.dueDate)}\n\nPlease update the status.`;
                                               openWhatsAppChat(assignee, message);
                                               }}
                                               className="text-gray-400 hover:text-green-600 p-1 rounded-full hover:bg-green-50 transition-colors"
@@ -3589,7 +3602,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                           <button
                                             onClick={(e) => {
                                               e.stopPropagation();
-                                              const message = `Hi ${assignee.name},\n\nTask: "${task.title}"\nProject: "${project.name}"\nDue: ${new Date(task.dueDate).toLocaleDateString('en-IN')}\n\nPlease check the task details and update the status.`;
+                                              const message = `Hi ${assignee.name},\n\nTask: "${task.title}"\nProject: "${project.name}"\nDue: ${formatDateToIndian(task.dueDate)}\n\nPlease check the task details and update the status.`;
                                             openWhatsAppChat(assignee, message);
                                             }}
                                             className="text-gray-400 hover:text-green-600 p-1 rounded-full hover:bg-green-50 transition-colors"
@@ -3753,7 +3766,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                        <div className="p-3">
                           <p className="text-lg md:text-sm font-bold text-gray-800 truncate" title={doc.name}>{doc.name}</p>
                           <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-1 mt-3">
-                            <span className="text-sm md:text-xs text-gray-400">{new Date(doc.uploadDate).toLocaleDateString('en-IN')}</span>
+                            <span className="text-sm md:text-xs text-gray-400">{formatDateToIndian(doc.uploadDate)}</span>
                             {/* Approval Status Indicator */}
                             <div className="flex-none w-auto">
                               <span className={`inline-block text-xs font-bold px-2 py-0.5 rounded mt-1 sm:mt-0 ${doc.approvalStatus === 'pending' ? 'bg-yellow-100 text-yellow-700' : doc.approvalStatus === 'approved' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>{doc.approvalStatus === 'pending' ? 'Approval Pending' : doc.approvalStatus === 'approved' ? 'Approved' : 'Rejected'}</span>
@@ -3805,7 +3818,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                             </button>
                         )}
                     </div>
-                    <h2 className="text-4xl md:text-3xl font-bold tracking-tight">₹{((project.initialBudget || 0) + totalAdditionalBudget).toLocaleString()}</h2>
+                    <h2 className="text-4xl md:text-3xl font-bold tracking-tight">₹{((project.initialBudget || project.budget) + totalAdditionalBudget).toLocaleString()}</h2>
                     {totalAdditionalBudget > 0 && (
                         <div className="mt-3 space-y-1">
                             <p className="text-sm md:text-xs text-gray-400">Initial Budget: ₹{(project.initialBudget || project.budget).toLocaleString()}</p>
@@ -3818,8 +3831,8 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                 <div className="text-left md:text-right">
                     <p className="text-gray-400 text-sm md:text-xs font-bold uppercase mb-1">Remaining Budget</p>
                      {/* Remaining = Budget - Total Expenses (Paid + Pending) to reflect actual committed cost against budget */}
-                    <h2 className={`text-3xl md:text-2xl font-bold ${((project.initialBudget || 0) + totalAdditionalBudget) - (paidOut + pendingExpenses) < 0 ? 'text-red-400' : 'text-emerald-400'}`}>
-                        ₹{(((project.initialBudget || 0) + totalAdditionalBudget) - (paidOut + pendingExpenses)).toLocaleString()}
+                    <h2 className={`text-3xl md:text-2xl font-bold ${((project.initialBudget || project.budget) + totalAdditionalBudget) - (paidOut + pendingExpenses) < 0 ? 'text-red-400' : 'text-emerald-400'}`}>
+                        ₹{(((project.initialBudget || project.budget) + totalAdditionalBudget) - (paidOut + pendingExpenses)).toLocaleString()}
                     </h2>
                     <p className="text-xs text-gray-500 mt-1">Budget - (Paid + Pending Expenses)</p>
                 </div>
@@ -3851,12 +3864,12 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                         <div className="p-4 md:p-6 bg-green-50 rounded-lg border border-green-100">
                           <p className="text-sm md:text-xs text-green-600 font-bold uppercase mb-1">Received</p>
                           <p className="text-2xl md:text-xl font-bold text-green-700">₹{received.toLocaleString()}</p>
-                          <p className="text-sm md:text-xs text-green-600 mt-1">{Math.round((received / ((project.initialBudget || 0) + totalAdditionalBudget)) * 100) || 0}% of budget</p>
+                          <p className="text-sm md:text-xs text-green-600 mt-1">{Math.round((received / ((project.initialBudget || project.budget) + totalAdditionalBudget)) * 100) || 0}% of budget</p>
                         </div>
                         <div className="p-4 md:p-6 bg-red-50 rounded-lg border border-red-100">
                           <p className="text-sm md:text-xs text-red-600 font-bold uppercase mb-1">Expense</p>
                           <p className="text-2xl md:text-xl font-bold text-red-700">₹{paidOut.toLocaleString()}</p>
-                          <p className="text-sm md:text-xs text-red-600 mt-1">{Math.round((paidOut / ((project.initialBudget || 0) + totalAdditionalBudget)) * 100) || 0}% of budget</p>
+                          <p className="text-sm md:text-xs text-red-600 mt-1">{Math.round((paidOut / ((project.initialBudget || project.budget) + totalAdditionalBudget)) * 100) || 0}% of budget</p>
                         </div>
                         <div className={`p-4 md:p-6 rounded-lg border ${received - paidOut >= 0 ? 'bg-green-50 border-green-100' : 'bg-red-50 border-red-100'}`}>
                           <p className={`text-sm md:text-xs font-bold uppercase mb-1 ${received - paidOut >= 0 ? 'text-green-600' : 'text-red-600'}`}>Profit/Loss</p>
@@ -3866,13 +3879,13 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                         </div>
                         <div className="p-4 md:p-6 bg-orange-50 rounded-lg border border-orange-100">
                           <p className="text-sm md:text-xs text-orange-600 font-bold uppercase mb-1">Not Received</p>
-                          <p className={`text-2xl md:text-xl font-bold ${(((project.initialBudget || 0) + totalAdditionalBudget) - received) < 0 ? 'text-red-700' : 'text-orange-700'}`}>
-                            ₹{(((project.initialBudget || 0) + totalAdditionalBudget) - received).toLocaleString()}
+                          <p className={`text-2xl md:text-xl font-bold ${(((project.initialBudget || project.budget) + totalAdditionalBudget) - received) < 0 ? 'text-red-700' : 'text-orange-700'}`}>
+                            ₹{(((project.initialBudget || project.budget) + totalAdditionalBudget) - received).toLocaleString()}
                           </p>
                         </div>
                         <div className="p-4 md:p-6 bg-gray-50 rounded-lg border border-gray-200">
                           <p className="text-sm md:text-xs text-gray-600 font-bold uppercase mb-1">Total</p>
-                          <p className="text-2xl md:text-xl font-bold text-gray-700">₹{((project.initialBudget || 0) + totalAdditionalBudget).toLocaleString()}</p>
+                          <p className="text-2xl md:text-xl font-bold text-gray-700">₹{((project.initialBudget || project.budget) + totalAdditionalBudget).toLocaleString()}</p>
                         </div>
                       </div>
                     );
@@ -4624,7 +4637,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                             </div>
                          </div>
                          <div className="text-sm md:text-xs text-gray-400 mt-2 sm:mt-0 font-mono whitespace-nowrap">
-                            <div>{new Date(timeline.endDate || timeline.startDate).toLocaleDateString('en-IN')}</div>
+                            <div>{formatDateToIndian(timeline.endDate || timeline.startDate)}</div>
                             <div className="text-gray-300">{new Date(timeline.endDate || timeline.startDate).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</div>
                          </div>
                       </div>
@@ -4665,9 +4678,9 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                               onClick={() => {
                                 const projectLink = `${window.location.origin}${window.location.pathname}?projectId=${project.id}`;
                                 navigator.clipboard.writeText(projectLink).then(() => {
-                                  addNotification('Success', 'Project link copied to clipboard', 'success');
+                                  addNotification('Success', 'Project link copied to clipboard', 'success', user?.id, project.id, project.name);
                                 }).catch(() => {
-                                  addNotification('Error', 'Failed to copy link', 'error');
+                                  addNotification('Error', 'Failed to copy link', 'error', user?.id, project.id, project.name);
                                 });
                               }}
                               className="text-gray-400 hover:text-blue-600 p-2.5 rounded-full hover:bg-blue-50 transition-colors"
@@ -4706,9 +4719,9 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                                   onClick={() => {
                                                     const projectLink = `${window.location.origin}${window.location.pathname}?projectId=${project.id}`;
                                                     navigator.clipboard.writeText(projectLink).then(() => {
-                                                      addNotification('Success', 'Project link copied to clipboard', 'success');
+                                                      addNotification('Success', 'Project link copied to clipboard', 'success', user?.id, project.id, project.name);
                                                     }).catch(() => {
-                                                      addNotification('Error', 'Failed to copy link', 'error');
+                                                      addNotification('Error', 'Failed to copy link', 'error', user?.id, project.id, project.name);
                                                     });
                                                   }}
                                                   className="text-gray-400 hover:text-blue-600 p-2 rounded-full hover:bg-blue-50 transition-colors"
@@ -4998,7 +5011,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
            <div className="bg-white rounded-xl shadow-xl w-full max-w-md max-h-[90vh] flex flex-col animate-fade-in">
               {/* Fixed Header */}
               <div className="flex items-center justify-between p-6 border-b border-gray-100 flex-shrink-0">
-                <h3 className="text-lg font-bold text-gray-900 flex items-center gap-2">
+                <h3 className="text-2xl md:text-lg font-bold text-gray-900 flex items-center gap-2">
                   <IndianRupee className="w-5 h-5"/> {editingTransactionId ? 'Edit Transaction' : 'Record Transaction'}
                 </h3>
                 <button
@@ -5021,7 +5034,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
               {/* Scrollable Content */}
               <div className="flex-1 overflow-y-auto p-6 scrollbar-thin space-y-3">
                  <div>
-                    <label className="text-xs font-bold text-gray-500 uppercase">Amount <span className="text-red-500">*</span></label>
+                    <label className="text-base md:text-xs font-bold text-gray-500 uppercase">Amount <span className="text-red-500">*</span></label>
                     <div className="relative mt-1">
                         <span className="absolute left-3 top-2 text-gray-400">₹</span>
                         <input 
@@ -5036,7 +5049,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                  </div>
 
                  <div>
-                    <label className="text-xs font-bold text-gray-500 uppercase">Description <span className="text-red-500">*</span></label>
+                    <label className="text-base md:text-xs font-bold text-gray-500 uppercase">Description <span className="text-red-500">*</span></label>
                     <input 
                         type="text" 
                         className={`${getInputClass(showTransactionErrors && !newTransaction.description)} mt-1`}
@@ -5049,26 +5062,30 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
 
                  <div className="grid grid-cols-2 gap-3">
                     <div>
-                        <label className="text-xs font-bold text-gray-500 uppercase">Type</label>
+                        <label className="text-base md:text-xs font-bold text-gray-500 uppercase">Type</label>
                         <div className="flex gap-2 mt-1">
                             <button 
                                 onClick={() => setNewTransaction({...newTransaction, type: 'income'})}
-                                className={`flex-1 py-1.5 text-xs font-bold rounded ${newTransaction.type === 'income' ? 'bg-green-100 text-green-700 ring-2 ring-green-500' : 'bg-gray-50 text-gray-500'}`}
+                                className={`flex-1 py-2 text-base md:text-xs font-bold rounded ${newTransaction.type === 'income' ? 'bg-green-100 text-green-700 ring-2 ring-green-500' : 'bg-gray-50 text-gray-500'}`}
                             >Income</button>
                             <button 
                                 onClick={() => setNewTransaction({...newTransaction, type: 'expense'})}
-                                className={`flex-1 py-1.5 text-xs font-bold rounded ${newTransaction.type === 'expense' ? 'bg-red-100 text-red-700 ring-2 ring-red-500' : 'bg-gray-50 text-gray-500'}`}
+                                className={`flex-1 py-2 text-base md:text-xs font-bold rounded ${newTransaction.type === 'expense' ? 'bg-red-100 text-red-700 ring-2 ring-red-500' : 'bg-gray-50 text-gray-500'}`}
                             >Expense</button>
                         </div>
                     </div>
                     <div>
-                        <label className="text-xs font-bold text-gray-500 uppercase">Date</label>
+                        <label className="text-base md:text-xs font-bold text-gray-500 uppercase">Date</label>
                         <input 
-                            type="date" 
-                            className={`${getInputClass(showTransactionErrors && !newTransaction.date)} mt-1 text-xs`}
-                            title="Select transaction date"
-                            value={newTransaction.date}
-                            onChange={e => setNewTransaction({...newTransaction, date: e.target.value})}
+                            type="text"
+                            placeholder="DD/MM/YYYY"
+                            className={`${getInputClass(showTransactionErrors && !newTransaction.date)} mt-1 text-base md:text-xs`}
+                            title="Select transaction date (DD/MM/YYYY)"
+                            value={newTransaction.date ? formatDateToIndian(newTransaction.date) : ''}
+                            onChange={e => {
+                              const isoDate = formatIndianToISO(e.target.value);
+                              setNewTransaction({...newTransaction, date: isoDate || e.target.value})
+                            }}
                         />
                     </div>
                  </div>
@@ -5076,33 +5093,33 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                  {newTransaction.type === 'expense' && (
                     <>
                       <div>
-                        <label className="text-xs font-bold text-gray-500 uppercase">Paid By</label>
+                        <label className="text-base md:text-xs font-bold text-gray-500 uppercase">Paid By</label>
                         <div className="flex gap-2 mt-1 flex-wrap">
                             <button 
                                 onClick={() => setNewTransaction({...newTransaction, paidBy: 'client'})}
-                                className={`py-1 px-2 text-xs font-bold rounded ${newTransaction.paidBy === 'client' ? 'bg-blue-100 text-blue-700' : 'bg-gray-50 text-gray-500'}`}
+                                className={`py-2 px-2 text-base md:text-xs font-bold rounded ${newTransaction.paidBy === 'client' ? 'bg-blue-100 text-blue-700' : 'bg-gray-50 text-gray-500'}`}
                             >Client</button>
                             <button 
                                 onClick={() => setNewTransaction({...newTransaction, paidBy: 'vendor'})}
-                                className={`py-1 px-2 text-xs font-bold rounded ${newTransaction.paidBy === 'vendor' ? 'bg-purple-100 text-purple-700' : 'bg-gray-50 text-gray-500'}`}
+                                className={`py-2 px-2 text-base md:text-xs font-bold rounded ${newTransaction.paidBy === 'vendor' ? 'bg-purple-100 text-purple-700' : 'bg-gray-50 text-gray-500'}`}
                             >Vendor</button>
                             <button 
                                 onClick={() => setNewTransaction({...newTransaction, paidBy: 'designer'})}
-                                className={`py-1 px-2 text-xs font-bold rounded ${newTransaction.paidBy === 'designer' ? 'bg-orange-100 text-orange-700' : 'bg-gray-50 text-gray-500'}`}
+                                className={`py-2 px-2 text-base md:text-xs font-bold rounded ${newTransaction.paidBy === 'designer' ? 'bg-orange-100 text-orange-700' : 'bg-gray-50 text-gray-500'}`}
                             >Designer</button>
                             <button 
                                 onClick={() => setNewTransaction({...newTransaction, paidBy: 'admin'})}
-                                className={`py-1 px-2 text-xs font-bold rounded ${newTransaction.paidBy === 'admin' ? 'bg-red-100 text-red-700' : 'bg-gray-50 text-gray-500'}`}
+                                className={`py-2 px-2 text-base md:text-xs font-bold rounded ${newTransaction.paidBy === 'admin' ? 'bg-red-100 text-red-700' : 'bg-gray-50 text-gray-500'}`}
                             >Admin</button>
                             <button 
                                 onClick={() => setNewTransaction({...newTransaction, paidBy: 'other' as any})}
-                                className={`py-1 px-2 text-xs font-bold rounded ${newTransaction.paidBy === 'other' ? 'bg-gray-100 text-gray-700' : 'bg-gray-50 text-gray-500'}`}
+                                className={`py-2 px-2 text-base md:text-xs font-bold rounded ${newTransaction.paidBy === 'other' ? 'bg-gray-100 text-gray-700' : 'bg-gray-50 text-gray-500'}`}
                             >Other</button>
                         </div>
                       </div>
                       {newTransaction.paidBy === 'client' && (
                         <div>
-                          <label className="text-xs font-bold text-gray-500 uppercase">Select Client</label>
+                          <label className="text-base md:text-xs font-bold text-gray-500 uppercase">Select Client</label>
                           <select 
                               className={`${getInputClass(false)} mt-1`}
                               value={newTransaction.vendorName || ''}
@@ -5120,7 +5137,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                       )}
                       {newTransaction.paidBy === 'vendor' && (
                         <div>
-                          <label className="text-xs font-bold text-gray-500 uppercase">Select Vendor</label>
+                          <label className="text-base md:text-xs font-bold text-gray-500 uppercase">Select Vendor</label>
                           <select 
                               className={`${getInputClass(false)} mt-1`}
                               value={newTransaction.vendorName || ''}
@@ -5138,7 +5155,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                       )}
                       {newTransaction.paidBy === 'designer' && (
                         <div>
-                          <label className="text-xs font-bold text-gray-500 uppercase">Select Designer</label>
+                          <label className="text-base md:text-xs font-bold text-gray-500 uppercase">Select Designer</label>
                           <select 
                               className={`${getInputClass(false)} mt-1`}
                               value={newTransaction.vendorName || ''}
@@ -5156,7 +5173,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                       )}
                       {newTransaction.paidBy === 'admin' && (
                         <div>
-                          <label className="text-xs font-bold text-gray-500 uppercase">Select Admin</label>
+                          <label className="text-base md:text-xs font-bold text-gray-500 uppercase">Select Admin</label>
                           <select 
                               className={`${getInputClass(false)} mt-1`}
                               value={newTransaction.vendorName || ''}
@@ -5174,7 +5191,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                       )}
                       {newTransaction.paidBy === 'other' && (
                         <div>
-                          <label className="text-xs font-bold text-gray-500 uppercase">Paid By (Name & Role)</label>
+                          <label className="text-base md:text-xs font-bold text-gray-500 uppercase">Paid By (Name & Role)</label>
                           <input 
                               type="text" 
                               className={`${getInputClass(false)} mt-1`}
@@ -5186,33 +5203,33 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                         </div>
                       )}
                       <div>
-                        <label className="text-xs font-bold text-gray-500 uppercase">Received By</label>
+                        <label className="text-base md:text-xs font-bold text-gray-500 uppercase">Received By</label>
                         <div className="flex gap-2 mt-1 flex-wrap">
                             <button 
                                 onClick={() => setReceivedByRole('client')}
-                                className={`py-1 px-2 text-xs font-bold rounded ${receivedByRole === 'client' ? 'bg-blue-100 text-blue-700' : 'bg-gray-50 text-gray-500'}`}
+                                className={`py-2 px-2 text-base md:text-xs font-bold rounded ${receivedByRole === 'client' ? 'bg-blue-100 text-blue-700' : 'bg-gray-50 text-gray-500'}`}
                             >Client</button>
                             <button 
                                 onClick={() => setReceivedByRole('vendor')}
-                                className={`py-1 px-2 text-xs font-bold rounded ${receivedByRole === 'vendor' ? 'bg-purple-100 text-purple-700' : 'bg-gray-50 text-gray-500'}`}
+                                className={`py-2 px-2 text-base md:text-xs font-bold rounded ${receivedByRole === 'vendor' ? 'bg-purple-100 text-purple-700' : 'bg-gray-50 text-gray-500'}`}
                             >Vendor</button>
                             <button 
                                 onClick={() => setReceivedByRole('designer')}
-                                className={`py-1 px-2 text-xs font-bold rounded ${receivedByRole === 'designer' ? 'bg-orange-100 text-orange-700' : 'bg-gray-50 text-gray-500'}`}
+                                className={`py-2 px-2 text-base md:text-xs font-bold rounded ${receivedByRole === 'designer' ? 'bg-orange-100 text-orange-700' : 'bg-gray-50 text-gray-500'}`}
                             >Designer</button>
                             <button 
                                 onClick={() => setReceivedByRole('admin')}
-                                className={`py-1 px-2 text-xs font-bold rounded ${receivedByRole === 'admin' ? 'bg-red-100 text-red-700' : 'bg-gray-50 text-gray-500'}`}
+                                className={`py-2 px-2 text-base md:text-xs font-bold rounded ${receivedByRole === 'admin' ? 'bg-red-100 text-red-700' : 'bg-gray-50 text-gray-500'}`}
                             >Admin</button>
                             <button 
                                 onClick={() => setReceivedByRole('other')}
-                                className={`py-1 px-2 text-xs font-bold rounded ${receivedByRole === 'other' ? 'bg-gray-100 text-gray-700' : 'bg-gray-50 text-gray-500'}`}
+                                className={`py-2 px-2 text-base md:text-xs font-bold rounded ${receivedByRole === 'other' ? 'bg-gray-100 text-gray-700' : 'bg-gray-50 text-gray-500'}`}
                             >Other</button>
                         </div>
                       </div>
                       {receivedByRole === 'client' && (
                         <div>
-                          <label className="text-xs font-bold text-gray-500 uppercase">Select Client</label>
+                          <label className="text-base md:text-xs font-bold text-gray-500 uppercase">Select Client</label>
                           <select 
                               className={`${getInputClass(false)} mt-1`}
                               value={receivedByName || ''}
@@ -5230,7 +5247,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                       )}
                       {receivedByRole === 'vendor' && (
                         <div>
-                          <label className="text-xs font-bold text-gray-500 uppercase">Select Vendor</label>
+                          <label className="text-base md:text-xs font-bold text-gray-500 uppercase">Select Vendor</label>
                           <select 
                               className={`${getInputClass(false)} mt-1`}
                               value={receivedByName || ''}
@@ -5248,7 +5265,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                       )}
                       {receivedByRole === 'designer' && (
                         <div>
-                          <label className="text-xs font-bold text-gray-500 uppercase">Select Designer</label>
+                          <label className="text-base md:text-xs font-bold text-gray-500 uppercase">Select Designer</label>
                           <select 
                               className={`${getInputClass(false)} mt-1`}
                               value={receivedByName || ''}
@@ -5266,7 +5283,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                       )}
                       {receivedByRole === 'admin' && (
                         <div>
-                          <label className="text-xs font-bold text-gray-500 uppercase">Select Admin</label>
+                          <label className="text-base md:text-xs font-bold text-gray-500 uppercase">Select Admin</label>
                           <select 
                               className={`${getInputClass(false)} mt-1`}
                               value={receivedByName || ''}
@@ -5284,7 +5301,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                       )}
                       {receivedByRole === 'other' && (
                         <div>
-                          <label className="text-xs font-bold text-gray-500 uppercase">Received By (Name & Role)</label>
+                          <label className="text-base md:text-xs font-bold text-gray-500 uppercase">Received By (Name & Role)</label>
                           <input 
                               type="text" 
                               className={`${getInputClass(false)} mt-1`}
@@ -5301,33 +5318,33 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                  {newTransaction.type === 'income' && (
                     <>
                       <div>
-                        <label className="text-xs font-bold text-gray-500 uppercase">Paid By</label>
+                        <label className="text-base md:text-xs font-bold text-gray-500 uppercase">Paid By</label>
                         <div className="flex gap-2 mt-1 flex-wrap">
                             <button 
                                 onClick={() => setReceivedByRole('client')}
-                                className={`py-1 px-2 text-xs font-bold rounded ${receivedByRole === 'client' ? 'bg-blue-100 text-blue-700' : 'bg-gray-50 text-gray-500'}`}
+                                className={`py-2 px-2 text-base md:text-xs font-bold rounded ${receivedByRole === 'client' ? 'bg-blue-100 text-blue-700' : 'bg-gray-50 text-gray-500'}`}
                             >Client</button>
                             <button 
                                 onClick={() => setReceivedByRole('vendor')}
-                                className={`py-1 px-2 text-xs font-bold rounded ${receivedByRole === 'vendor' ? 'bg-purple-100 text-purple-700' : 'bg-gray-50 text-gray-500'}`}
+                                className={`py-2 px-2 text-base md:text-xs font-bold rounded ${receivedByRole === 'vendor' ? 'bg-purple-100 text-purple-700' : 'bg-gray-50 text-gray-500'}`}
                             >Vendor</button>
                             <button 
                                 onClick={() => setReceivedByRole('designer')}
-                                className={`py-1 px-2 text-xs font-bold rounded ${receivedByRole === 'designer' ? 'bg-orange-100 text-orange-700' : 'bg-gray-50 text-gray-500'}`}
+                                className={`py-2 px-2 text-base md:text-xs font-bold rounded ${receivedByRole === 'designer' ? 'bg-orange-100 text-orange-700' : 'bg-gray-50 text-gray-500'}`}
                             >Designer</button>
                             <button 
                                 onClick={() => setReceivedByRole('admin')}
-                                className={`py-1 px-2 text-xs font-bold rounded ${receivedByRole === 'admin' ? 'bg-red-100 text-red-700' : 'bg-gray-50 text-gray-500'}`}
+                                className={`py-2 px-2 text-base md:text-xs font-bold rounded ${receivedByRole === 'admin' ? 'bg-red-100 text-red-700' : 'bg-gray-50 text-gray-500'}`}
                             >Admin</button>
                             <button 
                                 onClick={() => setReceivedByRole('other')}
-                                className={`py-1 px-2 text-xs font-bold rounded ${receivedByRole === 'other' ? 'bg-gray-100 text-gray-700' : 'bg-gray-50 text-gray-500'}`}
+                                className={`py-2 px-2 text-base md:text-xs font-bold rounded ${receivedByRole === 'other' ? 'bg-gray-100 text-gray-700' : 'bg-gray-50 text-gray-500'}`}
                             >Other</button>
                         </div>
                       </div>
                       {receivedByRole === 'client' && (
                         <div>
-                          <label className="text-xs font-bold text-gray-500 uppercase">Select Client</label>
+                          <label className="text-base md:text-xs font-bold text-gray-500 uppercase">Select Client</label>
                           <select 
                               className={`${getInputClass(false)} mt-1`}
                               value={paidByName || ''}
@@ -5345,7 +5362,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                       )}
                       {receivedByRole === 'vendor' && (
                         <div>
-                          <label className="text-xs font-bold text-gray-500 uppercase">Select Vendor</label>
+                          <label className="text-base md:text-xs font-bold text-gray-500 uppercase">Select Vendor</label>
                           <select 
                               className={`${getInputClass(false)} mt-1`}
                               value={paidByName || ''}
@@ -5363,7 +5380,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                       )}
                       {receivedByRole === 'designer' && (
                         <div>
-                          <label className="text-xs font-bold text-gray-500 uppercase">Select Designer</label>
+                          <label className="text-base md:text-xs font-bold text-gray-500 uppercase">Select Designer</label>
                           <select 
                               className={`${getInputClass(false)} mt-1`}
                               value={paidByName || ''}
@@ -5381,7 +5398,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                       )}
                       {receivedByRole === 'admin' && (
                         <div>
-                          <label className="text-xs font-bold text-gray-500 uppercase">Select Admin</label>
+                          <label className="text-base md:text-xs font-bold text-gray-500 uppercase">Select Admin</label>
                           <select 
                               className={`${getInputClass(false)} mt-1`}
                               value={paidByName || ''}
@@ -5399,7 +5416,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                       )}
                       {receivedByRole === 'other' && (
                         <div>
-                          <label className="text-xs font-bold text-gray-500 uppercase">Paid By (Name & Role)</label>
+                          <label className="text-base md:text-xs font-bold text-gray-500 uppercase">Paid By (Name & Role)</label>
                           <input 
                               type="text" 
                               className={`${getInputClass(false)} mt-1`}
@@ -5411,33 +5428,33 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                         </div>
                       )}
                       <div>
-                        <label className="text-xs font-bold text-gray-500 uppercase">Received By</label>
+                        <label className="text-base md:text-xs font-bold text-gray-500 uppercase">Received By</label>
                         <div className="flex gap-2 mt-1 flex-wrap">
                             <button 
                                 onClick={() => setReceivedByRole('')}
-                                className={`py-1 px-2 text-xs font-bold rounded ${receivedByRole === '' ? 'bg-gray-100 text-gray-700' : 'bg-gray-50 text-gray-500'}`}
+                                className={`py-2 px-2 text-base md:text-xs font-bold rounded ${receivedByRole === '' ? 'bg-gray-100 text-gray-700' : 'bg-gray-50 text-gray-500'}`}
                             >Project</button>
                             <button 
                                 onClick={() => setReceivedByRole('vendor-received')}
-                                className={`py-1 px-2 text-xs font-bold rounded ${receivedByRole === 'vendor-received' ? 'bg-purple-100 text-purple-700' : 'bg-gray-50 text-gray-500'}`}
+                                className={`py-2 px-2 text-base md:text-xs font-bold rounded ${receivedByRole === 'vendor-received' ? 'bg-purple-100 text-purple-700' : 'bg-gray-50 text-gray-500'}`}
                             >Vendor</button>
                             <button 
                                 onClick={() => setReceivedByRole('designer-received')}
-                                className={`py-1 px-2 text-xs font-bold rounded ${receivedByRole === 'designer-received' ? 'bg-orange-100 text-orange-700' : 'bg-gray-50 text-gray-500'}`}
+                                className={`py-2 px-2 text-base md:text-xs font-bold rounded ${receivedByRole === 'designer-received' ? 'bg-orange-100 text-orange-700' : 'bg-gray-50 text-gray-500'}`}
                             >Designer</button>
                             <button 
                                 onClick={() => setReceivedByRole('admin-received')}
-                                className={`py-1 px-2 text-xs font-bold rounded ${receivedByRole === 'admin-received' ? 'bg-red-100 text-red-700' : 'bg-gray-50 text-gray-500'}`}
+                                className={`py-2 px-2 text-base md:text-xs font-bold rounded ${receivedByRole === 'admin-received' ? 'bg-red-100 text-red-700' : 'bg-gray-50 text-gray-500'}`}
                             >Admin</button>
                             <button 
                                 onClick={() => setReceivedByRole('other-received')}
-                                className={`py-1 px-2 text-xs font-bold rounded ${receivedByRole === 'other-received' ? 'bg-gray-100 text-gray-700' : 'bg-gray-50 text-gray-500'}`}
+                                className={`py-2 px-2 text-base md:text-xs font-bold rounded ${receivedByRole === 'other-received' ? 'bg-gray-100 text-gray-700' : 'bg-gray-50 text-gray-500'}`}
                             >Other</button>
                         </div>
                       </div>
                       {receivedByRole === 'vendor-received' && (
                         <div>
-                          <label className="text-xs font-bold text-gray-500 uppercase">Select Vendor</label>
+                          <label className="text-base md:text-xs font-bold text-gray-500 uppercase">Select Vendor</label>
                           <select 
                               className={`${getInputClass(false)} mt-1`}
                               value={receivedByName || ''}
@@ -5455,7 +5472,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                       )}
                       {receivedByRole === 'designer-received' && (
                         <div>
-                          <label className="text-xs font-bold text-gray-500 uppercase">Select Designer</label>
+                          <label className="text-base md:text-xs font-bold text-gray-500 uppercase">Select Designer</label>
                           <select 
                               className={`${getInputClass(false)} mt-1`}
                               value={receivedByName || ''}
@@ -5473,7 +5490,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                       )}
                       {receivedByRole === 'admin-received' && (
                         <div>
-                          <label className="text-xs font-bold text-gray-500 uppercase">Select Admin</label>
+                          <label className="text-base md:text-xs font-bold text-gray-500 uppercase">Select Admin</label>
                           <select 
                               className={`${getInputClass(false)} mt-1`}
                               value={receivedByName || ''}
@@ -5491,7 +5508,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                       )}
                       {receivedByRole === 'other-received' && (
                         <div>
-                          <label className="text-xs font-bold text-gray-500 uppercase">Received By (Name & Role)</label>
+                          <label className="text-base md:text-xs font-bold text-gray-500 uppercase">Received By (Name & Role)</label>
                           <input 
                               type="text" 
                               className={`${getInputClass(false)} mt-1`}
@@ -5507,9 +5524,9 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
 
                  <div className="grid grid-cols-3 gap-3">
                     <div>
-                        <label className="text-xs font-bold text-gray-500 uppercase">Category</label>
+                        <label className="text-base md:text-xs font-bold text-gray-500 uppercase">Category</label>
                         <select 
-                            className={`${getInputClass(showTransactionErrors && !newTransaction.category)} mt-1 text-xs`}
+                            className={`${getInputClass(showTransactionErrors && !newTransaction.category)} mt-1 text-base md:text-xs`}
                             value={newTransaction.category || ''}
                             onChange={e => {
                               setNewTransaction({...newTransaction, category: e.target.value});
@@ -5540,10 +5557,10 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                     </div>
                     {newTransaction.type === 'income' && newTransaction.category === 'Others' && (
                         <div>
-                            <label className="text-xs font-bold text-gray-500 uppercase">Specify Category</label>
+                            <label className="text-base md:text-xs font-bold text-gray-500 uppercase">Specify Category</label>
                             <input 
                                 type="text"
-                                className={`${getInputClass(showTransactionErrors && !customCategory)} mt-1 text-xs`}
+                                className={`${getInputClass(showTransactionErrors && !customCategory)} mt-1 text-base md:text-xs`}
                                 placeholder="Enter custom category"
                                 value={customCategory}
                                 onChange={e => setCustomCategory(e.target.value)}
@@ -5551,9 +5568,9 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                         </div>
                     )}
                     <div>
-                        <label className="text-xs font-bold text-gray-500 uppercase">Mode</label>
+                        <label className="text-base md:text-xs font-bold text-gray-500 uppercase">Mode</label>
                         <select 
-                            className={`${getInputClass(false)} mt-1 text-xs`}
+                            className={`${getInputClass(false)} mt-1 text-base md:text-xs`}
                             value={newTransaction.paymentMode || ''}
                             onChange={e => setNewTransaction({...newTransaction, paymentMode: e.target.value as any})}
                             aria-label="Payment mode"
@@ -5568,9 +5585,9 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                         </select>
                     </div>
                     <div>
-                        <label className="text-xs font-bold text-gray-500 uppercase">Status</label>
+                        <label className="text-base md:text-xs font-bold text-gray-500 uppercase">Status</label>
                         <select 
-                            className={`${getInputClass(false)} mt-1 text-xs`}
+                            className={`${getInputClass(false)} mt-1 text-base md:text-xs`}
                             value={newTransaction.status || 'pending'}
                             onChange={e => setNewTransaction({...newTransaction, status: e.target.value as any})}
                             aria-label="Transaction status"
@@ -5585,7 +5602,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                  {/* Approval Section for Additional Budgets */}
                  {newTransaction.type === 'income' && newTransaction.category === 'Additional Budget' && (
                     <div className="border-t border-gray-200 pt-3 mt-3">
-                      <p className="text-xs font-bold text-gray-700 uppercase mb-3">Approvals Required</p>
+                      <p className="text-base md:text-xs font-bold text-gray-700 uppercase mb-3">Approvals Required</p>
                       <div className="space-y-2">
                         <label className="flex items-center gap-2 cursor-pointer p-2 rounded hover:bg-gray-50 transition-all" style={{opacity: user?.role !== Role.CLIENT ? 0.5 : 1, pointerEvents: user?.role !== Role.CLIENT ? 'none' : 'auto'}}>
                           <input 
@@ -5630,7 +5647,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                  {/* Approval Section for Received Payments from Client */}
                  {newTransaction.type === 'income' && newTransaction.category !== 'Additional Budget' && (
                     <div className="border-t border-gray-200 pt-3 mt-3">
-                      <p className="text-xs font-bold text-gray-700 uppercase mb-3">Payment Approvals</p>
+                      <p className="text-base md:text-xs font-bold text-gray-700 uppercase mb-3">Payment Approvals</p>
                       <div className="space-y-2">
                         <label className="flex items-center gap-2 cursor-pointer p-2 rounded hover:bg-gray-50 transition-all" style={{opacity: user?.role !== Role.CLIENT ? 0.5 : 1, pointerEvents: user?.role !== Role.CLIENT ? 'none' : 'auto'}}>
                           <input 
@@ -5672,6 +5689,51 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                     </div>
                  )}
 
+                 {/* Approval Section for Expenses */}
+                 {newTransaction.type === 'expense' && (
+                    <div className="border-t border-gray-200 pt-3 mt-3">
+                      <p className="text-base md:text-xs font-bold text-gray-700 uppercase mb-3">Payment Approvals</p>
+                      <div className="space-y-2">
+                        <label className="flex items-center gap-2 cursor-pointer p-2 rounded hover:bg-gray-50 transition-all" style={{opacity: user?.role !== Role.CLIENT ? 0.5 : 1, pointerEvents: user?.role !== Role.CLIENT ? 'none' : 'auto'}}>
+                          <input 
+                            type="checkbox" 
+                            checked={newTransaction.clientApprovalForPayment === 'approved'}
+                            onChange={e => setNewTransaction({
+                              ...newTransaction,
+                              clientApprovalForPayment: e.target.checked ? 'approved' : 'pending'
+                            })}
+                            disabled={user?.role !== Role.CLIENT}
+                            className="w-4 h-4 disabled:opacity-50 disabled:cursor-not-allowed"
+                            title="Client approval of expense"
+                          />
+                          <span className="text-sm text-gray-700">
+                            Client Approval
+                            {newTransaction.clientApprovalForPayment === 'approved' && <span className="ml-1 text-green-600 font-bold">✓</span>}
+                            {newTransaction.clientApprovalForPayment === 'rejected' && <span className="ml-1 text-red-600 font-bold">✗</span>}
+                          </span>
+                        </label>
+                        <label className="flex items-center gap-2 cursor-pointer p-2 rounded hover:bg-gray-50 transition-all" style={{opacity: user?.role !== Role.ADMIN ? 0.5 : 1, pointerEvents: user?.role !== Role.ADMIN ? 'none' : 'auto'}}>
+                          <input 
+                            type="checkbox" 
+                            checked={newTransaction.adminApprovalForPayment === 'approved'}
+                            onChange={e => setNewTransaction({
+                              ...newTransaction,
+                              adminApprovalForPayment: e.target.checked ? 'approved' : 'pending'
+                            })}
+                            disabled={user?.role !== Role.ADMIN}
+                            className="w-4 h-4 disabled:opacity-50 disabled:cursor-not-allowed"
+                            title="Admin approval of expense"
+                          />
+                          <span className="text-sm text-gray-700">
+                            Admin Approval
+                            {newTransaction.adminApprovalForPayment === 'approved' && <span className="ml-1 text-green-600 font-bold">✓</span>}
+                            {newTransaction.adminApprovalForPayment === 'rejected' && <span className="ml-1 text-red-600 font-bold">✗</span>}
+                          </span>
+                        </label>
+                      </div>
+                    </div>
+                 )}
+
                  <div className="pt-2 flex gap-3">
                     <button onClick={() => {
                       setIsTransactionModalOpen(false);
@@ -5681,8 +5743,8 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                       setReceivedByName('');
                       setReceivedByRole('');
                       setCustomCategory('');
-                    }} className="flex-1 py-1.5 text-xs text-gray-500 hover:bg-gray-100 rounded font-medium disabled:opacity-50 disabled:cursor-not-allowed" disabled={isSavingTransaction} title="Close transaction modal">Cancel</button>
-                    <button onClick={handleSaveTransaction} disabled={isSavingTransaction} className="flex-1 py-1.5 text-xs bg-gray-900 text-white rounded font-bold hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed transition-all" title="Save transaction entry">
+                    }} className="flex-1 py-2 text-base md:text-xs text-gray-500 hover:bg-gray-100 rounded font-medium disabled:opacity-50 disabled:cursor-not-allowed" disabled={isSavingTransaction} title="Close transaction modal">Cancel</button>
+                    <button onClick={handleSaveTransaction} disabled={isSavingTransaction} className="flex-1 py-2 text-base md:text-xs bg-gray-900 text-white rounded font-bold hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed transition-all" title="Save transaction entry">
                       {isSavingTransaction ? 'Saving...' : (editingTransactionId ? 'Update Entry' : 'Add Entry')}
                     </button>
                  </div>
@@ -5697,27 +5759,27 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
          <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
             <div className="bg-white rounded-xl shadow-xl w-full max-w-md max-h-[90vh] flex flex-col animate-fade-in">
                {/* Fixed Header */}
-               <div className="p-6 border-b border-gray-100 flex-shrink-0">
-                   <h3 className="text-lg font-bold flex items-center gap-2 text-gray-900"><Upload className="w-5 h-5"/> Upload Document</h3>
+               <div className="p-4 md:p-6 border-b border-gray-100 flex-shrink-0">
+                   <h3 className="text-xl md:text-lg font-bold flex items-center gap-2 text-gray-900"><Upload className="w-5 h-5 md:w-4 md:h-4"/> Upload Document</h3>
                </div>
                
                {/* Scrollable Content */}
-               <div className="flex-1 overflow-y-auto p-6 scrollbar-thin space-y-4">
+               <div className="flex-1 overflow-y-auto p-4 md:p-6 scrollbar-thin space-y-4">
                   <input 
                     type="text" placeholder="Document Name (e.g. FloorPlan.pdf) - optional when uploading files" 
-                    className={getInputClass(showDocErrors && !newDoc.name && selectedFiles.length === 0)}
+                    className={`${getInputClass(showDocErrors && !newDoc.name && selectedFiles.length === 0)} text-base md:text-sm`}
                     value={newDoc.name} onChange={e => setNewDoc({...newDoc, name: e.target.value})}
                   />
                   {/* ... rest of doc modal ... */}
                   <div>
-                     <label className="text-xs font-bold text-gray-500 uppercase mb-2 block">Share With Project Team:</label>
+                     <label className="text-base md:text-xs font-bold text-gray-500 uppercase mb-2 block">Share With Project Team:</label>
                      <div className="space-y-3 max-h-48 overflow-y-auto border border-gray-200 rounded-lg p-3 bg-gray-50">
                         {[Role.CLIENT, Role.VENDOR, Role.DESIGNER].map(role => {
                            const teamMembersWithRole = projectTeam.filter(u => u.role === role);
                            if (teamMembersWithRole.length === 0) return null;
                            return (
                               <div key={role}>
-                                 <p className="text-xs font-bold text-gray-600 uppercase mb-2">{role}s</p>
+                                 <p className="text-base md:text-xs font-bold text-gray-600 uppercase mb-2">{role}s</p>
                                  <div className="space-y-1 ml-2">
                                     {teamMembersWithRole.map(person => (
                                        <label key={person.id} className="flex items-center gap-2 cursor-pointer hover:bg-white p-1.5 rounded border border-transparent hover:border-gray-200">
@@ -5729,7 +5791,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                                else setNewDoc({...newDoc, sharedWith: newDoc.sharedWith.filter(id => id !== person.id)});
                                             }}
                                           />
-                                          <span className="text-sm text-gray-800">{person.name}</span>
+                                          <span className="text-base md:text-sm text-gray-800">{person.name}</span>
                                        </label>
                                     ))}
                                  </div>
@@ -5741,7 +5803,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
 
                   {currentTasks.length > 0 && (
                     <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
-                       <label htmlFor="attach-task-select" className="text-xs font-bold text-blue-600 uppercase mb-2 block">Attach to Task (Optional):</label>
+                       <label htmlFor="attach-task-select" className="text-base md:text-xs font-bold text-blue-600 uppercase mb-2 block">Attach to Task (Optional):</label>
                        <select 
                          id="attach-task-select"
                          title="Select a task to attach documents to"
@@ -5750,7 +5812,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                          onChange={e => {
                            setNewDoc({...newDoc, attachToTaskId: e.target.value || undefined});
                          }}
-                         className="w-full p-2 border border-blue-300 rounded bg-white text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                         className="w-full p-2 border border-blue-300 rounded bg-white text-base md:text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
                        >
                          <option value="">-- Don't attach to any task --</option>
                          {currentTasks.map(task => (
@@ -5763,7 +5825,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                   )}
 
                   <div 
-                    className="bg-gray-50 p-6 rounded-lg border-2 border-dashed border-gray-300 text-center text-sm text-gray-500 hover:bg-gray-100 hover:border-gray-400 transition-colors cursor-pointer relative"
+                    className="bg-gray-50 p-4 md:p-6 rounded-lg border-2 border-dashed border-gray-300 text-base md:text-sm text-gray-500 hover:bg-gray-100 hover:border-gray-400 transition-colors cursor-pointer relative"
                     onClick={() => fileInputRef.current?.click()}
                   >
                      {selectedFiles.length > 0 ? (
@@ -5771,15 +5833,15 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                           <div className="w-full flex items-center gap-2">
                             <FileIcon className="w-8 h-8 text-blue-500 flex-shrink-0" />
                             <div className="flex-1 text-left">
-                              <p className="font-bold text-gray-800">{selectedFiles.length} file(s) selected</p>
-                              <p className="text-xs text-gray-400">
+                              <p className="font-bold text-base md:text-sm text-gray-800">{selectedFiles.length} file(s) selected</p>
+                              <p className="text-sm md:text-xs text-gray-400">
                                 Total size: {(selectedFiles.reduce((sum, f) => sum + f.size, 0) / 1024).toFixed(1)} KB
                               </p>
                             </div>
                           </div>
                           <div className="w-full mt-2 max-h-32 overflow-y-auto border-t border-gray-200 pt-2">
                             {selectedFiles.map((file, idx) => (
-                              <div key={idx} className="flex items-center justify-between text-xs text-gray-600 bg-white p-1.5 rounded mb-1">
+                              <div key={idx} className="flex items-center justify-between text-sm md:text-xs text-gray-600 bg-white p-1.5 rounded mb-1">
                                 <span className="truncate flex-1">{file.name}</span>
                                 <button
                                   type="button"
@@ -5787,7 +5849,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                     e.stopPropagation();
                                     setSelectedFiles(selectedFiles.filter((_, i) => i !== idx));
                                   }}
-                                  className="ml-2 text-gray-400 hover:text-red-500 flex-shrink-0"
+                                  className="ml-2 text-gray-400 hover:text-red-500 flex-shrink-0 text-lg md:text-base"
                                   title="Remove file"
                                 >
                                   ×
@@ -5799,8 +5861,8 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                      ) : (
                        <div className="flex flex-col items-center">
                           <Upload className="w-8 h-8 text-gray-300 mb-2" />
-                          <p>Click to select files</p>
-                          <p className="text-xs text-gray-400 mt-1">or drag and drop here (multiple files supported)</p>
+                          <p className="text-base md:text-sm">Click to select files</p>
+                          <p className="text-sm md:text-xs text-gray-400 mt-1">or drag and drop here (multiple files supported)</p>
                        </div>
                      )}
                      <input 
@@ -5817,8 +5879,8 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                   </div>
 
                   <div className="flex gap-2 pt-2">
-                     <button onClick={() => setIsDocModalOpen(false)} className="flex-1 py-2 text-gray-500 hover:bg-gray-100 rounded">Cancel</button>
-                     <button onClick={handleUploadDocument} className="flex-1 py-2 bg-gray-900 text-white rounded font-bold hover:bg-gray-800" disabled={isUploadingDocument}>
+                     <button onClick={() => setIsDocModalOpen(false)} className="flex-1 py-2 md:py-1.5 text-base md:text-xs text-gray-500 hover:bg-gray-100 rounded">Cancel</button>
+                     <button onClick={handleUploadDocument} className="flex-1 py-2 md:py-1.5 text-base md:text-xs bg-gray-900 text-white rounded font-bold hover:bg-gray-800" disabled={isUploadingDocument}>
                        {isUploadingDocument ? (
                          <span className="flex items-center justify-center gap-2">
                            <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"></path></svg>
@@ -6390,7 +6452,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                    <FileText className="w-5 h-5 text-gray-400" />
                    <div>
                      <h3 className="font-bold text-gray-900">{selectedDocument.name}</h3>
-                     <p className="text-xs text-gray-500">Uploaded {new Date(selectedDocument.uploadDate).toLocaleDateString('en-IN')}</p>
+                     <p className="text-xs text-gray-500">Uploaded {formatDateToIndian(selectedDocument.uploadDate)}</p>
                    </div>
                 </div>
                 <button onClick={() => setIsDocDetailOpen(false)} className="text-gray-400 hover:text-gray-600" title="Close document modal"><X className="w-5 h-5" /></button>
@@ -7188,28 +7250,28 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-xl shadow-xl w-full max-w-md max-h-[90vh] flex flex-col animate-fade-in overflow-hidden">
             {/* Header */}
-            <div className="p-6 border-b border-gray-200 bg-gradient-to-r from-emerald-50 to-green-50 flex-shrink-0">
-              <h3 className="text-lg font-bold text-gray-900 flex items-center gap-2">
-                <Plus className="w-5 h-5 text-emerald-600" /> Add Additional Budget
+            <div className="p-4 md:p-6 border-b border-gray-200 bg-gradient-to-r from-emerald-50 to-green-50 flex-shrink-0">
+              <h3 className="text-xl md:text-lg font-bold text-gray-900 flex items-center gap-2">
+                <Plus className="w-5 h-5 md:w-4 md:h-4 text-emerald-600" /> Add Additional Budget
               </h3>
-              <p className="text-sm text-gray-600 mt-1">Increase the project budget with client approval</p>
+              <p className="text-base md:text-sm text-gray-600 mt-1">Increase the project budget with client approval</p>
             </div>
 
             {/* Content */}
-            <div className="p-6 space-y-4 flex-1 overflow-y-auto scrollbar-thin">
+            <div className="p-4 md:p-6 space-y-4 flex-1 overflow-y-auto scrollbar-thin">
               {/* Amount Field */}
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
+                <label className="block text-base md:text-sm font-medium text-gray-700 mb-2">
                   Budget Amount <span className="text-red-500">*</span>
                 </label>
                 <div className="relative">
-                  <span className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-500 font-semibold">₹</span>
+                  <span className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-500 font-semibold text-lg md:text-base">₹</span>
                   <input
                     type="number"
                     value={additionalBudgetAmount}
                     onChange={(e) => setAdditionalBudgetAmount(e.target.value)}
                     placeholder="Enter amount"
-                    className="w-full pl-7 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none"
+                    className="w-full pl-7 pr-4 py-3 md:py-2 text-base md:text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none"
                     min="0"
                   />
                 </div>
@@ -7217,33 +7279,33 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
 
               {/* Description Field */}
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
+                <label className="block text-base md:text-sm font-medium text-gray-700 mb-2">
                   Reason/Description
                 </label>
                 <textarea
                   value={additionalBudgetDescription}
                   onChange={(e) => setAdditionalBudgetDescription(e.target.value)}
                   placeholder="Why is additional budget needed? (optional)"
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none resize-none"
+                  className="w-full px-4 py-3 md:py-2 text-base md:text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none resize-none"
                   rows={3}
                 />
               </div>
 
               {/* Preview */}
               {additionalBudgetAmount && (
-                <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-4">
+                <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-4 md:p-3">
                   <div className="space-y-2">
                     <div className="flex justify-between">
-                      <span className="text-sm text-gray-600">Current Budget:</span>
-                      <span className="text-sm font-semibold text-gray-900">₹{project.budget.toLocaleString()}</span>
+                      <span className="text-base md:text-sm text-gray-600">Current Budget:</span>
+                      <span className="text-base md:text-sm font-semibold text-gray-900">₹{project.budget.toLocaleString()}</span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-sm text-gray-600">Additional Amount:</span>
-                      <span className="text-sm font-semibold text-emerald-600">+₹{parseFloat(additionalBudgetAmount || '0').toLocaleString()}</span>
+                      <span className="text-base md:text-sm text-gray-600">Additional Amount:</span>
+                      <span className="text-base md:text-sm font-semibold text-emerald-600">+₹{parseFloat(additionalBudgetAmount || '0').toLocaleString()}</span>
                     </div>
                     <div className="border-t border-emerald-200 pt-2 flex justify-between">
-                      <span className="text-sm font-medium text-gray-900">New Total:</span>
-                      <span className="text-sm font-bold text-emerald-700">₹{(project.budget + parseFloat(additionalBudgetAmount || '0')).toLocaleString()}</span>
+                      <span className="text-base md:text-sm font-medium text-gray-900">New Total:</span>
+                      <span className="text-base md:text-sm font-bold text-emerald-700">₹{(project.budget + parseFloat(additionalBudgetAmount || '0')).toLocaleString()}</span>
                     </div>
                   </div>
                 </div>
@@ -7251,14 +7313,14 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
             </div>
 
             {/* Footer */}
-            <div className="p-6 border-t border-gray-200 bg-gray-50 flex gap-3 justify-end">
+            <div className="p-4 md:p-6 border-t border-gray-200 bg-gray-50 flex gap-3 justify-end">
               <button
                 onClick={() => {
                   setIsAdditionalBudgetModalOpen(false);
                   setAdditionalBudgetAmount('');
                   setAdditionalBudgetDescription('');
                 }}
-                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+                className="px-4 py-2 md:py-1.5 text-base md:text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
               >
                 Cancel
               </button>
@@ -7321,9 +7383,9 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                     addNotification('Error', 'Failed to create additional budget record', 'error', project.clientId, project.id, project.name);
                   }
                 }}
-                className="px-4 py-2 text-sm font-bold text-white bg-emerald-600 rounded-lg hover:bg-emerald-700 transition-colors flex items-center gap-2"
+                className="px-4 py-2 md:py-1.5 text-base md:text-xs font-bold text-white bg-emerald-600 rounded-lg hover:bg-emerald-700 transition-colors flex items-center gap-2"
               >
-                <Plus className="w-4 h-4" /> Add Budget
+                <Plus className="w-4 h-4 md:w-3 md:h-3" /> Add Budget
               </button>
             </div>
           </div>
@@ -7473,7 +7535,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                         <div className="p-3">
                           <p className="text-sm font-bold text-gray-800 truncate" title={doc.name}>{doc.name}</p>
                           <div className="flex justify-between items-center mt-2">
-                            <span className="text-xs text-gray-400">{new Date(doc.uploadDate).toLocaleDateString('en-IN')}</span>
+                            <span className="text-xs text-gray-400">{formatDateToIndian(doc.uploadDate)}</span>
                             {/* Approval Status Indicator */}
                             <span className={`text-xs font-bold px-2 py-0.5 rounded ${doc.approvalStatus === 'pending' ? 'bg-yellow-100 text-yellow-700' : doc.approvalStatus === 'approved' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>{doc.approvalStatus === 'pending' ? 'Approval Pending' : doc.approvalStatus === 'approved' ? 'Approved' : 'Rejected'}</span>
                           </div>
@@ -7647,3 +7709,4 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
 };
 
 export default ProjectDetail;
+export { ProjectDetail };

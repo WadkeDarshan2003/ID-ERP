@@ -1,0 +1,26 @@
+/* Global overrides for small-screen tweaks */
+@media (max-width: 640px) {
+  /* Slightly increase font-size for elements marked with .mobile-increase on mobile */
+  .mobile-increase {
+    font-size: 16.5px; /* subtle +0.5px bump for mobile */
+    line-height: 1.25;
+  }
+  /* Make project cards a bit larger on mobile for readability */
+  [data-section="active-projects"] .mobile-card {
+    padding: 0.75rem; /* increase inner spacing */
+    min-height: 140px; /* slightly taller cards */
+    border-radius: 0.75rem; /* keep rounded look */
+  }
+  /* Increase header padding and spacing inside the card */
+  [data-section="active-projects"] .mobile-card .p-4 {
+    padding: 1rem !important;
+  }
+  /* Slightly narrow project cards on larger screens for denser layout */
+  @media (min-width: 1024px) {
+    .desktop-narrow {
+      max-width: 520px;
+      margin-left: auto;
+      margin-right: auto;
+    }
+  }
+}

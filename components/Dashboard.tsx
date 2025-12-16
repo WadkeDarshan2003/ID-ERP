@@ -253,13 +253,13 @@ const Dashboard: React.FC<DashboardProps> = ({ projects, users, onSelectProject,
                 };
                 
                 return (
-                  <div key={project.id} className="rounded-lg overflow-hidden bg-white shadow-sm">
+                  <div key={project.id} className="rounded-lg overflow-hidden bg-white shadow-sm mobile-card desktop-narrow">
                     {/* Project Header */}
                     <div className="p-4 border-b border-gray-200 bg-gray-50">
                       <div className="flex justify-between items-start mb-3">
                         <div className="flex-1">
-                          <p className="text-base font-semibold text-gray-900 line-clamp-2">{project.name}</p>
-                          <p className="text-sm text-gray-600 mt-1">{clientName}</p>
+                          <p className="text-base font-semibold text-gray-900 line-clamp-2 mobile-increase">{project.name}</p>
+                          <p className="text-sm text-gray-600 mt-1 mobile-increase">{clientName}</p>
                         </div>
                         <span className={`px-2 py-1 rounded-md text-sm font-semibold whitespace-nowrap ml-2 ${getStatusColor(project.status)}`}>
                           {project.status}
@@ -274,15 +274,15 @@ const Dashboard: React.FC<DashboardProps> = ({ projects, users, onSelectProject,
                               style={{ width: `${progress}%` }}
                             />
                           </div>
-                          <span className="text-sm font-semibold text-gray-600 w-10">{progress}%</span>
+                          <span className="text-sm font-semibold text-gray-600 w-10 mobile-increase">{progress}%</span>
                         </div>
                       </div>
                       
                       <div className="flex items-center justify-between pt-2 border-t border-gray-200">
-                        <span className="text-sm text-gray-500">{totalTasks} tasks • {pendingTasks.length} pending</span>
+                        <span className="text-sm text-gray-500 mobile-increase">{totalTasks} tasks • {pendingTasks.length} pending</span>
                         <button 
                           onClick={() => onSelectProject?.(project)}
-                          className="px-3 py-1.5 bg-blue-50 text-blue-600 rounded text-sm font-semibold hover:bg-blue-100 transition-colors"
+                          className="px-3 py-1.5 bg-blue-50 text-blue-600 rounded text-sm font-semibold hover:bg-blue-100 transition-colors mobile-increase"
                         >
                           View
                         </button>
@@ -296,7 +296,7 @@ const Dashboard: React.FC<DashboardProps> = ({ projects, users, onSelectProject,
                           onClick={toggleExpanded}
                           className="w-full px-4 py-2.5 bg-gradient-to-r from-amber-50 to-amber-100 flex justify-between items-center transition-colors text-left"
                         >
-                          <span className="text-sm font-semibold text-amber-900">Pending Tasks ({pendingTasks.length})</span>
+                          <span className="text-sm font-semibold text-amber-900 mobile-increase">Pending Tasks ({pendingTasks.length})</span>
                           <ChevronRight className={`w-5 h-5 md:w-4 md:h-4 text-amber-600 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
                         </button>
                         
@@ -311,7 +311,7 @@ const Dashboard: React.FC<DashboardProps> = ({ projects, users, onSelectProject,
                                     <div className="flex-1">
                                       <button
                                         onClick={() => onSelectTask?.(task, project)}
-                                        className="text-base text-gray-900 font-medium hover:text-blue-600 text-left"
+                                        className="text-base text-gray-900 font-medium hover:text-blue-600 text-left mobile-increase"
                                       >
                                         {task.title}
                                       </button>
@@ -319,8 +319,8 @@ const Dashboard: React.FC<DashboardProps> = ({ projects, users, onSelectProject,
                                       <p className="text-sm text-gray-500 mt-0.5">Assigned to: {assigneeName}</p>
                                     </div>
                                     <div className="flex items-center gap-2">
-                                      <span className="text-sm font-bold text-gray-600">{taskProgress}%</span>
-                                      <span className={`px-2 py-0.5 rounded text-sm font-semibold whitespace-nowrap
+                                      <span className="text-sm font-bold text-gray-600 mobile-increase">{taskProgress}%</span>
+                                      <span className={`px-2 py-0.5 rounded text-sm font-semibold mobile-increase whitespace-nowrap
                                         ${task.status === TaskStatus.IN_PROGRESS 
                                           ? 'bg-blue-100 text-blue-700' 
                                           : task.status === TaskStatus.TODO

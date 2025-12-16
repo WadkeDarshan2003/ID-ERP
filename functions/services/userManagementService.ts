@@ -59,14 +59,29 @@ export const createUserInFirebase = async (
   try {
     let firebaseUid = '';
 
-    // Handle Phone Authentication Users (Vendor without email)
+    // Handle Phone Authentication Users (Vendor)
     if (user.authMethod === 'phone') {
-      // For phone-auth users, DON'T create Firebase Auth yet
-      // They will authenticate via phone when they login
-      // Generate a temporary UID for the Firestore document
-      const cleanPhoneDigits = (user.phone || '').replace(/\D/g, '');
-      firebaseUid = `phone_${cleanPhoneDigits}`;
-      if (process.env.NODE_ENV !== 'production') console.log(`📱 Phone-auth user will authenticate via phone. Temp ID: ${firebaseUid}`);
+      // Create Firebase Auth user with pseudo-email for phone-based users
+      const cleanPhone = (user.phone || '').replace(/\D/g, '');
+      const pseudoEmail = `${user.role?.toLowerCase() || 'vendor'}_${cleanPhone}@kydo-phone-auth.local`;
+      const pseudoPassword = user.password || cleanPhone.slice(-6);
+      
+      try {
+        // Use secondaryAuth to create user
+        const authResult = await createUserWithEmailAndPassword(
+          secondaryAuth,
+          pseudoEmail,
+          pseudoPassword
+        );
+        firebaseUid = authResult.user.uid;
+        if (process.env.NODE_ENV !== 'production') console.log(`📱 Firebase Auth created for phone user: ${pseudoEmail} with UID: ${firebaseUid}`);
+      } catch (authError: any) {
+        if (authError.code === 'auth/email-already-in-use') {
+          // User already exists, find their UID
+          throw new Error(`Phone user already created. Please use a different phone number.`);
+        }
+        throw authError;
+      }
     } else {
       // Step 1: Create user in Firebase Authentication (Email/Password)
       // Use secondaryAuth to create user
@@ -80,15 +95,12 @@ export const createUserInFirebase = async (
     }
 
     // Step 2: Prepare user profile for Firestore
-    // Normalize phone number: keep only digits for consistent searching
-    const normalizedPhone = (user.phone || '').replace(/\D/g, ''); // Keep only digits
-    
     const userProfile: any = {
       id: firebaseUid,
       name: user.name,
       email: user.email,
       role: user.role,
-      phone: normalizedPhone || '',
+      phone: user.phone || '',
       password: user.password,
       authMethod: user.authMethod || 'email'
     };

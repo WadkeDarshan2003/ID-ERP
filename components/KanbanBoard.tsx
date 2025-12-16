@@ -5,7 +5,7 @@ import { useNotifications } from '../contexts/NotificationContext';
 import { useAuth } from '../contexts/AuthContext';
 import { AvatarCircle } from '../utils/avatarUtils';
 
-import { calculateTaskProgress } from '../utils/taskUtils';
+import { calculateTaskProgress, formatDateToIndian } from '../utils/taskUtils';
 
 interface KanbanBoardProps {
   tasks: Task[];
@@ -225,7 +225,7 @@ const KanbanBoard: React.FC<KanbanBoardProps> = ({ tasks, users, onUpdateTaskSta
                        </div>
                        <div className="flex items-center gap-1 text-xs text-gray-400">
                           <Calendar className="w-3 h-3" />
-                          <span>{new Date(task.dueDate).toLocaleDateString(undefined, {month:'short', day:'numeric'})}</span>
+                          <span>{formatDateToIndian(task.dueDate)}</span>
                        </div>
                     </div>
                   </div>

@@ -22,7 +22,7 @@ if (process.env.EMAIL_USER && process.env.EMAIL_PASSWORD) {
     if (error) {
       console.error("❌ Nodemailer setup failed:", error);
     } else {
-      console.log("✅ Nodemailer ready from:", process.env.EMAIL_USER);
+      if (process.env.NODE_ENV !== 'production') console.log("✅ Nodemailer ready from:", process.env.EMAIL_USER);
     }
   });
 }
@@ -94,7 +94,7 @@ export const sendEmail = functions.https.onRequest(async (req, res) => {
 
     const info = await transporter.sendMail(mailOptions);
 
-    console.log("✅ Email sent successfully:", info.messageId);
+    if (process.env.NODE_ENV !== 'production') console.log("✅ Email sent successfully:", info.messageId);
 
     res.status(200).json({
       success: true,

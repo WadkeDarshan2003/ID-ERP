@@ -3,11 +3,12 @@ import { createPortal } from 'react-dom';
 import { getDoc, doc, collection, onSnapshot, Unsubscribe } from 'firebase/firestore';
 import { db } from '../services/firebaseConfig';
 import { User, Role, Project, TaskStatus, FinancialRecord } from '../types';
-import { Mail, Phone, Building2, Plus, X, CreditCard, Tag, ChevronRight, DollarSign, CheckCircle, Briefcase, Share2, Eye, Download, Copy, Edit, FileText, Lock } from 'lucide-react';
+import { Mail, Phone, Building2, Plus, X, CreditCard, Tag, ChevronRight, DollarSign, CheckCircle, Briefcase, Share2, Eye, Download, Copy, Edit, FileText, Lock, MessageCircle } from 'lucide-react';
 import { useNotifications } from '../contexts/NotificationContext';
+import { useLoading } from '../contexts/LoadingContext';
 import { useAuth } from '../contexts/AuthContext';
 import { CATEGORY_ORDER } from '../constants'; // Import shared order
-import { calculateTaskProgress } from '../utils/taskUtils'; // Task progress calculation
+import { calculateTaskProgress, formatDateToIndian } from '../utils/taskUtils'; // Task progress calculation
 import { createUserInFirebase, updateUserInFirebase } from '../services/userManagementService'; // Firebase user creation
 import { updateProject } from '../services/firebaseService'; // Project updates
 import { getProjectFinancialRecords } from '../services/financialService'; // Financial records
@@ -25,6 +26,7 @@ interface PeopleListProps {
 const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, projects = [], onSelectProject, onSelectTask }) => {
   const { user: currentUser, adminCredentials } = useAuth();
   const { addNotification } = useNotifications();
+  const { showLoading, hideLoading } = useLoading();
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [selectedVendor, setSelectedVendor] = useState<User | null>(null);
   const [isVendorDetailOpen, setIsVendorDetailOpen] = useState(false);
@@ -47,7 +49,9 @@ const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, p
   const [userToAssign, setUserToAssign] = useState<User | null>(null);
 
   // --- Collapsible Projects State ---
+  const [authMethod, setAuthMethod] = useState<'email' | 'phone'>('email');
   const [expandedProjects, setExpandedProjects] = useState<Record<string, boolean>>({});
+  const [welcomeModalUser, setWelcomeModalUser] = useState<User | null>(null);
 
   // --- Collapsible Designer Tasks State ---
   const [expandedDesignerTasks, setExpandedDesignerTasks] = useState<Record<string, boolean>>({});
@@ -103,12 +107,12 @@ const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, p
 
   // Log for debugging
   useEffect(() => {
-    console.log('🔄 PeopleList projects updated:', projects.length, projects);
+    if (process.env.NODE_ENV !== 'production') console.log('🔄 PeopleList projects updated:', projects.length, projects);
   }, [projects]);
 
   // Log financial updates
   useEffect(() => {
-    console.log('💰 PeopleList financials updated:', allProjectFinancials);
+    if (process.env.NODE_ENV !== 'production') console.log('💰 PeopleList financials updated:', allProjectFinancials);
   }, [allProjectFinancials]);
 
   useEffect(() => {
@@ -155,23 +159,45 @@ const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, p
 
   const handleEditUser = (user: User) => {
     setEditingUser(user);
+    const isPhoneAuth = user.email && user.email.endsWith('@kydo-phone-auth.local');
     setNewUser({
       name: user.name,
-      email: user.email,
+      email: isPhoneAuth ? '' : user.email,
       role: user.role,
       phone: user.phone,
       company: user.company,
       specialty: user.specialty
     });
+    setAuthMethod(isPhoneAuth ? 'phone' : 'email');
     setIsModalOpen(true);
   };
 
   const validateForm = () => {
-    if (!newUser.name || !newUser.email || !newUser.role || !newUser.phone) {
+    if (!newUser.name || !newUser.role || !newUser.phone) {
       setShowErrors(true);
       addNotification('Missing Information', 'Please fill in all compulsory fields marked with *', 'error');
       return false;
     }
+
+    // Validate based on authentication method
+    if (!editingUser) {
+      if (authMethod === 'email' && !newUser.email) {
+        setShowErrors(true);
+        addNotification('Missing Email', 'Email is required for email-based authentication', 'error');
+        return false;
+      }
+      if (authMethod === 'phone' && !newUser.phone) {
+        setShowErrors(true);
+        addNotification('Missing Phone', 'Phone number is required for phone-based authentication', 'error');
+        return false;
+      }
+    } else if (!newUser.email) {
+      // For editing existing users, email is required (legacy check, might need adjustment if editing phone users becomes a requirement)
+      setShowErrors(true);
+      addNotification('Missing Information', 'Please fill in all compulsory fields marked with *', 'error');
+      return false;
+    }
+
     // Validate phone number has at least 4 digits
     const phoneDigits = (newUser.phone || '').replace(/\D/g, '');
     if (phoneDigits.length < 4) {
@@ -187,6 +213,7 @@ const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, p
     if (!validateForm()) return;
 
     try {
+      showLoading(`Creating ${newUser.role}...`);
       if (editingUser) {
         // Update existing user
         const updatedUser: User = {
@@ -204,23 +231,12 @@ const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, p
         return;
       }
 
-      // Get admin password from context or sessionStorage
-      let adminPassword = adminCredentials?.password;
-      if (!adminPassword) {
-        adminPassword = sessionStorage.getItem('adminPassword') || undefined;
-        console.log(`📦 Retrieved admin password from sessionStorage`);
+      // For users with phone-based auth, they don't need an email
+      let emailForAuth = newUser.email;
+      if (authMethod === 'phone') {
+        // Phone auth users: no email needed, just use placeholder
+        emailForAuth = '';
       }
-
-      // Validate admin credentials exist
-      if (!adminPassword) {
-        console.warn('⚠️ Admin credentials not available! User may be logged out.');
-        addNotification('Warning', 'Admin credentials not available. You may be logged out.', 'warning');
-      }
-
-      console.log(`📝 Creating user with credentials:`, {
-        userEmail: currentUser?.email,
-        hasPassword: !!adminPassword
-      });
 
       // Generate password from last 6 digits of phone number
       const phoneDigits = (newUser.phone || '').replace(/\D/g, '');
@@ -230,41 +246,75 @@ const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, p
       const firebaseUid = await createUserInFirebase({
         id: '', // Will be set by Firebase
         name: newUser.name!,
-        email: newUser.email!,
+        email: emailForAuth || '', // Empty for phone auth users
         role: newUser.role!,
         company: newUser.company || undefined,
         specialty: newUser.specialty || undefined,
         phone: newUser.phone || undefined,
-        password: generatedPassword
-      }, currentUser?.email, adminPassword);
+        password: generatedPassword,
+        authMethod: (authMethod) as 'email' | 'phone'
+      }, currentUser?.email, adminCredentials?.password);
 
       // Create local user object with Firebase UID
       const userToAdd: User = {
         id: firebaseUid,
         name: newUser.name!,
-        email: newUser.email!,
+        email: (authMethod === 'phone') ? '' : newUser.email!,
         role: newUser.role!,
         company: newUser.company || undefined,
         specialty: newUser.specialty || undefined,
         phone: newUser.phone || undefined,
-        password: generatedPassword
+        password: generatedPassword,
+        authMethod: (authMethod) as 'email' | 'phone'
       };
 
-      // Call parent callback to update local state
-      onAddUser(userToAdd);
+      // Don't add to local state immediately - let Firebase subscription handle all users
+      // This prevents duplicates when both local state and Firebase listener update
+      if (process.env.NODE_ENV !== 'production') {
+        console.log(`✅ ${newUser.role} "${newUser.name}" created with UID: ${firebaseUid}`);
+        console.log('📡 Will sync from Firestore automatically (Firebase subscription).');
+      }
+
+      // Show success notification
+      addNotification('Success', `${newUser.role} ${newUser.name} created successfully!`, 'success');
+      
+      // If phone auth, show welcome modal to send WhatsApp message
+      if (authMethod === 'phone') {
+        // Create a temporary user object for the welcome modal
+        const welcomeUser: User = {
+          id: firebaseUid,
+          name: newUser.name!,
+          email: '',
+          role: newUser.role!,
+          company: newUser.company || undefined,
+          specialty: newUser.specialty || undefined,
+          phone: newUser.phone || undefined,
+          password: generatedPassword,
+          authMethod: 'phone'
+        };
+        if (process.env.NODE_ENV !== 'production') console.log('🎉 Setting welcome modal for:', welcomeUser);
+        setWelcomeModalUser(welcomeUser);
+      }
 
       // Close modal and reset form
       setIsModalOpen(false);
       setNewUser({ role: roleFilter === 'All' ? Role.CLIENT : roleFilter });
       setShowErrors(false);
 
-      // Show success notification
-      addNotification('Success', `${newUser.role} ${newUser.name} created and authenticated successfully!`, 'success');
-      console.log(`✅ ${newUser.role} created with UID: ${firebaseUid}`);
-      console.log(`🔄 The real-time listener should update the list automatically...`);
+      if (process.env.NODE_ENV !== 'production') {
+        console.log('====== USER CREATION DEBUG ======');
+        console.log('authMethod:', authMethod);
+        console.log('newUser:', newUser);
+        console.log('firebaseUid:', firebaseUid);
+        console.log('Should show modal?', authMethod === 'phone');
+        console.log('====== END DEBUG ======');
+      }
     } catch (error: any) {
       console.error('Failed to create user:', error);
       addNotification('Error', error.message || 'Failed to create user. Please try again.', 'error');
+    }
+    finally {
+      hideLoading();
     }
   };
 
@@ -378,15 +428,17 @@ const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, p
             </div>
 
             <div className="mt-4 space-y-2 border-t border-gray-100 pt-4">
-            <a href={`mailto:${user.email}`} className="flex items-center gap-3 text-sm md:text-sm text-gray-600 hover:text-blue-600 group transition-colors">
+            {user.email && !user.email.endsWith('@kydo-phone-auth.local') && (
+              <a href={`mailto:${user.email}`} className="flex items-center gap-3 text-base md:text-sm text-gray-600 hover:text-blue-600 group transition-colors">
                 <Mail className="w-4 h-4 text-gray-400 group-hover:text-blue-600" />
                 <span className="truncate">{user.email}</span>
-            </a>
+              </a>
+            )}
             {user.phone && (
-                <a href={`tel:${user.phone}`} className="flex items-center gap-3 text-sm md:text-sm text-gray-600 hover:text-blue-600 group transition-colors">
-                <Phone className="w-4 h-4 text-gray-400 group-hover:text-blue-600" />
-                <span>{user.phone}</span>
-                </a>
+              <a href={`tel:${user.phone}`} className="flex items-center gap-3 text-base md:text-sm text-gray-600 hover:text-blue-600 group transition-colors">
+              <Phone className="w-4 h-4 text-gray-400 group-hover:text-blue-600" />
+              <span className="text-base md:text-sm">{user.phone}</span>
+              </a>
             )}
 
             </div>
@@ -395,7 +447,7 @@ const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, p
             {isVendor ? (
               <button 
                 onClick={() => handleOpenVendorDetail(user)}
-                className="text-sm md:text-xs font-medium text-blue-600 hover:text-blue-800 flex items-center gap-1"
+                className="text-base md:text-sm font-medium text-blue-600 hover:text-blue-800 flex items-center gap-1"
               >
                 View Details <ChevronRight className="w-3 h-3" />
               </button>
@@ -405,21 +457,21 @@ const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, p
                   setSelectedDesigner(user);
                   setIsDesignerDetailOpen(true);
                 }}
-                className="text-sm md:text-xs font-medium text-blue-600 hover:text-blue-800 flex items-center gap-1"
+                className="text-base md:text-sm font-medium text-blue-600 hover:text-blue-800 flex items-center gap-1"
               >
                 View Details <ChevronRight className="w-3 h-3" />
               </button>
             ) : (
               <button 
                 onClick={() => handleEditUser(user)}
-                className="text-sm md:text-xs font-medium text-gray-500 hover:text-gray-900"
+                className="text-base md:text-sm font-medium text-gray-500 hover:text-gray-900"
               >
                 View Profile
               </button>
             )}
             <button 
                 onClick={() => handleAssignToProject(user)}
-                className="text-sm md:text-xs font-medium text-blue-600 hover:text-blue-800"
+                className="text-base md:text-sm font-medium text-blue-600 hover:text-blue-800"
             >
                 Assign to Project
             </button>
@@ -435,10 +487,16 @@ const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, p
         </h2>
         <div className="flex items-center gap-3">
             <button 
-            onClick={() => setIsModalOpen(true)}
-            className="bg-gray-900 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-gray-800 transition-colors flex items-center gap-2"
+            onClick={() => {
+              setNewUser({ 
+                role: roleFilter === 'All' ? Role.CLIENT : roleFilter,
+                phone: '+91 '
+              });
+              setIsModalOpen(true);
+            }}
+            className="bg-gray-900 text-white px-4 py-2.5 md:px-4 md:py-2 rounded-lg text-base md:text-sm font-medium hover:bg-gray-800 transition-colors flex items-center gap-2"
             >
-            <Plus className="w-4 h-4" />
+            <Plus className="w-4 h-4 md:w-4 md:h-4" />
             Add {roleFilter === 'All' ? 'Person' : roleFilter}
             </button>
         </div>
@@ -523,29 +581,6 @@ const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, p
                     onChange={e => setNewUser({...newUser, name: e.target.value})}
                   />
                 </div>
-                
-                <div>
-                  <label className="block text-sm font-semibold text-gray-900 mb-1.5">Login ID (Email) <span className="text-red-500">*</span></label>
-                  <input 
-                    type="email" 
-                    className={getInputClass(newUser.email)}
-                    placeholder="john@example.com"
-                    value={newUser.email || ''}
-                    onChange={e => setNewUser({...newUser, email: e.target.value})}
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-sm font-semibold text-gray-900 mb-1.5">Phone Number <span className="text-red-500">*</span></label>
-                  <input 
-                    type="tel" 
-                    className={getInputClass(newUser.phone)}
-                    placeholder="+91 98765 43210"
-                    value={newUser.phone || ''}
-                    onChange={e => setNewUser({...newUser, phone: e.target.value})}
-                  />
-                  {!editingUser && <p className="text-xs text-gray-500 mt-1">Last 6 digits will automatically become their login password.</p>}
-                </div>
 
                 <div className="grid grid-cols-2 gap-3">
                   <div>
@@ -554,7 +589,12 @@ const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, p
                       title="Select user role"
                       className={`w-full px-3 py-2 border rounded-lg focus:outline-none transition-all bg-white text-gray-900 text-sm ${showErrors && !newUser.role ? 'border-red-500 ring-1 ring-red-500' : 'border-gray-300 focus:ring-2 focus:ring-gray-900 focus:border-transparent'}`}
                       value={newUser.role || ''}
-                      onChange={e => setNewUser({...newUser, role: e.target.value as Role})}
+                      onChange={e => {
+                        const role = e.target.value as Role;
+                        setNewUser({...newUser, role});
+                        // Reset auth method to email by default when changing roles, or keep it if you prefer persistence
+                        // setAuthMethod('email'); 
+                      }}
                     >
                       <option value="">Select Role</option>
                       <option value={Role.CLIENT}>Client</option>
@@ -565,6 +605,73 @@ const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, p
                       )}
                     </select>
                   </div>
+                </div>
+
+                {/* Authentication Method Selection - For All Roles (except Admin usually, but allowing for flexibility) */}
+                {!editingUser && (
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-900 mb-2">Authentication Method <span className="text-red-500">*</span></label>
+                    <div className="flex gap-3">
+                      <button
+                        type="button"
+                        onClick={() => setAuthMethod('email')}
+                        className={`flex-1 py-2 px-3 rounded-lg border-2 transition-colors font-medium text-sm ${
+                          authMethod === 'email'
+                            ? 'border-blue-600 bg-blue-50 text-blue-700'
+                            : 'border-gray-200 bg-white text-gray-600 hover:border-gray-300'
+                        }`}
+                        title="User will log in with email and password"
+                      >
+                        Email
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAuthMethod('phone');
+                          setNewUser(prev => ({ ...prev, email: '' })); // Clear email when switching to phone
+                        }}
+                        className={`flex-1 py-2 px-3 rounded-lg border-2 transition-colors font-medium text-sm ${
+                          authMethod === 'phone'
+                            ? 'border-blue-600 bg-blue-50 text-blue-700'
+                            : 'border-gray-200 bg-white text-gray-600 hover:border-gray-300'
+                        }`}
+                        title="User will log in with phone number and OTP"
+                      >
+                        Phone
+                      </button>
+                    </div>
+                  </div>
+                )}
+                
+                {/* Email Field - Only if Auth Method is Email */}
+                {authMethod === 'email' && (
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-900 mb-1.5">Email Id <span className="text-red-500">*</span></label>
+                    <input 
+                      type="email" 
+                      className={getInputClass(newUser.email)}
+                      placeholder="john@example.com"
+                      value={newUser.email || ''}
+                      onChange={e => setNewUser({...newUser, email: e.target.value})}
+                    />
+                  </div>
+                )}
+
+                {/* Phone Field - Always Visible */}
+                <div>
+                  <label className="block text-sm font-semibold text-gray-900 mb-1.5">
+                    {authMethod === 'phone' ? 'Phone Number (Login ID)' : 'Phone Number'} <span className="text-red-500">*</span>
+                  </label>
+                  <input 
+                    type="tel" 
+                    className={getInputClass(newUser.phone)}
+                    placeholder="+91 98765 43210"
+                    value={newUser.phone || ''}
+                    onChange={e => setNewUser({...newUser, phone: e.target.value})}
+                  />
+                  {authMethod === 'email' && (
+                    <p className="text-xs text-gray-500 mt-1">Last 6 digits will automatically become their initial password.</p>
+                  )}
                 </div>
 
                 {newUser.role === Role.VENDOR && (
@@ -692,11 +799,7 @@ const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, p
                             : null;
                           
                           const formattedFurthestDeadline = furthestDeadline 
-                            ? new Date(furthestDeadline).toLocaleDateString('en-US', { 
-                                year: 'numeric', 
-                                month: 'short', 
-                                day: 'numeric' 
-                              })
+                            ? formatDateToIndian(furthestDeadline)
                             : 'N/A';
 
                           return (
@@ -755,11 +858,7 @@ const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, p
                                       // Calculate task progress using shared utility function
                                       const taskProgress = calculateTaskProgress(task);
                                       // Format deadline date from dueDate field
-                                      const deadline = task.dueDate ? new Date(task.dueDate).toLocaleDateString('en-US', { 
-                                        year: 'numeric', 
-                                        month: 'short', 
-                                        day: 'numeric' 
-                                      }) : 'N/A';
+                                      const deadline = task.dueDate ? formatDateToIndian(task.dueDate) : 'No deadline';
                                       
                                       // Check if task is blocked by dependencies
                                       const isBlocked = task.dependencies && task.dependencies.length > 0 && 
@@ -1292,6 +1391,63 @@ const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, p
         </div>,
         document.body
       )}
+      {/* Welcome Modal for Phone Auth Users */}
+      {welcomeModalUser && (
+        <>
+          <div className="fixed inset-0 bg-black/50 z-[9999] flex items-center justify-center p-4" style={{position: 'fixed', top: 0, left: 0, right: 0, bottom: 0}}>
+            <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-8 text-center" style={{position: 'relative', zIndex: 10000}}>
+              <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-6">
+                <CheckCircle className="w-8 h-8 text-green-600" />
+              </div>
+              <h3 className="text-2xl font-bold text-gray-900 mb-4">✅ User Created Successfully!</h3>
+              <p className="text-gray-700 mb-6 text-base font-medium">
+                <strong>{welcomeModalUser.name}</strong> has been created with phone authentication.<br/>
+                <span className="text-sm text-gray-600">Phone: {welcomeModalUser.phone}</span>
+              </p>
+
+              <div className="bg-blue-50 p-4 rounded-lg text-left mb-6 border-l-4 border-blue-500">
+                <p className="text-xs text-blue-600 font-bold uppercase mb-2">📱 Welcome Message</p>
+                <p className="text-sm text-gray-800 italic">
+                  "Hi {welcomeModalUser.name}, welcome to Kydo Solutions! Your account has been created. Please login using your phone number: {welcomeModalUser.phone}."
+                </p>
+              </div>
+
+              <div className="space-y-3">
+                <a 
+                  href={`https://wa.me/+${welcomeModalUser.phone?.replace(/\D/g, '')}?text=${encodeURIComponent(`Hi ${welcomeModalUser.name}, welcome to Kydo Solutions! Your account has been created. Please login using your phone number: ${welcomeModalUser.phone}.`)}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="w-full bg-[#25D366] hover:bg-[#128C7E] text-white font-bold py-3 rounded-lg transition-colors flex items-center justify-center gap-2 shadow-md"
+                >
+                  <MessageCircle className="w-5 h-5" /> Send Welcome on WhatsApp
+                </a>
+                
+                <button 
+                  onClick={() => {
+                    const msg = `Hi ${welcomeModalUser.name}, welcome to Kydo Solutions! Your account has been created. Please login using your phone number: ${welcomeModalUser.phone}.`;
+                    navigator.clipboard.writeText(msg);
+                    addNotification('Copied', 'Message copied to clipboard!', 'success');
+                  }}
+                  className="w-full bg-blue-100 border border-blue-300 hover:bg-blue-200 text-blue-700 font-bold py-3 rounded-lg transition-colors flex items-center justify-center gap-2"
+                >
+                  <Copy className="w-5 h-5" /> Copy Message
+                </button>
+
+                <button 
+                  onClick={() => {
+                    setWelcomeModalUser(null);
+                    addNotification('Done', 'Remember to send the message!', 'info');
+                  }}
+                  className="w-full bg-gray-200 hover:bg-gray-300 text-gray-800 font-bold py-3 rounded-lg transition-colors"
+                >
+                  Done
+                </button>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+
     </div>
   );
 };

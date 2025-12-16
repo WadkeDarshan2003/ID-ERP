@@ -9,14 +9,14 @@ self.addEventListener('install', event => {
   event.waitUntil(
     caches.open(CACHE_NAME)
       .then(cache => {
-        console.log('Caching Tailwind and fonts');
+        // console.log('Caching Tailwind and fonts');
         return Promise.allSettled(
           urlsToCache.map(url =>
             fetch(url).then(response => {
               if (response.ok) {
                 cache.put(url, response);
               }
-            }).catch(err => console.log(`Failed to cache ${url}:`, err))
+            }).catch(err => { /* console.log(`Failed to cache ${url}:`, err) */ })
           )
         );
       })

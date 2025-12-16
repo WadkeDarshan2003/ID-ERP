@@ -2,7 +2,7 @@ import React, { createContext, useContext, useState, ReactNode, useEffect } from
 import { User } from '../types';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { auth } from '../services/firebaseConfig';
-import { getUser, createUser } from '../services/firebaseService';
+import { getUser, createUser, claimPhoneUserProfile } from '../services/firebaseService';
 
 interface AuthContextType {
   user: User | null;
@@ -31,12 +31,28 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
           let userProfile = null;
           try {
             userProfile = await getUser(authUser.uid);
+            
+            // If not found by UID, try to claim a phone placeholder profile
+            if (!userProfile && authUser.phoneNumber) {
+              userProfile = await claimPhoneUserProfile(authUser.uid, authUser.phoneNumber);
+            }
           } catch (error) {
             console.warn('Could not fetch user profile:', error);
           }
           
-          // If no profile found, create admin profile from auth data
+          // If no profile found
           if (!userProfile) {
+            // For Phone Auth users, if no profile is found (and claim failed), DO NOT allow access
+            if (authUser.phoneNumber) {
+              console.warn('Phone user has no profile and claim failed. Access denied.');
+              setFirebaseUser(null);
+              setUser(null);
+              setLoading(false);
+              return;
+            }
+
+            // For Email users (likely Admin/Dev), create temporary admin profile
+            // This is a fallback for initial setup or admin access
             userProfile = {
               id: authUser.uid,
               name: authUser.email?.split('@')[0] || 'Admin',
@@ -44,8 +60,6 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
               role: 'Admin' as any,
               phone: ''
             };
-            
-            // Continue with user profile
           }
           
           setFirebaseUser(authUser);

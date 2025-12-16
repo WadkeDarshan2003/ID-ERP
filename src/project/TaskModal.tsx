@@ -89,7 +89,7 @@ const TaskModal: React.FC<TaskModalProps> = ({
   const displayApprovals = task.approvals;
 
   const getInputClass = (isError: boolean, disabled: boolean = false) => `
-    w-full p-2 border rounded-lg transition-all focus:outline-none placeholder-gray-400
+    w-full p-2 border rounded-lg transition-all focus:outline-none placeholder-gray-400 text-lg md:text-sm
     ${disabled ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : 'bg-white text-gray-900'}
     ${isError ? 'border-red-500 ring-1 ring-red-500' : 'border-gray-300 focus:ring-2 focus:ring-gray-900 focus:border-transparent'}
   `;
@@ -137,7 +137,7 @@ const TaskModal: React.FC<TaskModalProps> = ({
     const newApprovals = JSON.parse(JSON.stringify(editingTask.approvals));
     const targetRole = role || (isClient ? 'client' : 'admin');
     
-    console.log(`🔄 Approval action: ${action} for ${stage}/${targetRole}`, newApprovals[stage][targetRole]);
+    if (process.env.NODE_ENV !== 'production') console.log(`🔄 Approval action: ${action} for ${stage}/${targetRole}`, newApprovals[stage][targetRole]);
     
     // Ensure stage and role exist
     if (!newApprovals[stage]) {
@@ -149,12 +149,12 @@ const TaskModal: React.FC<TaskModalProps> = ({
     
     if (action === 'revoke') {
         newApprovals[stage][targetRole].status = 'pending';
-        console.log(`🔄 Revoke action - setting status to 'pending'`);
+        if (process.env.NODE_ENV !== 'production') console.log(`🔄 Revoke action - setting status to 'pending'`);
     } else {
         newApprovals[stage][targetRole].status = action === 'approve' ? 'approved' : 'rejected';
     }
     
-    console.log(`✅ Updated approval state:`, newApprovals[stage][targetRole]);
+    if (process.env.NODE_ENV !== 'production') console.log(`✅ Updated approval state:`, newApprovals[stage][targetRole]);
     
     // Auto-update status based on approvals
     let newStatus = editingTask.status;
@@ -174,21 +174,21 @@ const TaskModal: React.FC<TaskModalProps> = ({
     }
 
     const updatedTask = { ...editingTask, approvals: newApprovals, status: newStatus };
-    console.log(`📝 Setting editing task with new approvals`, updatedTask.approvals);
-    console.log(`📝 Current editing task approvals before state update:`, editingTask.approvals);
-    console.log(`📝 New approvals after state update will be:`, newApprovals);
+    if (process.env.NODE_ENV !== 'production') console.log(`📝 Setting editing task with new approvals`, updatedTask.approvals);
+    if (process.env.NODE_ENV !== 'production') console.log(`📝 Current editing task approvals before state update:`, editingTask.approvals);
+    if (process.env.NODE_ENV !== 'production') console.log(`📝 New approvals after state update will be:`, newApprovals);
     setEditingTask(updatedTask);
-    console.log(`📝 State updated, component should re-render`);
+    if (process.env.NODE_ENV !== 'production') console.log(`📝 State updated, component should re-render`);
     
     // Auto-save approval to database
     if (editingTask.id) {
         try {
-            console.log(`💾 Saving to Firebase...`);
+            if (process.env.NODE_ENV !== 'production') console.log(`💾 Saving to Firebase...`);
             await updateTask(project.id, editingTask.id, { 
                 approvals: newApprovals, 
                 status: newStatus 
             });
-            console.log(`✅ Firebase save complete`);
+            if (process.env.NODE_ENV !== 'production') console.log(`✅ Firebase save complete`);
         } catch (error) {
             console.error('Error saving approval:', error);
         }
@@ -220,77 +220,77 @@ const TaskModal: React.FC<TaskModalProps> = ({
   };
 
   return createPortal(
-    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-       <div className="bg-white rounded-xl shadow-xl w-full max-w-4xl h-[90vh] flex flex-col animate-fade-in overflow-hidden">
+    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-2 md:p-4">
+       <div className="bg-white rounded-xl shadow-xl w-full max-w-full md:max-w-4xl h-[95vh] md:h-[90vh] flex flex-col animate-fade-in overflow-hidden">
           {/* Modal Header */}
-          <div className="p-4 border-b border-gray-100 flex justify-between items-center bg-gray-50">
-            <div className="flex items-center gap-2">
-               <h3 className="text-lg md:text-base font-bold text-gray-900">{editingTask.id ? 'Edit Task Details' : 'Create New Task'}</h3>
-               {editingTask.id && <span className="text-xs md:text-[10px] text-gray-500 bg-gray-200 px-2 py-0.5 rounded">ID: {editingTask.id}</span>}
+           <div className="p-3 md:p-4 border-b border-gray-100 flex justify-between items-center bg-gray-50 flex-shrink-0">
+            <div className="flex items-center gap-2 min-w-0">
+              <h3 className="text-lg md:text-base font-bold text-gray-900 truncate">{editingTask.id ? 'Edit Task Details' : 'Create New Task'}</h3>
+              {editingTask.id && <span className="text-sm md:text-[10px] text-gray-500 bg-gray-200 px-2 py-0.5 rounded flex-shrink-0">{editingTask.id}</span>}
             </div>
-            <button onClick={onClose} className="text-gray-400 hover:text-gray-600" title="Close task modal"><X/></button>
+            <button onClick={onClose} className="text-gray-400 hover:text-gray-600 flex-shrink-0" title="Close task modal"><X className="w-5 h-5 md:w-4 md:h-4"/></button>
           </div>
 
           {/* Dependency Warning */}
-          {isTaskBlocked(editingTask, currentTasks) && (
-             <div className="bg-red-50 border-b border-red-100 px-4 py-2 flex items-center gap-2 text-red-700 text-sm md:text-xs">
-                <AlertCircle className="w-4 h-4" />
+           {isTaskBlocked(editingTask, currentTasks) && (
+             <div className="bg-red-50 border-b border-red-100 px-3 md:px-4 py-2 flex items-center gap-2 text-red-700 text-base md:text-xs flex-shrink-0">
+                <AlertCircle className="w-4 h-4 flex-shrink-0" />
                 <span className="font-bold">Dependency Locked:</span>
-                <span>This task is blocked by pending dependencies: {getBlockingTasks(editingTask, currentTasks).map(t => t.title).join(', ')}.</span>
+                <span className="truncate">{getBlockingTasks(editingTask, currentTasks).map(t => t.title).join(', ')}</span>
              </div>
           )}
 
           {/* Frozen Warning */}
-          {isEditingFrozen && (
-              <div className="bg-gray-800 text-white px-4 py-3 flex items-center justify-between shadow-md">
+                  {isEditingFrozen && (
+              <div className="bg-gray-800 text-white px-3 md:px-4 py-2 md:py-3 flex items-center justify-between shadow-md text-base md:text-sm flex-shrink-0">
                   <div className="flex items-center gap-2">
-                    <Ban className="w-5 h-5 text-red-400" />
+                    <Ban className="w-5 h-5 text-red-400 flex-shrink-0" />
                     <span className="font-bold uppercase tracking-wide">Task Frozen: {editingTask.status}</span>
                   </div>
-                  <span className="text-xs opacity-70">Interaction disabled by Admin.</span>
+                  <span className="text-base md:text-sm opacity-70">Disabled</span>
               </div>
           )}
 
-          {/* Modal Body: Split View */}
-          <div className={`flex-1 flex overflow-hidden ${isEditingFrozen ? 'pointer-events-none opacity-80 bg-gray-50' : ''}`}>
+          {/* Modal Body: Responsive Layout (Stacked on mobile, Split on desktop) */}
+          <div className={`flex-1 flex flex-col md:flex-row overflow-hidden ${isEditingFrozen ? 'pointer-events-none opacity-80 bg-gray-50' : ''}`}>
              
              {/* LEFT: Task Info Form */}
-             <div className="w-1/2 p-6 overflow-y-auto border-r border-gray-100 bg-white">
+             <div className="w-full md:w-1/2 p-3 md:p-4 overflow-y-auto md:border-r border-gray-100 bg-white">
                 <div className="space-y-4">
                    {/* ADMIN ACTIONS */}
                    {isAdmin && (
-                       <div className="bg-gray-900 p-3 rounded-lg pointer-events-auto">
-                           <p className="text-xs md:text-[10px] font-bold text-gray-400 uppercase mb-2 flex items-center gap-1"><Shield className="w-3 h-3"/> Admin Actions</p>
+                         <div className="bg-gray-900 p-4 md:p-3 rounded-lg pointer-events-auto">
+                           <p className="text-lg md:text-sm font-bold text-gray-400 uppercase mb-2 flex items-center gap-1"><Shield className="w-4 h-4 md:w-3 md:h-3"/> Admin Actions</p>
                            <div className="flex gap-2">
                                {editingTask.status === TaskStatus.ON_HOLD ? (
-                                   <button 
+                                  <button 
                                        onClick={() => setEditingTask({...editingTask, status: deriveStatus(editingTask, TaskStatus.IN_PROGRESS)})}
-                                       className="flex-1 bg-green-600 hover:bg-green-700 text-white text-xs md:text-[10px] font-bold py-2 rounded flex items-center justify-center gap-1"
+                                      className="flex-1 bg-green-600 hover:bg-green-700 text-white text-lg md:text-sm font-bold py-2 rounded flex items-center justify-center gap-1"
                                    >
-                                       <PlayCircle className="w-3 h-3"/> Resume Task
+                                      <PlayCircle className="w-4 h-4 md:w-3 md:h-3"/> Resume Task
                                    </button>
                                ) : (
-                                   <button 
+                                  <button 
                                        onClick={() => setEditingTask({...editingTask, status: TaskStatus.ON_HOLD})}
-                                       className="flex-1 bg-yellow-600 hover:bg-yellow-700 text-white text-xs md:text-[10px] font-bold py-2 rounded flex items-center justify-center gap-1"
+                                      className="flex-1 bg-yellow-600 hover:bg-yellow-700 text-white text-lg md:text-sm font-bold py-2 rounded flex items-center justify-center gap-1"
                                    >
-                                       <PauseCircle className="w-3 h-3"/> Put On Hold
+                                      <PauseCircle className="w-4 h-4 md:w-3 md:h-3"/> Put On Hold
                                    </button>
                                )}
 
                                {editingTask.status === TaskStatus.ABORTED ? (
-                                   <button 
+                                  <button 
                                        onClick={() => setEditingTask({...editingTask, status: deriveStatus(editingTask, TaskStatus.IN_PROGRESS)})}
-                                       className="flex-1 bg-gray-700 hover:bg-gray-600 text-white text-xs md:text-[10px] font-bold py-2 rounded flex items-center justify-center gap-1"
+                                      className="flex-1 bg-gray-700 hover:bg-gray-600 text-white text-lg md:text-sm font-bold py-2 rounded flex items-center justify-center gap-1"
                                    >
-                                       <History className="w-3 h-3"/> Restore
+                                      <History className="w-4 h-4 md:w-3 md:h-3"/> Restore
                                    </button>
                                ) : (
-                                   <button 
+                                  <button 
                                        onClick={() => setEditingTask({...editingTask, status: TaskStatus.ABORTED})}
-                                       className="flex-1 bg-red-600 hover:bg-red-700 text-white text-xs md:text-[10px] font-bold py-2 rounded flex items-center justify-center gap-1"
+                                      className="flex-1 bg-red-600 hover:bg-red-700 text-white text-lg md:text-sm font-bold py-2 rounded flex items-center justify-center gap-1"
                                    >
-                                       <Ban className="w-3 h-3"/> Abort Task
+                                      <Ban className="w-4 h-4 md:w-3 md:h-3"/> Abort Task
                                    </button>
                                )}
                            </div>
@@ -298,7 +298,7 @@ const TaskModal: React.FC<TaskModalProps> = ({
                    )}
 
                    <div>
-                      <label className="text-xs md:text-[10px] font-bold text-gray-500 uppercase">Title <span className="text-red-500">*</span></label>
+                     <label className="text-lg md:text-sm font-bold text-gray-500 uppercase">Title <span className="text-red-500">*</span></label>
                       {isAdmin || !isEditingFrozen ? (
                         <input 
                           type="text" 
@@ -313,7 +313,7 @@ const TaskModal: React.FC<TaskModalProps> = ({
                    </div>
 
                    <div>
-                      <label className="text-xs md:text-[10px] font-bold text-gray-500 uppercase">Category</label>
+                     <label className="text-lg md:text-sm font-bold text-gray-500 uppercase">Category</label>
                       {isAdmin || !isEditingFrozen ? (
                         <select 
                           className={`${getInputClass(false, isEditingFrozen)} mt-1`}
@@ -327,13 +327,13 @@ const TaskModal: React.FC<TaskModalProps> = ({
                           ))}
                         </select>
                       ) : (
-                         <span className="block mt-1 text-sm bg-gray-100 w-fit px-2 py-1 rounded text-gray-800">{editingTask.category || 'General'}</span>
+                         <span className="block mt-1 text-base md:text-sm bg-gray-100 w-fit px-2 py-1 rounded text-gray-800">{editingTask.category || 'General'}</span>
                       )}
                    </div>
 
                    <div className="grid grid-cols-2 gap-4">
                       <div>
-                        <label className="text-xs md:text-[10px] font-bold text-gray-500 uppercase">Start Date <span className="text-red-500">*</span></label>
+                        <label className="text-lg md:text-sm font-bold text-gray-500 uppercase">Start Date <span className="text-red-500">*</span></label>
                         {isAdmin || !isEditingFrozen ? (
                            <input 
                               type="text" 
@@ -347,10 +347,10 @@ const TaskModal: React.FC<TaskModalProps> = ({
                               }} 
                               disabled={isEditingFrozen}
                            />
-                        ) : <p className="text-sm mt-1 text-gray-800">{formatDateToIndian(editingTask.startDate)}</p>}
+                        ) : <p className="text-base md:text-sm mt-1 text-gray-800">{formatDateToIndian(editingTask.startDate)}</p>}
                       </div>
                       <div>
-                        <label className="text-xs md:text-[10px] font-bold text-gray-500 uppercase">Due Date <span className="text-red-500">*</span></label>
+                        <label className="text-lg md:text-sm font-bold text-gray-500 uppercase">Due Date <span className="text-red-500">*</span></label>
                         {isAdmin || !isEditingFrozen ? (
                            <input 
                               type="text" 
@@ -364,16 +364,16 @@ const TaskModal: React.FC<TaskModalProps> = ({
                               }} 
                               disabled={isEditingFrozen}
                            />
-                        ) : <p className="text-sm mt-1 text-gray-800">{formatDateToIndian(editingTask.dueDate)}</p>}
+                        ) : <p className="text-base md:text-sm mt-1 text-gray-800">{formatDateToIndian(editingTask.dueDate)}</p>}
                       </div>
                    </div>
 
                     {/* Dependencies Selection */}
                     <div>
-                      <div className="flex items-center gap-2 mb-1">
+                         <div className="flex items-center gap-2 mb-1">
                          <Link2 className="w-3 h-3 text-gray-400" />
-                         <label className="text-xs md:text-[10px] font-bold text-gray-500 uppercase">Dependencies</label>
-                      </div>
+                         <label className="text-lg md:text-sm font-bold text-gray-500 uppercase">Dependencies</label>
+                       </div>
                       {isAdmin || !isEditingFrozen ? (
                         <div className={`mt-1 p-2 border rounded max-h-24 overflow-y-auto bg-white border-gray-200 ${isEditingFrozen ? 'opacity-50' : ''}`}>
                           {currentTasks.filter(t => t.id !== editingTask.id).length > 0 ? (
@@ -386,30 +386,30 @@ const TaskModal: React.FC<TaskModalProps> = ({
                                         disabled={isEditingFrozen}
                                         className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                                     />
-                                    <span className="text-sm md:text-xs text-gray-700 truncate flex-1">{t.title}</span>
-                                    <span className="text-xs md:text-[10px] text-gray-400 whitespace-nowrap">({formatDateToIndian(t.startDate)} → {formatDateToIndian(t.dueDate)})</span>
+                                    <span className="text-lg md:text-sm text-gray-700 truncate flex-1">{t.title}</span>
+                                    <span className="text-base md:text-sm text-gray-400 whitespace-nowrap">({formatDateToIndian(t.startDate)} → {formatDateToIndian(t.dueDate)})</span>
                                 </label>
                               ))
-                          ) : <p className="text-xs md:text-[10px] text-gray-400 italic">No other tasks available</p>}
+                          ) : <p className="text-lg md:text-sm text-gray-400 italic">No other tasks available</p>}
                         </div>
                       ) : (
-                         <div className="mt-1 text-sm md:text-xs text-gray-600">
+                         <div className="mt-1 text-lg md:text-sm text-gray-600">
                             {(editingTask.dependencies || []).length > 0 ? (
                                 currentTasks.filter(t => (editingTask.dependencies || []).includes(t.id)).map(t => (
-                                    <div key={t.id} className="flex items-center gap-1 text-xs md:text-[10px] bg-gray-50 border border-gray-200 rounded px-2 py-1 mb-1">
+                                    <div key={t.id} className="flex items-center gap-1 text-base md:text-sm bg-gray-50 border border-gray-200 rounded px-2 py-1 mb-1">
                                         <Link2 className="w-3 h-3 text-gray-400"/> 
                                         <span className="flex-1">{t.title}</span>
                                         <span className="text-gray-500 whitespace-nowrap ml-1">({formatDateToIndian(t.startDate)} → {formatDateToIndian(t.dueDate)})</span>
                                         {t.status !== TaskStatus.DONE && <span className="text-red-500 font-bold ml-1">(Pending)</span>}
                                     </div>
                                 ))
-                            ) : <span className="text-gray-400 italic text-xs md:text-[10px]">No dependencies</span>}
+                            ) : <span className="text-gray-400 italic text-lg md:text-sm">No dependencies</span>}
                          </div>
                       )}
                     </div>
 
                    <div>
-                      <label className="text-xs md:text-[10px] font-bold text-gray-500 uppercase">Assignee & Priority</label>
+                 <label className="text-lg md:text-sm font-bold text-gray-500 uppercase">Assignee & Priority</label>
                       <div className="flex gap-4 mt-1">
                          {isAdmin || !isEditingFrozen ? (
                            <select 
@@ -424,7 +424,7 @@ const TaskModal: React.FC<TaskModalProps> = ({
                                 <option key={u.id} value={u.id}>{u.name}</option>
                               ))}
                            </select>
-                         ) : <p className="flex-1 text-sm bg-gray-50 p-2 rounded text-gray-800">{getAssigneeName(editingTask.assigneeId || '')}</p>}
+                         ) : <p className="flex-1 text-base bg-gray-50 p-2 rounded text-gray-800">{getAssigneeName(editingTask.assigneeId || '')}</p>}
 
                          {isAdmin || !isEditingFrozen ? (
                            <select 
@@ -437,38 +437,38 @@ const TaskModal: React.FC<TaskModalProps> = ({
                               <option value="medium">Medium</option>
                               <option value="high">High</option>
                            </select>
-                         ) : <span className="p-2 border rounded bg-gray-50 uppercase text-xs md:text-[10px] font-bold flex items-center text-gray-800">{editingTask.priority}</span>}
+                         ) : <span className="p-2 border rounded bg-gray-50 uppercase text-lg md:text-sm font-bold flex items-center text-gray-800">{editingTask.priority}</span>}
                       </div>
                    </div>
                    
                    {/* Status Display */}
                    <div>
-                      <label className="text-xs md:text-[10px] font-bold text-gray-500 uppercase">Current Status</label>
+                     <label className="text-lg md:text-sm font-bold text-gray-500 uppercase">Current Status</label>
                       <div className={`mt-1 w-full p-2 border rounded bg-gray-50 text-gray-700 font-bold flex justify-between items-center flex-wrap gap-2 ${isEditingFrozen ? 'border-red-300 bg-red-50' : 'border-gray-200'}`}>
                           <span>{editingTask.status || TaskStatus.TODO}</span>
                           {editingTask.status === TaskStatus.REVIEW && (
                             <div className="flex gap-1 flex-wrap">
                               {editingTask.approvals?.completion?.client?.status === 'approved' && editingTask.approvals?.completion?.admin?.status === 'approved' && (
-                                <span className="text-xs md:text-[10px] bg-green-100 text-green-700 px-2 py-0.5 rounded font-normal">Approved by Both</span>
+                                <span className="text-base md:text-sm bg-green-100 text-green-700 px-2 py-0.5 rounded font-normal">Approved by Both</span>
                               )}
                               {editingTask.approvals?.completion?.client?.status === 'approved' && !editingTask.approvals?.completion?.admin?.status && (
-                                <span className="text-xs md:text-[10px] bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded font-normal">Waiting for Admin Approval</span>
+                                <span className="text-base md:text-sm bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded font-normal">Waiting for Admin Approval</span>
                               )}
                               {editingTask.approvals?.completion?.admin?.status === 'approved' && !editingTask.approvals?.completion?.client?.status && (
-                                <span className="text-xs md:text-[10px] bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded font-normal">Waiting for Client Approval</span>
+                                <span className="text-base md:text-sm bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded font-normal">Waiting for Client Approval</span>
                               )}
                               {!editingTask.approvals?.completion?.client?.status && !editingTask.approvals?.completion?.admin?.status && (
-                                <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded font-normal">Under Review</span>
+                                <span className="text-sm md:text-sm bg-purple-100 text-purple-700 px-2 py-0.5 rounded font-normal">Under Review</span>
                               )}
                               {editingTask.approvals?.completion?.client?.status === 'rejected' && (
-                                <span className="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded font-normal">Rejected by Client</span>
+                                <span className="text-[11px] md:text-sm bg-red-100 text-red-700 px-2 py-0.5 rounded font-normal">Rejected by Client</span>
                               )}
                               {editingTask.approvals?.completion?.designer?.status === 'rejected' && (
-                                <span className="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded font-normal">Rejected by Designer</span>
+                                <span className="text-[11px] md:text-sm bg-orange-100 text-orange-700 px-2 py-0.5 rounded font-normal">Rejected by Designer</span>
                               )}
                             </div>
                           )}
-                          <span className="text-xs font-normal text-gray-400 italic">
+                            <span className="text-[11px] font-normal text-gray-400 italic">
                               {isEditingFrozen ? 'Frozen by Admin' : 'Auto-updated via progress'}
                           </span>
                       </div>
@@ -476,7 +476,7 @@ const TaskModal: React.FC<TaskModalProps> = ({
 
                    {/* Subtasks */}
                    <div className="pt-4 border-t border-gray-100 flex flex-col h-64">
-                     <label className="text-xs md:text-[10px] font-bold text-gray-700 uppercase mb-2 block">Checklist</label>
+                     <label className="text-lg md:text-sm font-bold text-gray-700 uppercase mb-2 block">Checklist</label>
                      <div className="space-y-2 flex-1 overflow-y-auto pr-2">
                         {editingTask.subtasks?.map((st, idx) => (
                           <div key={st.id} className="flex items-center gap-2">
@@ -503,9 +503,9 @@ const TaskModal: React.FC<TaskModalProps> = ({
                                      newSubs[idx].title = e.target.value;
                                      setEditingTask({...editingTask, subtasks: newSubs});
                                   }}
-                                  className="flex-1 p-1 border-b border-transparent focus:border-gray-300 outline-none text-sm md:text-xs bg-white text-gray-900 disabled:bg-gray-100 disabled:text-gray-500"
+                                  className="flex-1 p-1 border-b border-transparent focus:border-gray-300 outline-none text-lg md:text-sm bg-white text-gray-900 disabled:bg-gray-100 disabled:text-gray-500"
                                 />
-                             ) : <span className={`flex-1 text-sm md:text-xs ${st.isCompleted ? 'line-through text-gray-400' : 'text-gray-800'}`}>{st.title}</span>}
+                             ) : <span className={`flex-1 text-base md:text-sm ${st.isCompleted ? 'line-through text-gray-400' : 'text-gray-800'}`}>{st.title}</span>}
                              
                              {(isAdmin || !isEditingFrozen) && (
                                <button 
@@ -522,49 +522,49 @@ const TaskModal: React.FC<TaskModalProps> = ({
                              )}
                           </div>
                         ))}
-                        {(!editingTask.subtasks || editingTask.subtasks.length === 0) && <p className="text-xs md:text-[10px] text-gray-400 italic">No checklist items</p>}
+                        {(!editingTask.subtasks || editingTask.subtasks.length === 0) && <p className="text-2xl md:text-base text-gray-400 italic">No checklist items</p>}
                      </div>
                      {(isAdmin || !isEditingFrozen) && (
-                       <button 
+                      <button 
                          onClick={() => {
-                            const newSub: SubTask = { id: Math.random().toString(), title: 'New Item', isCompleted: false };
-                            setEditingTask({ ...editingTask, subtasks: [...(editingTask.subtasks || []), newSub] });
+                           const newSub: SubTask = { id: Math.random().toString(), title: 'New Item', isCompleted: false };
+                           setEditingTask({ ...editingTask, subtasks: [...(editingTask.subtasks || []), newSub] });
                          }}
-                         className="text-xs md:text-[10px] text-blue-600 hover:text-blue-700 flex items-center gap-1 mt-2 pt-2 border-t border-gray-100"
-                       ><Plus className="w-3 h-3"/> Add</button>
+                         className="text-2xl md:text-base text-blue-600 hover:text-blue-700 flex items-center gap-1 mt-2 pt-2 border-t border-gray-100"
+                        ><Plus className="w-5 h-5 md:w-3 md:h-3"/> Add</button>
                      )}
                    </div>
                 </div>
              </div>
 
              {/* RIGHT: Approvals & Comments */}
-             <div className="w-1/2 flex flex-col bg-gray-50/50">
+             <div className="w-full md:w-1/2 flex flex-col bg-gray-50/50 md:border-l border-t md:border-t-0 border-gray-100 mt-4 md:mt-0">
                 {/* Approvals Section */}
                 {editingTask.approvals && (
-                  <div className="p-4 border-b border-gray-200 bg-white">
-                    <div className="flex items-center gap-2 mb-3">
-                       <Shield className="w-4 h-4 text-gray-500" />
-                       <h4 className="text-xs md:text-[10px] font-bold text-gray-700 uppercase">Approvals</h4>
-                    </div>
+                  <div className="p-3 md:p-4 border-b border-gray-200 bg-white">
+                      <div className="flex items-center gap-2 mb-3">
+                        <Shield className="w-4 h-4 text-gray-500" />
+                        <h4 className="text-lg md:text-sm font-bold text-gray-700 uppercase">Approvals</h4>
+                      </div>
                     
                     <div className="grid grid-cols-2 gap-4">
                        {/* Start Approval */}
                        <div className="bg-gray-50 p-3 rounded-lg border border-gray-100">
-                          <p className="text-xs md:text-[10px] font-bold text-gray-500 mb-2">1. Start Approval</p>
+                          <p className="text-lg md:text-sm font-bold text-gray-500 mb-2">1. Start Approval</p>
                           <div className="space-y-2">
                              {/* Client Vote */}
                              <div className="flex justify-between items-center">
-                                <span className="text-xs md:text-[10px] text-gray-600">Client</span>
+                                <span className="text-lg md:text-sm text-gray-600">Client</span>
                                 {editingTask.approvals?.start?.client?.status === 'pending' ? (
                                   isClient && !isEditingFrozen ? (
                                     <div className="flex gap-1 pointer-events-auto">
                                       <button onClick={() => handleApproval('start', 'approve')} className="p-1 hover:bg-green-100 text-green-600 rounded" title="Approve start"><ThumbsUp className="w-3 h-3"/></button>
                                       <button onClick={() => handleApproval('start', 'reject')} className="p-1 hover:bg-red-100 text-red-600 rounded" title="Reject start"><ThumbsDown className="w-3 h-3"/></button>
                                     </div>
-                                  ) : <span className="text-xs md:text-[10px] text-gray-400 italic">Pending</span>
+                                  ) : <span className="text-lg md:text-sm text-gray-400 italic">Pending</span>
                                 ) : (
                                    <div className="flex items-center gap-1">
-                                     <span className={`text-xs md:text-[10px] font-bold px-1.5 py-0.5 rounded capitalize ${editingTask.approvals?.start?.client?.status === 'approved' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                                     <span className={`text-lg md:text-sm font-bold px-1.5 py-0.5 rounded capitalize ${editingTask.approvals?.start?.client?.status === 'approved' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
                                         {editingTask.approvals?.start?.client?.status}
                                      </span>
                                      {isAdmin && !isEditingFrozen && (
@@ -578,17 +578,17 @@ const TaskModal: React.FC<TaskModalProps> = ({
                              </div>
                              {/* Admin Vote */}
                              <div className="flex justify-between items-center">
-                                <span className="text-xs md:text-[10px] text-gray-600">Admin</span>
+                                <span className="text-lg md:text-sm text-gray-600">Admin</span>
                                 {editingTask.approvals?.start?.admin?.status === 'pending' ? (
                                   isAdmin && !isEditingFrozen ? (
                                     <div className="flex gap-1 pointer-events-auto">
                                       <button onClick={() => handleApproval('start', 'approve', 'admin')} className="p-1 hover:bg-green-100 text-green-600 rounded" title="Approve start"><ThumbsUp className="w-3 h-3"/></button>
                                       <button onClick={() => handleApproval('start', 'reject', 'admin')} className="p-1 hover:bg-red-100 text-red-600 rounded" title="Reject start"><ThumbsDown className="w-3 h-3"/></button>
                                     </div>
-                                  ) : <span className="text-xs md:text-[10px] text-gray-400 italic">Pending</span>
+                                  ) : <span className="text-lg md:text-sm text-gray-400 italic">Pending</span>
                                 ) : (
                                    <div className="flex items-center gap-1">
-                                     <span className={`text-xs md:text-[10px] font-bold px-1.5 py-0.5 rounded capitalize ${editingTask.approvals?.start?.admin?.status === 'approved' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                                     <span className={`text-lg md:text-sm font-bold px-1.5 py-0.5 rounded capitalize ${editingTask.approvals?.start?.admin?.status === 'approved' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
                                         {editingTask.approvals?.start?.admin?.status}
                                      </span>
                                      {isAdmin && !isEditingFrozen && (
@@ -606,20 +606,20 @@ const TaskModal: React.FC<TaskModalProps> = ({
 
                        {/* End Approval */}
                        <div className="bg-gray-50 p-3 rounded-lg border border-gray-100">
-                          <p className="text-xs md:text-[10px] font-bold text-gray-500 mb-2">2. Completion Approval</p>
+                          <p className="text-lg md:text-sm font-bold text-gray-500 mb-2">2. Completion Approval</p>
                           <div className="space-y-2">
                              <div className="flex justify-between items-center">
-                                <span className="text-xs md:text-[10px] text-gray-600">Client</span>
+                                <span className="text-lg md:text-sm text-gray-600">Client</span>
                                 {editingTask.approvals?.completion?.client?.status === 'pending' ? (
                                   isClient && !isEditingFrozen ? (
                                     <div className="flex gap-1 pointer-events-auto">
                                       <button onClick={() => handleApproval('completion', 'approve')} className="p-1 hover:bg-green-100 text-green-600 rounded" title="Approve completion"><ThumbsUp className="w-3 h-3"/></button>
                                       <button onClick={() => handleApproval('completion', 'reject')} className="p-1 hover:bg-red-100 text-red-600 rounded" title="Reject completion"><ThumbsDown className="w-3 h-3"/></button>
                                     </div>
-                                  ) : <span className="text-xs md:text-[10px] text-gray-400 italic">Pending</span>
+                                  ) : <span className="text-lg md:text-sm text-gray-400 italic">Pending</span>
                                 ) : (
                                    <div className="flex items-center gap-1">
-                                     <span className={`text-xs md:text-[10px] font-bold px-1.5 py-0.5 rounded capitalize ${editingTask.approvals?.completion?.client?.status === 'approved' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                                     <span className={`text-lg md:text-sm font-bold px-1.5 py-0.5 rounded capitalize ${editingTask.approvals?.completion?.client?.status === 'approved' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
                                         {editingTask.approvals?.completion?.client?.status}
                                      </span>
                                      {isAdmin && !isEditingFrozen && (
@@ -632,17 +632,17 @@ const TaskModal: React.FC<TaskModalProps> = ({
                                 )}
                              </div>
                              <div className="flex justify-between items-center">
-                                <span className="text-xs md:text-[10px] text-gray-600">Admin</span>
+                                <span className="text-lg md:text-sm text-gray-600">Admin</span>
                                 {editingTask.approvals?.completion?.admin?.status === 'pending' ? (
                                   isAdmin && !isEditingFrozen ? (
                                     <div className="flex gap-1 pointer-events-auto">
                                       <button onClick={() => handleApproval('completion', 'approve', 'admin')} className="p-1 hover:bg-green-100 text-green-600 rounded" title="Approve completion"><ThumbsUp className="w-3 h-3"/></button>
                                       <button onClick={() => handleApproval('completion', 'reject', 'admin')} className="p-1 hover:bg-red-100 text-red-600 rounded" title="Reject completion"><ThumbsDown className="w-3 h-3"/></button>
                                     </div>
-                                  ) : <span className="text-xs md:text-[10px] text-gray-400 italic">Pending</span>
+                                  ) : <span className="text-lg md:text-sm text-gray-400 italic">Pending</span>
                                 ) : (
                                    <div className="flex items-center gap-1">
-                                     <span className={`text-xs md:text-[10px] font-bold px-1.5 py-0.5 rounded capitalize ${editingTask.approvals?.completion?.admin?.status === 'approved' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                                     <span className={`text-lg md:text-sm font-bold px-1.5 py-0.5 rounded capitalize ${editingTask.approvals?.completion?.admin?.status === 'approved' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
                                         {editingTask.approvals?.completion?.admin?.status}
                                      </span>
                                      {isAdmin && !isEditingFrozen && (
@@ -662,7 +662,7 @@ const TaskModal: React.FC<TaskModalProps> = ({
                 )}
 
                 {/* Documents Section - Just Button */}
-                <div className="p-4 border-b border-gray-200 bg-white">
+                <div className="p-3 md:p-4 border-b border-gray-200 bg-white">
                    <button 
                      onClick={onOpenDocumentModal}
                      className="w-full flex items-center justify-between p-3 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg transition-colors group"
@@ -670,7 +670,7 @@ const TaskModal: React.FC<TaskModalProps> = ({
                    >
                       <div className="flex items-center gap-2">
                          <FileIcon className="w-4 h-4 text-blue-600" />
-                         <span className="text-xs md:text-[10px] font-bold text-blue-900 uppercase">Task Documents</span>
+                         <span className="text-lg md:text-sm font-bold text-blue-900 uppercase">Task Documents</span>
                          {editingTask.documents && getValidDocumentCount(editingTask.documents) > 0 && (
                            <span className="bg-blue-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">
                              {getValidDocumentCount(editingTask.documents)}
@@ -682,22 +682,22 @@ const TaskModal: React.FC<TaskModalProps> = ({
                 </div>
 
                 {/* Comments Section */}
-                <div className="flex-1 flex flex-col p-4 overflow-hidden">
-                   <div className="flex items-center gap-2 mb-3">
-                       <MessageSquare className="w-4 h-4 text-gray-500" />
-                       <h4 className="text-xs md:text-[10px] font-bold text-gray-700 uppercase">Comments</h4>
-                   </div>
+                <div className="flex-1 flex flex-col p-3 md:p-4 overflow-hidden">
+                    <div className="flex items-center gap-2 mb-3">
+                      <MessageSquare className="w-4 h-4 text-gray-500" />
+                      <h4 className="text-base md:text-sm font-bold text-gray-700 uppercase">Comments</h4>
+                    </div>
                    
-                   <div className="flex-1 overflow-y-auto space-y-3 mb-4 pr-1">
-                      {editingTask.comments?.length === 0 && <p className="text-center text-xs md:text-[10px] text-gray-400 py-4">No comments yet. Start the discussion!</p>}
+                     <div className="flex-1 overflow-y-auto space-y-3 mb-4 pr-1">
+                     {editingTask.comments?.length === 0 && <p className="text-center text-lg md:text-sm text-gray-400 py-4">No comments yet. Start the discussion!</p>}
                       {editingTask.comments?.map(comment => {
                          const isMe = comment.userId === user.id;
                          return (
                            <div key={comment.id} className={`flex gap-2 ${isMe ? 'flex-row-reverse' : ''}`}>
-                              <div className={`p-2 rounded-lg max-w-[85%] text-sm md:text-xs ${isMe ? 'bg-blue-100 text-blue-900' : 'bg-white border border-gray-200 text-gray-700'}`}>
-                                 <p className="text-[10px] font-bold opacity-70 mb-1">{getAssigneeName(comment.userId, comment.userName)}</p>
-                                 <p>{comment.text}</p>
-                                 <p className="text-[10px] opacity-60 mt-1 text-right">{formatRelativeTime(comment.timestamp)}</p>
+                              <div className={`p-2 rounded-lg max-w-[85%] text-lg md:text-sm ${isMe ? 'bg-blue-100 text-blue-900' : 'bg-white border border-gray-200 text-gray-700'}`}>
+                                <p className="text-sm font-bold opacity-70 mb-1">{getAssigneeName(comment.userId, comment.userName)}</p>
+                                <p>{comment.text}</p>
+                                <p className="text-[11px] opacity-60 mt-1 text-right">{formatRelativeTime(comment.timestamp)}</p>
                               </div>
                            </div>
                          );
@@ -705,10 +705,10 @@ const TaskModal: React.FC<TaskModalProps> = ({
                       <div ref={commentsEndRef} />
                    </div>
 
-                   <div className={`relative ${isEditingFrozen ? 'opacity-50 pointer-events-none' : ''}`}>
+                      <div className={`relative ${isEditingFrozen ? 'opacity-50 pointer-events-none' : ''}`}>
                       <input 
                         type="text" 
-                        className="w-full p-2 pr-10 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm md:text-xs bg-white text-gray-900"
+                        className="w-full p-2 pr-10 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-lg md:text-sm bg-white text-gray-900"
                         placeholder="Type a message..."
                         value={newComment}
                         onChange={e => setNewComment(e.target.value)}
@@ -729,24 +729,24 @@ const TaskModal: React.FC<TaskModalProps> = ({
           </div>
 
           {/* Modal Footer */}
-          <div className="p-4 border-t border-gray-100 flex justify-between items-center bg-white">
+          <div className="p-3 md:p-4 border-t border-gray-100 flex flex-col md:flex-row justify-between items-start md:items-center bg-white gap-3 md:gap-0 flex-shrink-0">
             <div>
               {/* Delete button for admins - only show for existing tasks */}
               {isAdmin && editingTask.id && (
                 <button 
                   onClick={onDelete}
-                  className="px-4 py-2 text-sm md:text-xs font-medium text-red-600 hover:bg-red-50 rounded-lg transition-colors flex items-center gap-2"
+                  className="px-3 md:px-4 py-2 text-base md:text-sm font-medium text-red-600 hover:bg-red-50 rounded-lg transition-colors flex items-center gap-2"
                   title="Delete this task permanently"
                 >
-                  <Trash2 className="w-4 h-4" /> Delete Task
+                  <Trash2 className="w-4 h-4 md:w-3 md:h-3" /> Delete Task
                 </button>
               )}
             </div>
-            <div className="flex gap-3">
-              <button onClick={onClose} className="px-4 py-2 text-sm md:text-xs font-medium text-gray-600 hover:bg-gray-50 rounded-lg" title="Cancel">Cancel</button>
+              <div className="flex gap-3 w-full md:w-auto">
+              <button onClick={onClose} className="flex-1 md:flex-initial px-3 md:px-4 py-2 text-base md:text-sm font-medium text-gray-600 hover:bg-gray-50 rounded-lg" title="Cancel">Cancel</button>
               {/* Only Show Save if NOT frozen or if ADMIN */}
               {(!isEditingFrozen || isAdmin) && (
-                  <button onClick={onSave} className="px-6 py-2 text-sm md:text-xs font-bold bg-gray-900 text-white rounded-lg hover:bg-gray-800 shadow-sm" title="Save task">
+                <button onClick={onSave} className="flex-1 md:flex-initial px-4 md:px-6 py-2 text-base md:text-sm font-bold bg-gray-900 text-white rounded-lg hover:bg-gray-800 shadow-sm" title="Save task">
                       {editingTask.id ? 'Save Changes' : 'Create Task'}
                   </button>
               )}

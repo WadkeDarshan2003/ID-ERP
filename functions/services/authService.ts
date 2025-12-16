@@ -7,9 +7,7 @@ import {
   signInWithPhoneNumber,
   PhoneAuthProvider,
   signInWithCredential,
-  RecaptchaVerifier,
-  linkWithCredential,
-  getAuth
+  RecaptchaVerifier
 } from "firebase/auth";
 import { auth } from "./firebaseConfig";
 
@@ -117,32 +115,6 @@ export const verifyPhoneOTP = async (confirmationResult: any, otp: string): Prom
     return result.user;
   } catch (error) {
     console.error("Phone OTP verification error:", error);
-    throw error;
-  }
-};
-
-// Link phone credential to existing email account
-export const linkPhoneToExistingAccount = async (confirmationResult: any, otp: string, existingUserEmail: string, existingUserPassword: string): Promise<FirebaseUser> => {
-  try {
-    console.log(`🔗 Linking phone to existing account: ${existingUserEmail}`);
-    
-    // 1. Verify OTP to get phone credential
-    const phoneAuthResult = await confirmationResult.confirm(otp);
-    const phoneCredential = PhoneAuthProvider.credential(
-      confirmationResult.verificationId,
-      otp
-    );
-    
-    // 2. Sign in with existing email to get that auth session
-    const emailAuthResult = await signInWithEmailAndPassword(auth, existingUserEmail, existingUserPassword);
-    
-    // 3. Link the phone credential to the email account
-    await linkWithCredential(emailAuthResult.user, phoneCredential);
-    console.log(`✅ Phone linked successfully to account: ${existingUserEmail}`);
-    
-    return emailAuthResult.user;
-  } catch (error) {
-    console.error("Phone linking error:", error);
     throw error;
   }
 };

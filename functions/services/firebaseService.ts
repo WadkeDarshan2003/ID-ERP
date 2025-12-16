@@ -319,9 +319,9 @@ export const getUser = async (userId: string): Promise<User | null> => {
 // Claim a phone user profile (migrate from placeholder to real UID)
 export const claimPhoneUserProfile = async (uid: string, phoneNumber: string): Promise<User | null> => {
   try {
-    console.log(`📱 Phone login - UID: ${uid}, Phone: ${phoneNumber}`);
+    console.log(`📱 Looking for user profile - UID: ${uid}, Phone: ${phoneNumber}`);
     
-    // First try: Look by UID (if already linked)
+    // First try: Look up by UID directly
     const userRef = doc(db, "users", uid);
     const userSnap = await getDoc(userRef);
 
@@ -331,53 +331,53 @@ export const claimPhoneUserProfile = async (uid: string, phoneNumber: string): P
       return userData;
     }
 
-    // Second try: Search vendors by phone number (first login case)
-    console.log(`📱 UID not found, searching vendors by phone...`);
+    // Second try: Search by phone number (handle multiple formats)
+    const cleanPhone = phoneNumber.replace(/\D/g, ''); // e.g., "919960207455"
+    console.log(`📱 UID not found, searching by phone (clean: ${cleanPhone})...`);
     
-    const vendorsRef = collection(db, "vendors");
+    const usersRef = collection(db, "users");
     
-    // Normalize the phone from Firebase Auth (digits only)
-    // Firebase returns phone like "+919307710946"
-    // Firestore stores it like "919307710946" (digits only)
-    const normalizedSearchPhone = phoneNumber.replace(/\D/g, ''); // Just digits
-    console.log(`🔎 Searching with normalized phone: "${normalizedSearchPhone}"`);
-    
-    const q = query(vendorsRef, where("phone", "==", normalizedSearchPhone));
-    const querySnap = await getDocs(q);
-    
-    if (!querySnap.empty) {
-      const oldDocData = querySnap.docs[0].data() as User;
-      const oldDocId = querySnap.docs[0].id;
-      console.log(`✅ Found vendor by phone: ${normalizedSearchPhone}, oldID: ${oldDocId}`);
+    // Try multiple phone formats
+    const phoneFormats = [
+      phoneNumber,                    // Original: "+91 9960207455"
+      phoneNumber.replace(/\s/g, ''), // No spaces: "+919960207455"
+      cleanPhone,                     // Only digits: "919960207455"
+      `+${cleanPhone}`,              // With +: "+919960207455"
+    ];
+
+    for (const format of phoneFormats) {
+      const q = query(usersRef, where("phone", "==", format));
+      const querySnap = await getDocs(q);
       
-      let finalData = oldDocData;
-      
-      // NOW MIGRATE: Update document ID from temporary ID to real Firebase Auth UID
-      if (oldDocId !== uid) {
-        console.log(`🔄 Migrating document from ${oldDocId} to real UID: ${uid}`);
-        
-        // Update data with new UID
-        const updatedData = { ...oldDocData, id: uid };
-        finalData = updatedData;
-        
-        // Save to new UID location in users collection
-        await setDoc(doc(db, "users", uid), updatedData);
-        
-        // Save to new UID location in vendors collection
-        await setDoc(doc(db, "vendors", uid), updatedData);
-        
-        // Delete old temporary documents
-        if (oldDocId.startsWith('phone_')) {
-          await deleteDoc(doc(db, "users", oldDocId));
-          await deleteDoc(doc(db, "vendors", oldDocId));
-          console.log(`✅ Deleted temporary documents with ID: ${oldDocId}`);
-        }
+      if (!querySnap.empty) {
+        const userData = querySnap.docs[0].data() as User;
+        console.log(`✅ Found existing user by phone format "${format}"!`);
+        return userData;
       }
-      
-      return finalData;
     }
 
-    console.log(`❌ No vendor found with phone: ${normalizedSearchPhone}`);
+    // Third try: Look for placeholder profile
+    const placeholderId = `phone_${cleanPhone}`;
+    const placeholderRef = doc(db, "users", placeholderId);
+    const placeholderSnap = await getDoc(placeholderRef);
+
+    if (placeholderSnap.exists()) {
+      const userData = placeholderSnap.data() as User;
+      console.log(`📱 Found placeholder profile. Migrating to UID: ${uid}`);
+
+      const newUserData = { ...userData, id: uid };
+      await setDoc(doc(db, "users", uid), newUserData);
+
+      const roleCollection = userData.role.toLowerCase() + 's';
+      await setDoc(doc(db, roleCollection, uid), newUserData);
+
+      await deleteDoc(placeholderRef);
+      await deleteDoc(doc(db, roleCollection, placeholderId));
+
+      return newUserData;
+    }
+
+    console.log(`❌ No profile found for UID: ${uid}, Phone: ${phoneNumber}`);
     return null;
   } catch (error) {
     console.error("Error claiming phone profile:", error);
