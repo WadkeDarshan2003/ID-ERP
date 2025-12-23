@@ -6,13 +6,13 @@ import { getAnalytics } from "firebase/analytics";
 
 // Firebase configuration
 export const firebaseConfig = {
-  apiKey: "AIzaSyBm3qcPWMOt_AmyFmtW-0DfFYBnM-qjhCs",
+  apiKey: "",
   authDomain: "btw-erp.firebaseapp.com",
   projectId: "btw-erp",
   storageBucket: "btw-erp.firebasestorage.app",
   messagingSenderId: "700838936930",
-  appId: "1:700838936930:web:00474b6818f67f872aec3b",
-  measurementId: "G-HDRN5MET3X"
+  appId: "",
+  measurementId: ""
 };
 
 // Initialize Firebase
