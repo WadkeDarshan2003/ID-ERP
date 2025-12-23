@@ -53,7 +53,18 @@ export const useProjectCrud = () => {
   const createNewProject = async (project: Omit<Project, 'id'>) => {
     setState({ loading: true, error: null, success: false });
     try {
-      const id = await createProject(project);
+      // CRITICAL: Extract tenantId and createdBy from project object
+      // These MUST come from the project object passed in
+      const tenantId = project.tenantId || '';
+      const createdBy = project.createdBy || '';
+      
+      // Debug log to track the issue
+      if (process.env.NODE_ENV !== 'production') {
+        console.log('🔍 createNewProject - tenantId:', tenantId, 'createdBy:', createdBy);
+        console.log('🔍 createNewProject - project object:', { ...project, financials: '[...]' });
+      }
+      
+      const id = await createProject(project, tenantId, createdBy);
       setState({ loading: false, error: null, success: true });
       return id;
     } catch (error: any) {
@@ -102,7 +113,17 @@ export const useUserCrud = () => {
   const createNewUser = async (user: User) => {
     setState({ loading: true, error: null, success: false });
     try {
-      const id = await createUser(user);
+      // CRITICAL: Extract tenantId and createdBy from user object
+      const tenantId = user.tenantId || '';
+      const createdBy = user.createdBy || '';
+      
+      // Debug log to track the issue
+      if (process.env.NODE_ENV !== 'production') {
+        console.log('🔍 createNewUser - tenantId:', tenantId, 'createdBy:', createdBy);
+        console.log('🔍 createNewUser - user:', user);
+      }
+      
+      const id = await createUser(user, tenantId, createdBy);
       setState({ loading: false, error: null, success: true });
       return id;
     } catch (error: any) {

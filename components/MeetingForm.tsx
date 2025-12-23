@@ -145,14 +145,9 @@ const MeetingForm: React.FC<MeetingFormProps> = ({
               </label>
               <input
                 id="meeting-date"
-                type="text"
-                placeholder="DD/MM/YYYY"
-                title="Select meeting date in DD/MM/YYYY format"
-                value={newMeeting.date ? formatDateToIndian(newMeeting.date) : ''}
-                onChange={(e) => {
-                  const isoDate = formatIndianToISO(e.target.value);
-                  setNewMeeting(prev => ({ ...prev, date: isoDate || e.target.value }))
-                }}
+                type="date"
+                value={newMeeting.date || ''}
+                onChange={(e) => setNewMeeting(prev => ({ ...prev, date: e.target.value }))}
                 className={`w-full px-3 md:px-2 py-2 md:py-1.5 text-base md:text-sm border rounded-md focus:outline-none focus:ring-1 focus:border-gray-800
                   ${showErrors && !newMeeting.date ? 'border-red-500' : 'border-gray-200'}`}
               />

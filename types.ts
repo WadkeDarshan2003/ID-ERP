@@ -44,6 +44,8 @@ export interface User {
   company?: string; // For vendors
   specialty?: string; // For designers/vendors
   authMethod?: 'email' | 'phone'; // Authentication method for vendors (email or phone-based OTP)
+  tenantId?: string; // Multi-tenant ID for firm separation
+  createdBy?: string; // User ID who created this user
   // Vendor project metrics - aggregated from all projects
   projectMetrics?: Record<string, {
     projectName: string;
@@ -208,6 +210,8 @@ export interface Project {
   activityLog: ActivityLog[];
   documents: ProjectDocument[];
   designerChargePercentage?: number; // Design fee as percentage of project budget
+  tenantId?: string; // Multi-tenant ID for firm separation
+  createdBy?: string; // User ID who created this project
 }
 
 export interface Notification {

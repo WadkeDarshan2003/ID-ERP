@@ -38,29 +38,37 @@ export const logTimelineEvent = async (
     let validStartDate = startDate || todayFull;
     let validEndDate = endDate || todayFull;
     
-    // Validate startDate format and is a valid date
-    if (validStartDate && !/^\d{4}-\d{2}-\d{2}/.test(validStartDate)) {
-      console.warn(`Invalid startDate format: ${validStartDate}, using current timestamp instead`);
-      validStartDate = todayFull;
-    } else if (validStartDate) {
-      // Check if date is actually valid
-      const startDateObj = new Date(validStartDate);
-      if (isNaN(startDateObj.getTime())) {
-        console.warn(`Invalid startDate value: ${validStartDate}, using current timestamp instead`);
+    // Validate startDate
+    if (validStartDate) {
+      // If it's a date-only string (YYYY-MM-DD) we prefer to record actual event time
+      if (/^\d{4}-\d{2}-\d{2}$/.test(validStartDate)) {
+        // Use current full timestamp so timeline shows real creation time (avoids timezone midnight shift)
         validStartDate = todayFull;
+      } else if (!/^\d{4}-\d{2}-\d{2}/.test(validStartDate)) {
+        console.warn(`Invalid startDate format: ${validStartDate}, using current timestamp instead`);
+        validStartDate = todayFull;
+      } else {
+        const startDateObj = new Date(validStartDate);
+        if (isNaN(startDateObj.getTime())) {
+          console.warn(`Invalid startDate value: ${validStartDate}, using current timestamp instead`);
+          validStartDate = todayFull;
+        }
       }
     }
     
-    // Validate endDate format and is a valid date
-    if (validEndDate && !/^\d{4}-\d{2}-\d{2}/.test(validEndDate)) {
-      console.warn(`Invalid endDate format: ${validEndDate}, using current timestamp instead`);
-      validEndDate = todayFull;
-    } else if (validEndDate) {
-      // Check if date is actually valid
-      const endDateObj = new Date(validEndDate);
-      if (isNaN(endDateObj.getTime())) {
-        console.warn(`Invalid endDate value: ${validEndDate}, using current timestamp instead`);
+    // Validate endDate
+    if (validEndDate) {
+      if (/^\d{4}-\d{2}-\d{2}$/.test(validEndDate)) {
         validEndDate = todayFull;
+      } else if (!/^\d{4}-\d{2}-\d{2}/.test(validEndDate)) {
+        console.warn(`Invalid endDate format: ${validEndDate}, using current timestamp instead`);
+        validEndDate = todayFull;
+      } else {
+        const endDateObj = new Date(validEndDate);
+        if (isNaN(endDateObj.getTime())) {
+          console.warn(`Invalid endDate value: ${validEndDate}, using current timestamp instead`);
+          validEndDate = todayFull;
+        }
       }
     }
     
@@ -96,7 +104,7 @@ export const createTask = async (projectId: string, task: Omit<Task, 'id'>): Pro
     const cleanedTask = Object.fromEntries(
       Object.entries({ ...task }).filter(([_, v]) => v !== undefined)
     );
-    if (process.env.NODE_ENV !== 'production') console.log("Creating task with data:", cleanedTask);
+
     await setDoc(newDocRef, {
       ...cleanedTask,
       createdAt: new Date(),
@@ -115,12 +123,12 @@ export const updateTask = async (projectId: string, taskId: string, updates: Par
     const cleanedUpdates = Object.fromEntries(
       Object.entries({ ...updates }).filter(([_, v]) => v !== undefined)
     );
-    if (process.env.NODE_ENV !== 'production') console.log(`📤 Updating task ${taskId} with:`, cleanedUpdates);
+
     await updateDoc(doc(db, "projects", projectId, "tasks", taskId), {
       ...cleanedUpdates,
       updatedAt: new Date()
     });
-    if (process.env.NODE_ENV !== 'production') console.log(`✅ Task ${taskId} updated in Firestore`);
+
   } catch (error) {
     console.error("Error updating task:", error);
     throw error;
@@ -562,7 +570,7 @@ export const createTimeline = async (projectId: string, timeline: Omit<Timeline,
       createdAt: new Date(),
       updatedAt: new Date()
     });
-    if (process.env.NODE_ENV !== 'production') console.log(`✅ Timeline created: ${timeline.title}`);
+
     return newDocRef.id;
   } catch (error) {
     console.error("Error creating timeline:", error);
@@ -580,7 +588,7 @@ export const updateTimeline = async (projectId: string, timelineId: string, upda
       ...cleanedUpdates,
       updatedAt: new Date()
     });
-    if (process.env.NODE_ENV !== 'production') console.log(`✅ Timeline updated: ${timelineId}`);
+
   } catch (error) {
     console.error("Error updating timeline:", error);
     throw error;
@@ -590,7 +598,7 @@ export const updateTimeline = async (projectId: string, timelineId: string, upda
 export const deleteTimeline = async (projectId: string, timelineId: string): Promise<void> => {
   try {
     await deleteDoc(doc(db, "projects", projectId, "timelines", timelineId));
-    if (process.env.NODE_ENV !== 'production') console.log(`✅ Timeline deleted: ${timelineId}`);
+
   } catch (error) {
     console.error("Error deleting timeline:", error);
     throw error;
@@ -602,7 +610,7 @@ export const getTimelines = async (projectId: string): Promise<Timeline[]> => {
     const timelinesRef = collection(db, "projects", projectId, "timelines");
     const snapshot = await getDocs(timelinesRef);
     const timelines = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as Timeline));
-    if (process.env.NODE_ENV !== 'production') console.log(`✅ Fetched ${timelines.length} timelines for project ${projectId}`);
+
     return timelines;
   } catch (error) {
     console.error("Error fetching timelines:", error);
@@ -615,7 +623,7 @@ export const subscribeToTimelines = (projectId: string, callback: (timelines: Ti
     const timelinesRef = collection(db, "projects", projectId, "timelines");
     return onSnapshot(timelinesRef, (snapshot) => {
       const timelines = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as Timeline));
-      if (process.env.NODE_ENV !== 'production') console.log(`📥 Real-time update from timelines: ${timelines.length} timelines`);
+
       callback(timelines);
     });
   } catch (error) {
@@ -638,7 +646,7 @@ export const addChecklistItem = async (projectId: string, taskId: string, checkl
       ...cleanedChecklist,
       createdAt: new Date()
     });
-    if (process.env.NODE_ENV !== 'production') console.log(`✅ Checklist item added to task ${taskId}`);
+
     return newChecklistRef.id;
   } catch (error) {
     console.error("Error adding checklist item:", error);
@@ -656,7 +664,7 @@ export const updateChecklistItem = async (projectId: string, taskId: string, che
       ...cleanedUpdates,
       updatedAt: new Date()
     });
-    if (process.env.NODE_ENV !== 'production') console.log(`✅ Checklist item updated`);
+
   } catch (error) {
     console.error("Error updating checklist item:", error);
     throw error;
@@ -666,7 +674,7 @@ export const updateChecklistItem = async (projectId: string, taskId: string, che
 export const deleteChecklistItem = async (projectId: string, taskId: string, checklistId: string): Promise<void> => {
   try {
     await deleteDoc(doc(db, "projects", projectId, "tasks", taskId, "checklists", checklistId));
-    if (process.env.NODE_ENV !== 'production') console.log(`✅ Checklist item deleted`);
+
   } catch (error) {
     console.error("Error deleting checklist item:", error);
     throw error;
@@ -688,7 +696,7 @@ export const getTaskChecklists = async (projectId: string, taskId: string): Prom
 export const subscribeToTaskChecklists = (projectId: string, taskId: string, callback: (checklists: SubTask[]) => void): Unsubscribe => {
   return onSnapshot(collection(db, "projects", projectId, "tasks", taskId, "checklists"), (snapshot) => {
     const checklists = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as SubTask));
-    if (process.env.NODE_ENV !== 'production') console.log(`📥 Checklists updated for task ${taskId}: ${checklists.length} items`);
+
     callback(checklists);
   });
 };
@@ -707,7 +715,7 @@ export const addCommentToTask = async (projectId: string, taskId: string, commen
       ...cleanedComment,
       createdAt: new Date()
     });
-    if (process.env.NODE_ENV !== 'production') console.log(`✅ Comment added to task ${taskId}`);
+
     return newCommentRef.id;
   } catch (error) {
     console.error("Error adding comment to task:", error);
@@ -718,7 +726,7 @@ export const addCommentToTask = async (projectId: string, taskId: string, commen
 export const deleteCommentFromTask = async (projectId: string, taskId: string, commentId: string): Promise<void> => {
   try {
     await deleteDoc(doc(db, "projects", projectId, "tasks", taskId, "comments", commentId));
-    if (process.env.NODE_ENV !== 'production') console.log(`✅ Comment deleted from task`);
+
   } catch (error) {
     console.error("Error deleting task comment:", error);
     throw error;
@@ -739,7 +747,7 @@ export const getTaskComments = async (projectId: string, taskId: string): Promis
 export const subscribeToTaskComments = (projectId: string, taskId: string, callback: (comments: Comment[]) => void): Unsubscribe => {
   return onSnapshot(collection(db, "projects", projectId, "tasks", taskId, "comments"), (snapshot) => {
     const comments = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as Comment));
-    if (process.env.NODE_ENV !== 'production') console.log(`📥 Comments updated for task ${taskId}: ${comments.length} comments`);
+
     callback(comments);
   });
 };
@@ -781,7 +789,7 @@ export const subscribeToTaskApprovals = (projectId: string, taskId: string, call
     snapshot.docs.forEach(doc => {
       approvals[doc.id] = { ...doc.data(), id: doc.id };
     });
-    if (process.env.NODE_ENV !== 'production') console.log(`📥 Approvals updated for task ${taskId}`);
+
     callback(approvals);
   });
 };

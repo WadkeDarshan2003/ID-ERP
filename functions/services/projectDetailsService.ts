@@ -15,7 +15,7 @@ import {
   arrayRemove
 } from "firebase/firestore";
 import { db } from "./firebaseConfig";
-import { Task, Meeting, ProjectDocument, Comment, Role, FinancialRecord, Timeline, SubTask } from "../types";
+import { Task, Meeting, ProjectDocument, Comment, Role, FinancialRecord, Timeline, SubTask } from "../../types";
 
 // ============ AUTO-LOG TIMELINE EVENTS ============
 /**
@@ -37,30 +37,37 @@ export const logTimelineEvent = async (
     
     let validStartDate = startDate || todayFull;
     let validEndDate = endDate || todayFull;
-    
-    // Validate startDate format and is a valid date
-    if (validStartDate && !/^\d{4}-\d{2}-\d{2}/.test(validStartDate)) {
-      console.warn(`Invalid startDate format: ${validStartDate}, using current timestamp instead`);
-      validStartDate = todayFull;
-    } else if (validStartDate) {
-      // Check if date is actually valid
-      const startDateObj = new Date(validStartDate);
-      if (isNaN(startDateObj.getTime())) {
-        console.warn(`Invalid startDate value: ${validStartDate}, using current timestamp instead`);
+
+    // Validate startDate
+    if (validStartDate) {
+      // If it's a date-only string (YYYY-MM-DD) use current timestamp so timeline shows real event time
+      if (/^\d{4}-\d{2}-\d{2}$/.test(validStartDate)) {
         validStartDate = todayFull;
+      } else if (!/^\d{4}-\d{2}-\d{2}/.test(validStartDate)) {
+        console.warn(`Invalid startDate format: ${validStartDate}, using current timestamp instead`);
+        validStartDate = todayFull;
+      } else {
+        const startDateObj = new Date(validStartDate);
+        if (isNaN(startDateObj.getTime())) {
+          console.warn(`Invalid startDate value: ${validStartDate}, using current timestamp instead`);
+          validStartDate = todayFull;
+        }
       }
     }
-    
-    // Validate endDate format and is a valid date
-    if (validEndDate && !/^\d{4}-\d{2}-\d{2}/.test(validEndDate)) {
-      console.warn(`Invalid endDate format: ${validEndDate}, using current timestamp instead`);
-      validEndDate = todayFull;
-    } else if (validEndDate) {
-      // Check if date is actually valid
-      const endDateObj = new Date(validEndDate);
-      if (isNaN(endDateObj.getTime())) {
-        console.warn(`Invalid endDate value: ${validEndDate}, using current timestamp instead`);
+
+    // Validate endDate
+    if (validEndDate) {
+      if (/^\d{4}-\d{2}-\d{2}$/.test(validEndDate)) {
         validEndDate = todayFull;
+      } else if (!/^\d{4}-\d{2}-\d{2}/.test(validEndDate)) {
+        console.warn(`Invalid endDate format: ${validEndDate}, using current timestamp instead`);
+        validEndDate = todayFull;
+      } else {
+        const endDateObj = new Date(validEndDate);
+        if (isNaN(endDateObj.getTime())) {
+          console.warn(`Invalid endDate value: ${validEndDate}, using current timestamp instead`);
+          validEndDate = todayFull;
+        }
       }
     }
     

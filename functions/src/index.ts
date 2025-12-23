@@ -4,6 +4,13 @@
 
 import * as functions from "firebase-functions";
 import nodemailer from "nodemailer";
+import * as admin from 'firebase-admin';
+import { randomUUID } from 'crypto';
+
+// Initialize admin SDK for functions
+if (!admin.apps.length) {
+  admin.initializeApp();
+}
 
 // Create Nodemailer transporter
 const transporter = nodemailer.createTransport({
@@ -126,3 +133,85 @@ export const health = functions.https.onRequest((req, res) => {
     timestamp: new Date(),
   });
 });
+
+// --- initTenantForAdmin callable (migrated here) ---
+const COLLECTIONS_TO_MIGRATE = [
+  'projects', 'vendors', 'clients', 'designers', 'tasks', 'users'
+];
+
+export const initTenantForAdmin = functions.https.onCall(async (data: any, context: any) => {
+  if (!context || !context.auth) {
+    throw new functions.https.HttpsError('unauthenticated', 'Must be signed in');
+  }
+
+  const callerUid = context.auth.uid as string;
+  const callerClaims = (context.auth.token || {}) as any;
+
+  if (callerClaims.tenantId) {
+    return { message: 'Tenant already initialized', tenantId: callerClaims.tenantId };
+  }
+
+  const tenantId = (data && data.tenantId) ? String(data.tenantId) : `tenant_${randomUUID()}`;
+  const tenantName = (data && data.name) ? String(data.name) : 'New Tenant';
+
+  const db = admin.firestore();
+
+  await db.doc(`tenants/${tenantId}`).set({
+    name: tenantName,
+    createdBy: callerUid,
+    createdAt: admin.firestore.FieldValue.serverTimestamp()
+  });
+
+  await admin.auth().setCustomUserClaims(callerUid, { tenantId, role: 'admin' });
+
+  const userRecord = await admin.auth().getUser(callerUid);
+  await db.doc(`tenants/${tenantId}/users/${callerUid}`).set({
+    email: userRecord.email || null,
+    displayName: userRecord.displayName || null,
+    role: 'admin',
+    createdAt: admin.firestore.FieldValue.serverTimestamp()
+  });
+
+  for (const colName of COLLECTIONS_TO_MIGRATE) {
+    const colRef = db.collection(colName);
+    const snapshot = await colRef.where('tenantId', '==', null).get().catch(async () => {
+      return await colRef.get();
+    });
+
+    const docsToUpdate: FirebaseFirestore.DocumentSnapshot[] = [];
+    for (const doc of snapshot.docs) {
+      const d = doc.data();
+      if (!d || d.tenantId) continue;
+      docsToUpdate.push(doc);
+    }
+
+    if (docsToUpdate.length === 0) continue;
+
+    let batch = db.batch();
+    let opCount = 0;
+    for (const doc of docsToUpdate) {
+      batch.update(doc.ref, { tenantId });
+      opCount++;
+      if (opCount >= 450) {
+        await batch.commit();
+        batch = db.batch();
+        opCount = 0;
+      }
+    }
+    if (opCount > 0) await batch.commit();
+  }
+
+  return { message: 'Tenant initialized', tenantId };
+});
+
+/**
+ * Register new admin with automatic Firestore document creation
+ * This bypasses client-side security rules
+ */
+// Disabled - using direct client-side writes with permissive Firestore rules instead
+// export const registerAdmin = functions.https.onCall(async (data: any, context: any) => {
+//   ...
+// });
+
+// Export additional functions implemented in separate files
+export * from './initTenantForAdmin';

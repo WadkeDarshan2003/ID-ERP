@@ -135,6 +135,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
   const [isDocDetailOpen, setIsDocDetailOpen] = useState(false);
   const [documentCommentText, setDocumentCommentText] = useState('');
   const [isTaskDocModalOpen, setIsTaskDocModalOpen] = useState(false);
+  const [isSavingTask, setIsSavingTask] = useState(false);
 
   // Financials State
   const [isTransactionModalOpen, setIsTransactionModalOpen] = useState(false);
@@ -558,6 +559,20 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
     try {
       setIsSavingMeeting(true);
       await createMeeting(project.id, meeting);
+      // Log timeline event for meeting creation
+      try {
+        const attendees = meeting.attendees?.map(id => getAssigneeName(id)).join(', ') || 'No attendees';
+        await logTimelineEvent(
+          project.id,
+          `Meeting: ${meeting.title}`,
+          `Type: ${meeting.type}. Attendees: ${attendees}`,
+          'planned',
+          meeting.date,
+          meeting.date
+        );
+      } catch (err) {
+        if (process.env.NODE_ENV !== 'production') console.warn('Failed to log meeting timeline event', err);
+      }
       addNotification('Success', 'Meeting added successfully', 'success');
     } catch (error) {
       console.error('Error creating meeting:', error);
@@ -573,6 +588,20 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
     try {
       setIsSavingMeeting(true);
       await updateMeeting(project.id, meeting.id, meeting);
+      // Log timeline event for meeting update
+      try {
+        const attendees = meeting.attendees?.map(id => getAssigneeName(id)).join(', ') || 'No attendees';
+        await logTimelineEvent(
+          project.id,
+          `Meeting Updated: ${meeting.title}`,
+          `Type: ${meeting.type}. Attendees: ${attendees}`,
+          'in-progress',
+          meeting.date,
+          meeting.date
+        );
+      } catch (err) {
+        if (process.env.NODE_ENV !== 'production') console.warn('Failed to log meeting update timeline event', err);
+      }
       addNotification('Success', 'Meeting updated successfully', 'success');
     } catch (error) {
       console.error('Error updating meeting:', error);
@@ -734,7 +763,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
 
 
   const getInputClass = (isError: boolean, disabled: boolean = false) => `
-    w-full p-2 border rounded-lg transition-all focus:outline-none placeholder-gray-400
+    w-full p-2 border rounded-lg transition-all focus:outline-none placeholder-gray-400 text-base md:text-sm
     ${disabled ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : 'bg-white text-gray-900'}
     ${isError ? 'border-red-500 ring-1 ring-red-500' : 'border-gray-300 focus:ring-2 focus:ring-gray-900 focus:border-transparent'}
   `;
@@ -1718,17 +1747,22 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
   };
 
   const handleSaveTask = async () => {
-    // Validation
-    if (!editingTask?.title || !editingTask.startDate || !editingTask.dueDate) {
+     if (isSavingTask) return; // prevent duplicate saves
+     setIsSavingTask(true);
+
+     // Validation
+     if (!editingTask?.title || !editingTask.startDate || !editingTask.dueDate) {
        setShowTaskErrors(true);
        addNotification('Validation Error', `Please complete all required fields for "${project.name}"`, 'error', undefined, project.id, project.name);
+       setIsSavingTask(false);
        return;
-    }
+     }
 
-    if (isTaskFrozen(editingTask.status) && !isAdmin) {
+     if (isTaskFrozen(editingTask.status) && !isAdmin) {
        addNotification("Action Denied", "This task is frozen and cannot be modified.", "error");
+       setIsSavingTask(false);
        return;
-    }
+     }
     
     // Default structure for new tasks
     const defaultApprovals = {
@@ -1888,9 +1922,11 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       setIsTaskModalOpen(false);
       setEditingTask(null);
       setShowTaskErrors(false);
+      setIsSavingTask(false);
     } catch (error: any) {
       console.error('Error saving task:', error);
       addNotification('Error', 'Unable to save task. Please check your input and try again.', 'error', undefined, project.id, project.name);
+      setIsSavingTask(false);
     }
   };
 
@@ -3810,11 +3846,11 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                     setIsAdditionalBudgetModalOpen(true);
                                     setAdditionalBudgetAmount('');
                                     setAdditionalBudgetDescription('');
-                                }}
-                                className="text-xs bg-gray-800 hover:bg-gray-700 text-emerald-400 px-3 py-1 rounded border border-gray-700 transition-colors flex items-center gap-1"
+                              }}
+                              className="text-sm md:text-xs bg-gray-800 hover:bg-gray-700 text-emerald-400 px-4 py-2 md:px-3 md:py-1 rounded border border-gray-700 transition-colors flex items-center gap-2"
                                 title="Add to Project Budget"
                             >
-                                <Plus className="w-3.5 h-3.5" /> Add Funds
+                              <Plus className="w-4 h-4 md:w-3.5 md:h-3.5" /> Add Funds
                             </button>
                         )}
                     </div>
@@ -3901,27 +3937,27 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                     <div className="flex gap-2 relative">
                         {/* Filter Button */}
                         <button 
-                            onClick={() => setIsFilterOpen(!isFilterOpen)}
-                            className={`text-sm md:text-xs border px-3 py-1.5 rounded-lg hover:bg-white text-gray-700 flex items-center gap-1.5 font-medium transition-colors ${transactionFilter !== 'all' ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-white border-gray-300'}`}
+                          onClick={() => setIsFilterOpen(!isFilterOpen)}
+                          className={`text-sm md:text-xs border px-3 py-2 md:px-3 md:py-1.5 rounded-lg hover:bg-white text-gray-700 flex items-center gap-2 font-medium transition-colors ${transactionFilter !== 'all' ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-white border-gray-300'}`}
                         >
-                            <Filter className="w-3.5 h-3.5"/> 
-                            <span className="capitalize hidden sm:inline">{transactionFilter === 'all' ? 'Filter' : transactionFilter}</span>
+                          <Filter className="w-4 h-4 md:w-3.5 md:h-3.5"/> 
+                          <span className="capitalize hidden sm:inline">{transactionFilter === 'all' ? 'Filter' : transactionFilter}</span>
                         </button>
                         
                         {/* Filter Dropdown */}
                         {isFilterOpen && (
                             <>
                                 <div className="fixed inset-0 z-10" onClick={() => setIsFilterOpen(false)}></div>
-                                <div className="absolute right-0 top-9 bg-white shadow-xl border border-gray-100 rounded-lg p-1 z-20 w-32 flex flex-col gap-0.5 animate-fade-in">
-                                    {['all', 'income', 'expense', 'pending', 'overdue'].map(f => (
-                                        <button 
-                                            key={f}
-                                            onClick={() => { setTransactionFilter(f as any); setIsFilterOpen(false); }}
-                                            className={`text-left text-xs px-2.5 py-1.5 rounded capitalize font-medium ${transactionFilter === f ? 'bg-gray-100 text-gray-900' : 'text-gray-600 hover:bg-gray-50'}`}
-                                        >
-                                            {f}
-                                        </button>
-                                    ))}
+                                <div className="absolute right-0 top-9 bg-white shadow-xl border border-gray-100 rounded-lg p-2 z-20 w-40 flex flex-col gap-1 animate-fade-in">
+                                  {['all', 'income', 'expense', 'pending', 'overdue'].map(f => (
+                                    <button 
+                                      key={f}
+                                      onClick={() => { setTransactionFilter(f as any); setIsFilterOpen(false); }}
+                                      className={`text-left text-sm md:text-xs px-3 py-2 md:px-2.5 md:py-1.5 rounded capitalize font-medium ${transactionFilter === f ? 'bg-gray-100 text-gray-900' : 'text-gray-600 hover:bg-gray-50'}`}
+                                    >
+                                      {f}
+                                    </button>
+                                  ))}
                                 </div>
                             </>
                         )}
@@ -3930,25 +3966,25 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                 <div className="overflow-x-auto scrollbar-thin">
                 <table className="w-full text-sm text-left">
                 <thead className="bg-white text-gray-600 border-b border-gray-100 sticky top-0 z-10">
-                    <tr>
-                    <th className="px-4 py-2 font-semibold whitespace-nowrap text-left">Date</th>
-                    <th className="px-4 py-2 font-semibold whitespace-nowrap">Paid By</th>
-                    <th className="px-4 py-2 font-semibold whitespace-nowrap text-left">Received By</th>
-                    <th className="px-4 py-2 font-semibold whitespace-nowrap text-center">Type</th>
-                    <th className="px-4 py-2 font-semibold whitespace-nowrap text-center">Mode</th>
-                    <th className="px-4 py-2 font-semibold whitespace-nowrap text-center">Status</th>
-                    <th className="px-4 py-2 font-semibold whitespace-nowrap text-center">Amount</th>
-                    <th className="px-4 py-2 font-semibold whitespace-nowrap text-center">Approvals</th>
-                    <th className="px-2 py-2 font-semibold text-center w-8"></th>
-                    </tr>
+                  <tr>
+                  <th className="px-4 py-2 font-semibold whitespace-nowrap text-left text-sm md:text-sm">Date</th>
+                  <th className="px-4 py-2 font-semibold whitespace-nowrap text-sm md:text-sm">Paid By</th>
+                  <th className="px-4 py-2 font-semibold whitespace-nowrap text-left text-sm md:text-sm">Received By</th>
+                  <th className="px-4 py-2 font-semibold whitespace-nowrap text-center text-sm md:text-sm">Type</th>
+                  <th className="px-4 py-2 font-semibold whitespace-nowrap text-center text-sm md:text-sm">Mode</th>
+                  <th className="px-4 py-2 font-semibold whitespace-nowrap text-center text-sm md:text-sm">Status</th>
+                  <th className="px-4 py-2 font-semibold whitespace-nowrap text-center text-sm md:text-sm">Amount</th>
+                  <th className="px-4 py-2 font-semibold whitespace-nowrap text-center text-sm md:text-sm">Approvals</th>
+                  <th className="px-2 py-2 font-semibold text-center w-8 text-sm md:text-sm"></th>
+                  </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-50">
                     {filteredFinancials.length === 0 && (
-                        <tr>
-                            <td colSpan={9} className="text-center py-8 text-gray-400 text-sm">
-                                {currentFinancials.length === 0 ? 'No transactions recorded.' : 'No transactions match filters.'}
-                            </td>
-                        </tr>
+                      <tr>
+                        <td colSpan={9} className="text-center py-8 text-gray-500 text-sm md:text-sm font-medium">
+                          {currentFinancials.length === 0 ? 'No transactions recorded.' : 'No transactions match filters.'}
+                        </td>
+                      </tr>
                     )}
                     {filteredFinancials.map(fin => (
                     <tr key={fin.id} className="hover:bg-gray-50 group transition-colors">
@@ -5904,10 +5940,10 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
            <div className="bg-white rounded-xl shadow-xl w-full max-w-4xl h-[90vh] flex flex-col animate-fade-in overflow-hidden">
               {/* Modal Header */}
               <div className="p-4 border-b border-gray-100 flex justify-between items-center bg-gray-50">
-                <div className="flex items-center gap-2">
-                   <h3 className="text-lg font-bold text-gray-900">{editingTask.id ? 'Edit Task Details' : 'Create New Task'}</h3>
-                   {editingTask.id && <span className="text-xs text-gray-500 bg-gray-200 px-2 py-0.5 rounded">ID: {editingTask.id}</span>}
-                </div>
+               <div className="flex items-center gap-2">
+                 <h3 className="text-lg md:text-base font-bold text-gray-900">{editingTask.id ? 'Edit Task Details' : 'Create New Task'}</h3>
+                 {editingTask.id && <span className="text-sm md:text-xs text-gray-500 bg-gray-200 px-2 py-0.5 rounded">ID: {editingTask.id}</span>}
+               </div>
                 <button onClick={() => setIsTaskModalOpen(false)} className="text-gray-400 hover:text-gray-600" title="Close task modal"><X/></button>
               </div>
 
@@ -5955,38 +5991,38 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                     <div className="space-y-4">
                        {/* ADMIN ACTIONS */}
                        {isAdmin && (
-                           <div className="bg-gray-900 p-3 rounded-lg pointer-events-auto">
-                               <p className="text-xs font-bold text-gray-400 uppercase mb-2 flex items-center gap-1"><Shield className="w-3 h-3"/> Admin Actions</p>
+                             <div className="bg-gray-900 p-3 rounded-lg pointer-events-auto">
+                               <p className="text-base md:text-sm font-bold text-gray-400 uppercase mb-2 flex items-center gap-1"><Shield className="w-4 h-4 md:w-3 md:h-3"/> Admin Actions</p>
                                <div className="flex gap-2">
                                    {editingTask.status === TaskStatus.ON_HOLD ? (
                                        <button 
                                            onClick={() => setEditingTask({...editingTask, status: deriveStatus(editingTask, TaskStatus.IN_PROGRESS)})}
-                                           className="flex-1 bg-green-600 hover:bg-green-700 text-white text-xs font-bold py-2 rounded flex items-center justify-center gap-1"
+                                            className="flex-1 bg-green-600 hover:bg-green-700 text-white text-base md:text-sm font-bold py-2 rounded flex items-center justify-center gap-1"
                                        >
-                                           <PlayCircle className="w-3 h-3"/> Resume Task
+                                             <PlayCircle className="w-4 h-4 md:w-3 md:h-3"/> Resume Task
                                        </button>
                                    ) : (
                                        <button 
                                            onClick={() => setEditingTask({...editingTask, status: TaskStatus.ON_HOLD})}
-                                           className="flex-1 bg-yellow-600 hover:bg-yellow-700 text-white text-xs font-bold py-2 rounded flex items-center justify-center gap-1"
+                                              className="flex-1 bg-yellow-600 hover:bg-yellow-700 text-white text-base md:text-sm font-bold py-2 rounded flex items-center justify-center gap-1"
                                        >
-                                           <PauseCircle className="w-3 h-3"/> Put On Hold
+                                             <PauseCircle className="w-4 h-4 md:w-3 md:h-3"/> Put On Hold
                                        </button>
                                    )}
 
                                    {editingTask.status === TaskStatus.ABORTED ? (
                                        <button 
                                            onClick={() => setEditingTask({...editingTask, status: deriveStatus(editingTask, TaskStatus.IN_PROGRESS)})}
-                                           className="flex-1 bg-gray-700 hover:bg-gray-600 text-white text-xs font-bold py-2 rounded flex items-center justify-center gap-1"
+                                             className="flex-1 bg-gray-700 hover:bg-gray-600 text-white text-base md:text-sm font-bold py-2 rounded flex items-center justify-center gap-1"
                                        >
-                                           <History className="w-3 h-3"/> Restore
+                                             <History className="w-4 h-4 md:w-3 md:h-3"/> Restore
                                        </button>
                                    ) : (
                                        <button 
                                            onClick={() => setEditingTask({...editingTask, status: TaskStatus.ABORTED})}
-                                           className="flex-1 bg-red-600 hover:bg-red-700 text-white text-xs font-bold py-2 rounded flex items-center justify-center gap-1"
+                                             className="flex-1 bg-red-600 hover:bg-red-700 text-white text-base md:text-sm font-bold py-2 rounded flex items-center justify-center gap-1"
                                        >
-                                           <Ban className="w-3 h-3"/> Abort Task
+                                             <Ban className="w-4 h-4 md:w-3 md:h-3"/> Abort Task
                                        </button>
                                    )}
                                </div>
@@ -5994,9 +6030,11 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                        )}
 
                        <div>
-                          <label className="text-xs font-bold text-gray-500 uppercase">Title <span className="text-red-500">*</span></label>
+                          <label className="text-base md:text-sm font-bold text-gray-500 uppercase">Title <span className="text-red-500">*</span></label>
                           {canEditProject ? (
                             <input 
+                              id={`task-title-${project.id}-${editingTask.id || 'new'}`}
+                              aria-label="Task title"
                               type="text" 
                               className={`${getInputClass(showTaskErrors && !editingTask.title, isEditingFrozen)} font-semibold mt-1`}
                               placeholder="Task title"
@@ -6009,7 +6047,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                        </div>
 
                        <div>
-                          <label className="text-xs font-bold text-gray-500 uppercase">Category</label>
+                          <label className="text-base md:text-sm font-bold text-gray-500 uppercase">Category</label>
                           {canEditProject ? (
                             <select 
                               className={`${getInputClass(false, isEditingFrozen)} mt-1`}
@@ -6028,47 +6066,43 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                        </div>
 
                        <div className="grid grid-cols-2 gap-4">
-                          <div>
-                            <label className="text-xs font-bold text-gray-500 uppercase">Start Date <span className="text-red-500">*</span></label>
-                            {canEditProject ? (
+                            <div>
+                             <label htmlFor={`task-start-${project.id}-${editingTask.id || 'new'}`} className="text-base md:text-sm font-bold text-gray-500 uppercase">Start Date <span className="text-red-500">*</span></label>
+                             {canEditProject ? (
                                <input 
-                                  type="text" 
-                                  placeholder="DD/MM/YYYY"
-                                  className={`${getInputClass(showTaskErrors && !editingTask.startDate, isEditingFrozen)} mt-1`} 
-                                  title="Start date in DD/MM/YYYY format"
-                                  value={formatDateToIndian(editingTask.startDate)} 
-                                  onChange={e => {
-                                    const isoDate = formatIndianToISO(e.target.value);
-                                    setEditingTask({...editingTask, startDate: isoDate || e.target.value})
-                                  }} 
-                                  disabled={isEditingFrozen}
+                                 id={`task-start-${project.id}-${editingTask.id || 'new'}`}
+                                 type="date" 
+                                 placeholder="Select start date"
+                                 aria-label="Task start date"
+                                 className={`${getInputClass(showTaskErrors && !editingTask.startDate, isEditingFrozen)} mt-1`} 
+                                 value={editingTask.startDate || ''} 
+                                 onChange={e => setEditingTask({...editingTask, startDate: e.target.value})} 
+                                 disabled={isEditingFrozen}
                                />
-                            ) : <p className="text-sm mt-1 text-gray-800">{formatDateToIndian(editingTask.startDate)}</p>}
-                          </div>
-                          <div>
-                            <label className="text-xs font-bold text-gray-500 uppercase">Due Date <span className="text-red-500">*</span></label>
-                            {canEditProject ? (
+                             ) : <p className="text-sm mt-1 text-gray-800">{formatDateToIndian(editingTask.startDate)}</p>}
+                            </div>
+                            <div>
+                             <label htmlFor={`task-due-${project.id}-${editingTask.id || 'new'}`} className="text-base md:text-sm font-bold text-gray-500 uppercase">Due Date <span className="text-red-500">*</span></label>
+                             {canEditProject ? (
                                <input 
-                                  type="text" 
-                                  placeholder="DD/MM/YYYY"
-                                  className={`${getInputClass(showTaskErrors && !editingTask.dueDate, isEditingFrozen)} mt-1`} 
-                                  title="Due date in DD/MM/YYYY format"
-                                  value={formatDateToIndian(editingTask.dueDate)} 
-                                  onChange={e => {
-                                    const isoDate = formatIndianToISO(e.target.value);
-                                    setEditingTask({...editingTask, dueDate: isoDate || e.target.value})
-                                  }} 
-                                  disabled={isEditingFrozen}
+                                 id={`task-due-${project.id}-${editingTask.id || 'new'}`}
+                                 type="date" 
+                                 placeholder="Select due date"
+                                 aria-label="Task due date"
+                                 className={`${getInputClass(showTaskErrors && !editingTask.dueDate, isEditingFrozen)} mt-1`} 
+                                 value={editingTask.dueDate || ''} 
+                                 onChange={e => setEditingTask({...editingTask, dueDate: e.target.value})} 
+                                 disabled={isEditingFrozen}
                                />
-                            ) : <p className="text-sm mt-1 text-gray-800">{formatDateToIndian(editingTask.dueDate)}</p>}
-                          </div>
+                             ) : <p className="text-sm mt-1 text-gray-800">{formatDateToIndian(editingTask.dueDate)}</p>}
+                            </div>
                        </div>
 
                         {/* Dependencies Selection */}
                         <div>
-                          <div className="flex items-center gap-2 mb-1">
-                             <Link2 className="w-3 h-3 text-gray-400" />
-                             <label className="text-xs font-bold text-gray-500 uppercase">Dependencies</label>
+                            <div className="flex items-center gap-2 mb-1">
+                            <Link2 className="w-4 h-4 md:w-3 md:h-3 text-gray-400" />
+                            <label className="text-base md:text-sm font-bold text-gray-500 uppercase">Dependencies</label>
                           </div>
                           {canEditProject ? (
                             <div className={`mt-1 p-2 border rounded max-h-24 overflow-y-auto bg-white border-gray-200 ${isEditingFrozen ? 'opacity-50' : ''}`}>
@@ -6082,11 +6116,11 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                             disabled={isEditingFrozen}
                                             className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                                         />
-                                        <span className="text-sm text-gray-700 truncate">{t.title}</span>
-                                        <span className="text-xs text-gray-400 ml-auto">Ends: {t.dueDate}</span>
+                                        <span className="text-base md:text-sm text-gray-700 truncate">{t.title}</span>
+                                        <span className="text-sm md:text-xs text-gray-400 ml-auto">Ends: {t.dueDate}</span>
                                     </label>
                                   ))
-                              ) : <p className="text-xs text-gray-400 italic">No other tasks available</p>}
+                              ) : <p className="text-sm md:text-xs text-gray-400 italic">No other tasks available</p>}
                             </div>
                           ) : (
                              <div className="mt-1 text-sm text-gray-600">
@@ -6102,8 +6136,8 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                           )}
                         </div>
 
-                       <div>
-                          <label className="text-xs font-bold text-gray-500 uppercase">Assignee & Priority</label>
+                           <div>
+                             <label className="text-base md:text-sm font-bold text-gray-500 uppercase">Assignee & Priority</label>
                           <div className="flex gap-4 mt-1">
                              {canEditProject ? (
                                <select 
@@ -6118,7 +6152,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                     <option key={u.id} value={u.id}>{u.name}</option>
                                   ))}
                                </select>
-                             ) : <p className="flex-1 text-sm bg-gray-50 p-2 rounded text-gray-800">{getAssigneeName(editingTask.assigneeId || '')}</p>}
+                             ) : <p className="flex-1 text-base md:text-sm bg-gray-50 p-2 rounded text-gray-800">{getAssigneeName(editingTask.assigneeId || '')}</p>}
 
                              {canEditProject ? (
                                <select 
@@ -6131,46 +6165,46 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                   <option value="medium">Medium</option>
                                   <option value="high">High</option>
                                </select>
-                             ) : <span className="p-2 border rounded bg-gray-50 uppercase text-xs font-bold flex items-center text-gray-800">{editingTask.priority}</span>}
+                             ) : <span className="p-2 border rounded bg-gray-50 uppercase text-base md:text-sm font-bold flex items-center text-gray-800">{editingTask.priority}</span>}
                           </div>
                        </div>
                        
                        {/* Status Display - Removed generic dropdown */}
                        <div>
-                          <label className="text-xs font-bold text-gray-500 uppercase">Current Status</label>
+                          <label className="text-base md:text-sm font-bold text-gray-500 uppercase">Current Status</label>
                           <div className={`mt-1 w-full p-2 border rounded bg-gray-50 text-gray-700 font-bold flex justify-between items-center flex-wrap gap-2 ${isEditingFrozen ? 'border-red-300 bg-red-50' : 'border-gray-200'}`}>
                               <span>{editingTask.status || TaskStatus.TODO}</span>
                               {editingTask.status === TaskStatus.REVIEW && (
                                 <div className="flex gap-1 flex-wrap">
                                   {editingTask.approvals?.completion?.client?.status === 'approved' && editingTask.approvals?.completion?.admin?.status === 'approved' && (
-                                    <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded font-normal">Approved by Both</span>
+                                    <span className="text-base md:text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded font-normal">Approved by Both</span>
                                   )}
                                   {editingTask.approvals?.completion?.client?.status === 'approved' && !editingTask.approvals?.completion?.admin?.status && (
-                                    <span className="text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded font-normal">Waiting for Admin Approval</span>
+                                    <span className="text-base md:text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded font-normal">Waiting for Admin Approval</span>
                                   )}
                                   {editingTask.approvals?.completion?.admin?.status === 'approved' && !editingTask.approvals?.completion?.client?.status && (
-                                    <span className="text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded font-normal">Waiting for Client Approval</span>
+                                    <span className="text-base md:text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded font-normal">Waiting for Client Approval</span>
                                   )}
                                   {!editingTask.approvals?.completion?.client?.status && !editingTask.approvals?.completion?.admin?.status && (
-                                    <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded font-normal">Under Review</span>
+                                    <span className="text-base md:text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded font-normal">Under Review</span>
                                   )}
                                   {editingTask.approvals?.completion?.client?.status === 'rejected' && (
-                                    <span className="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded font-normal">Rejected by Client</span>
+                                    <span className="text-base md:text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded font-normal">Rejected by Client</span>
                                   )}
                                   {editingTask.approvals?.completion?.designer?.status === 'rejected' && (
-                                    <span className="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded font-normal">Rejected by Designer</span>
+                                    <span className="text-base md:text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded font-normal">Rejected by Designer</span>
                                   )}
                                 </div>
                               )}
-                              <span className="text-xs font-normal text-gray-400 italic">
+                                <span className="text-base md:text-xs font-normal text-gray-400 italic">
                                   {isEditingFrozen ? 'Frozen by Admin' : 'Auto-updated via progress'}
-                              </span>
+                                </span>
                           </div>
                        </div>
 
                        {/* Subtasks */}
                        <div className="pt-4 border-t border-gray-100 flex flex-col h-64">
-                         <label className="text-xs font-bold text-gray-700 uppercase mb-2 block">Checklist</label>
+                         <label className="text-base md:text-sm font-bold text-gray-700 uppercase mb-2 block">Checklist</label>
                          <div className="space-y-2 flex-1 overflow-y-auto pr-2">
                             {editingTask.subtasks?.map((st, idx) => (
                               <div key={st.id} className="flex items-center gap-2 p-2 rounded transition-opacity" style={{opacity: ((!canEditProject && user.id !== editingTask.assigneeId) || isTaskBlocked(editingTask) || isEditingFrozen) ? 0.5 : 1}}>
@@ -6187,20 +6221,21 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                    }}
                                    className="disabled:opacity-50 disabled:cursor-not-allowed"
                                  />
-                                 {canEditProject ? (
-                                   <input 
-                                      type="text" 
-                                      value={st.title}
-                                      placeholder="Subtask title"
-                                      disabled={isEditingFrozen}
-                                      onChange={(e) => {
-                                         const newSubs = [...(editingTask.subtasks || [])];
-                                         newSubs[idx].title = e.target.value;
-                                         setEditingTask({...editingTask, subtasks: newSubs});
-                                      }}
-                                      className="flex-1 p-1 border-b border-transparent focus:border-gray-300 outline-none text-sm bg-white text-gray-900 disabled:bg-gray-100 disabled:text-gray-500 disabled:cursor-not-allowed"
-                                    />
-                                 ) : <span className={`flex-1 text-sm pointer-events-none ${st.isCompleted ? 'line-through text-gray-400' : 'text-gray-800'}`}>{st.title}</span>}
+                                {canEditProject ? (
+                                  <input 
+                                    type="text" 
+                                    aria-label={`Subtask ${idx + 1} title`}
+                                    value={st.title}
+                                    placeholder="Subtask title"
+                                    disabled={isEditingFrozen}
+                                    onChange={(e) => {
+                                      const newSubs = [...(editingTask.subtasks || [])];
+                                      newSubs[idx].title = e.target.value;
+                                      setEditingTask({...editingTask, subtasks: newSubs});
+                                    }}
+                                    className="flex-1 p-1 border-b border-transparent focus:border-gray-300 outline-none text-sm bg-white text-gray-900 disabled:bg-gray-100 disabled:text-gray-500 disabled:cursor-not-allowed"
+                                  />
+                                ) : <span className={`flex-1 text-sm pointer-events-none ${st.isCompleted ? 'line-through text-gray-400' : 'text-gray-800'}`}>{st.title}</span>}
                                  
                                  {canEditProject && !isEditingFrozen && (
                                    <button 
@@ -6217,7 +6252,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                  )}
                               </div>
                             ))}
-                            {(!editingTask.subtasks || editingTask.subtasks.length === 0) && <p className="text-xs text-gray-400 italic">No checklist items</p>}
+                            {(!editingTask.subtasks || editingTask.subtasks.length === 0) && <p className="text-base md:text-sm text-gray-400 italic">No checklist items</p>}
                          </div>
                          {canEditProject && !isEditingFrozen && (
                            <button 
@@ -6344,18 +6379,18 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                     )}
 
                     {/* Documents Section - Just Button */}
-                    <div className="p-4 border-b border-gray-200 bg-white">
+                           <div className="p-4 border-b border-gray-200 bg-white">
                        <button 
                          onClick={() => {
                             setSelectedDocument(null);
                             setIsTaskDocModalOpen(true);
                          }}
-                         className="w-full flex items-center justify-between p-3 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg transition-colors group"
+                         className="w-full flex items-center justify-between p-4 md:p-3 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg transition-colors group"
                          title="View task documents"
                        >
                           <div className="flex items-center gap-2">
                              <FileIcon className="w-4 h-4 text-blue-600" />
-                             <span className="text-xs font-bold text-blue-900 uppercase">Task Documents</span>
+                             <span className="text-base md:text-sm font-bold text-blue-900 uppercase">Task Documents</span>
                              {editingTask.documents && getValidDocumentCount(editingTask.documents) > 0 && (
                                <span className="bg-blue-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">
                                  {getValidDocumentCount(editingTask.documents)}
@@ -6368,19 +6403,19 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
 
                     {/* Comments Section */}
                     <div className="flex-1 flex flex-col p-4 overflow-hidden">
-                       <div className="flex items-center gap-2 mb-3">
-                           <MessageSquare className="w-4 h-4 text-gray-500" />
-                           <h4 className="text-xs font-bold text-gray-700 uppercase">Comments</h4>
-                       </div>
+                         <div className="flex items-center gap-2 mb-3">
+                           <MessageSquare className="w-5 h-5 text-gray-500" />
+                           <h4 className="text-base md:text-sm font-bold text-gray-700 uppercase">Comments</h4>
+                         </div>
                        
                        <div className="flex-1 overflow-y-auto space-y-3 mb-4 pr-1">
-                          {editingTask.comments?.length === 0 && <p className="text-center text-xs text-gray-400 py-4">No comments yet. Start the discussion!</p>}
+                          {editingTask.comments?.length === 0 && <p className="text-center text-base md:text-sm text-gray-400 py-4">No comments yet. Start the discussion!</p>}
                           {editingTask.comments?.map(comment => {
                              const isMe = comment.userId === user.id;
                              return (
                                <div key={comment.id} className={`flex gap-2 ${isMe ? 'flex-row-reverse' : ''}`}>
-                                  <div className={`p-2 rounded-lg max-w-[85%] text-sm ${isMe ? 'bg-blue-100 text-blue-900' : 'bg-white border border-gray-200 text-gray-700'}`}>
-                                     <p className="text-[10px] font-bold opacity-70 mb-1">{getAssigneeName(comment.userId, comment.userName)}</p>
+                                   <div className={`p-3 rounded-lg max-w-[85%] text-base md:text-sm ${isMe ? 'bg-blue-100 text-blue-900' : 'bg-white border border-gray-200 text-gray-700'}`}>
+                                     <p className="text-sm font-bold opacity-70 mb-1">{getAssigneeName(comment.userId, comment.userName)}</p>
                                      <p>{comment.text}</p>
                                      <p className="text-[10px] opacity-60 mt-1 text-right">{formatRelativeTime(comment.timestamp)}</p>
                                   </div>
@@ -6393,7 +6428,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                        <div className={`relative ${isEditingFrozen ? 'opacity-50 pointer-events-none' : ''}`}>
                           <input 
                             type="text" 
-                            className="w-full p-2 pr-10 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm bg-white text-gray-900"
+                            className="w-full p-3 pr-10 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-base md:text-sm bg-white text-gray-900"
                             placeholder="Type a message..."
                             value={newComment}
                             onChange={e => setNewComment(e.target.value)}
@@ -6430,11 +6465,16 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                 <div className="flex gap-3">
                   <button onClick={() => setIsTaskModalOpen(false)} className="px-4 py-2 text-sm font-medium text-gray-600 hover:bg-gray-50 rounded-lg" title="Cancel">Cancel</button>
                   {/* Only Show Save if NOT frozen or if ADMIN */}
-                  {(!isEditingFrozen || isAdmin) && (
-                      <button onClick={handleSaveTask} className="px-6 py-2 text-sm font-bold bg-gray-900 text-white rounded-lg hover:bg-gray-800 shadow-sm" title="Save task">
-                          {editingTask.id ? 'Save Changes' : 'Create Task'}
+                    {(!isEditingFrozen || isAdmin) && (
+                      <button
+                      onClick={handleSaveTask}
+                      disabled={isSavingTask || isEditingFrozen}
+                      className={`px-6 py-2 text-sm font-bold bg-gray-900 text-white rounded-lg shadow-sm ${isSavingTask || isEditingFrozen ? 'opacity-60 cursor-not-allowed hover:bg-gray-900' : 'hover:bg-gray-800'}`}
+                      title="Save task"
+                      >
+                        {isSavingTask ? 'Saving...' : (editingTask.id ? 'Save Changes' : 'Create Task')}
                       </button>
-                  )}
+                    )}
                 </div>
               </div>
            </div>

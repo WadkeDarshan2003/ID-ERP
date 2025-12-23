@@ -28,10 +28,8 @@ export const updateUserInFirebase = async (user: User): Promise<void> => {
 
     // Use setDoc with merge: true instead of updateDoc to handle cases where document might be missing
     await setDoc(userRef, updateData, { merge: true });
-    if (process.env.NODE_ENV !== 'production') console.log(`✅ Updated 'users' collection: ${user.email}`);
 
     await setDoc(roleRef, updateData, { merge: true });
-    if (process.env.NODE_ENV !== 'production') console.log(`✅ Updated '${roleCollection}' collection: ${user.email}`);
 
   } catch (error: any) {
     console.error('Error updating user in Firebase:', error);
@@ -66,7 +64,7 @@ export const createUserInFirebase = async (
       // Generate a temporary UID for the Firestore document
       const cleanPhoneDigits = (user.phone || '').replace(/\D/g, '');
       firebaseUid = `phone_${cleanPhoneDigits}`;
-      if (process.env.NODE_ENV !== 'production') console.log(`📱 Phone-auth user will authenticate via phone. Temp ID: ${firebaseUid}`);
+      if (process.env.NODE_ENV !== 'production') {}
     } else {
       // Step 1: Create user in Firebase Authentication (Email/Password)
       // Use secondaryAuth to create user
@@ -90,7 +88,9 @@ export const createUserInFirebase = async (
       role: user.role,
       phone: normalizedPhone || '',
       password: user.password,
-      authMethod: user.authMethod || 'email'
+      authMethod: user.authMethod || 'email',
+      tenantId: user.tenantId || '',
+      createdBy: user.createdBy || ''
     };
 
     // Add optional fields only if they exist
@@ -101,12 +101,10 @@ export const createUserInFirebase = async (
     // Step 3: Save profile to Firestore - BOTH to users collection AND role-specific collection
     // Save to users collection
     await setDoc(doc(db, 'users', firebaseUid), userProfile);
-    if (process.env.NODE_ENV !== 'production') console.log(`✅ Saved to 'users' collection: ${user.email || user.phone}`);
 
     // Save to role-specific collection (designers, vendors, clients)
     const roleCollection = user.role.toLowerCase() + 's'; // Designer -> designers, Vendor -> vendors, Client -> clients
     await setDoc(doc(db, roleCollection, firebaseUid), userProfile);
-    if (process.env.NODE_ENV !== 'production') console.log(`✅ Saved to '${roleCollection}' collection: ${user.email || user.phone}`);
     
     // Step 4: Send welcome email with credentials
     if (user.authMethod === 'phone') {
@@ -162,7 +160,6 @@ export const createUserInFirebase = async (
           subject: 'Welcome to Kydo Solutions - Phone-Based Login Instructions',
           htmlContent: htmlContent
         });
-        if (process.env.NODE_ENV !== 'production') console.log(`✅ Phone user welcome email sent to ${user.email}`);
       } catch (emailError: any) {
         console.error(`⚠️ Failed to send welcome email to ${user.email}:`, emailError.message);
       }
@@ -211,13 +208,11 @@ export const createUserInFirebase = async (
           subject: 'Welcome to Kydo Solutions - Your Account Credentials',
           htmlContent: htmlContent
         });
-        if (process.env.NODE_ENV !== 'production') console.log(`✅ Welcome email sent to ${user.email}`);
       } catch (emailError: any) {
         console.error(`⚠️ Failed to send welcome email to ${user.email}:`, emailError.message);
         // Don't throw - user is created successfully, email is just a courtesy
       }
     }
-    if (process.env.NODE_ENV !== 'production') console.log(`📊 User creation complete. Admin session should be intact.`);
     
     return firebaseUid;
   } catch (error: any) {

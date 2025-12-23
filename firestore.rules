@@ -1,0 +1,188 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Helper function to get current user's tenantId
+    function getUserTenantId() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.tenantId;
+    }
+    
+    // ============ USERS COLLECTION ============
+    match /users/{userId} {
+      // Allow creating own document during signup
+      allow create: if request.auth.uid == userId;
+      
+      // Allow reading own document or others in same tenant
+      allow read: if request.auth.uid == userId || 
+                     getUserTenantId() == resource.data.tenantId;
+      
+      // Allow updating own document or updating metrics/fields for same tenant
+      allow update: if request.auth.uid == userId || 
+                       getUserTenantId() == resource.data.tenantId;
+      
+      // No deletes
+      allow delete: if false;
+    }
+    
+    // ============ ADMINS COLLECTION ============
+    match /admins/{adminId} {
+      // Allow creating own document during signup
+      allow create: if request.auth.uid == adminId;
+      
+      // Allow reading own document or others in same tenant
+      allow read: if request.auth.uid == adminId || 
+                     getUserTenantId() == resource.data.tenantId;
+      
+      // Allow updating own document
+      allow update: if request.auth.uid == adminId;
+      
+      // No deletes
+      allow delete: if false;
+    }
+    
+    // ============ TENANTS COLLECTION ============
+    match /tenants/{tenantId} {
+      // Allow authenticated users to create tenants during admin signup
+      allow create: if request.auth != null;
+      
+      // Allow reading own tenant
+      allow read: if request.auth != null && 
+                     get(/databases/$(database)/documents/users/$(request.auth.uid)).data.tenantId == tenantId;
+      
+      // No updates or deletes
+      allow update, delete: if false;
+    }
+    
+    // ============ PROJECTS COLLECTION ============
+    match /projects/{projectId} {
+      // Allow creating projects for your tenant
+      allow create: if request.auth != null && 
+                       request.resource.data.tenantId == getUserTenantId();
+      
+      // Allow reading projects in your tenant
+      allow read: if request.auth != null && 
+                     resource.data.tenantId == getUserTenantId();
+      
+      // Allow updating projects in your tenant
+      allow update: if request.auth != null && 
+                       resource.data.tenantId == getUserTenantId();
+      
+      // No deletes
+      allow delete: if false;
+      
+      // ---- TASKS SUBCOLLECTION ----
+      match /tasks/{taskId} {
+        allow read, create, update: if request.auth != null && 
+                                      get(/databases/$(database)/documents/projects/$(projectId)).data.tenantId == getUserTenantId();
+        allow delete: if false;
+      }
+      
+      // ---- FINANCES SUBCOLLECTION ----
+      match /finances/{financeId} {
+        allow read, create, update: if request.auth != null && 
+                                      get(/databases/$(database)/documents/projects/$(projectId)).data.tenantId == getUserTenantId();
+        allow delete: if false;
+      }
+      
+      // ---- MEETINGS SUBCOLLECTION ----
+      match /meetings/{meetingId} {
+        allow read, create, update: if request.auth != null && 
+                                      get(/databases/$(database)/documents/projects/$(projectId)).data.tenantId == getUserTenantId();
+        allow delete: if false;
+      }
+      
+      // ---- DOCUMENTS SUBCOLLECTION ----
+      match /documents/{documentId} {
+        allow read, create, update: if request.auth != null && 
+                                      get(/databases/$(database)/documents/projects/$(projectId)).data.tenantId == getUserTenantId();
+        allow delete: if false;
+        
+        // Nested comments subcollection
+        match /comments/{commentId} {
+          allow read, create, update: if request.auth != null && 
+                                        get(/databases/$(database)/documents/projects/$(projectId)).data.tenantId == getUserTenantId();
+          allow delete: if false;
+        }
+      }
+      
+      // ---- ACTIVITY LOGS SUBCOLLECTION ----
+      match /activityLogs/{logId} {
+        allow read, create, update: if request.auth != null && 
+                                      get(/databases/$(database)/documents/projects/$(projectId)).data.tenantId == getUserTenantId();
+        allow delete: if false;
+      }
+    }
+    
+    // ============ VENDORS COLLECTION ============
+    match /vendors/{vendorId} {
+      // Allow creating vendors for your tenant
+      allow create: if request.auth != null && 
+                       request.resource.data.tenantId == getUserTenantId();
+      
+      // Allow reading vendors in your tenant
+      allow read: if request.auth != null && 
+                     resource.data.tenantId == getUserTenantId();
+      
+      // Allow updating vendors in your tenant (for metrics sync)
+      allow update: if request.auth != null && 
+                       resource.data.tenantId == getUserTenantId();
+      
+      // No deletes
+      allow delete: if false;
+    }
+    
+    // ============ CLIENTS COLLECTION ============
+    match /clients/{clientId} {
+      // Allow creating clients for your tenant
+      allow create: if request.auth != null && 
+                       request.resource.data.tenantId == getUserTenantId();
+      
+      // Allow reading clients in your tenant
+      allow read: if request.auth != null && 
+                     resource.data.tenantId == getUserTenantId();
+      
+      // Allow updating clients in your tenant
+      allow update: if request.auth != null && 
+                       resource.data.tenantId == getUserTenantId();
+      
+      // No deletes
+      allow delete: if false;
+    }
+    
+    // ============ DESIGNERS COLLECTION ============
+    match /designers/{designerId} {
+      // Allow creating designers for your tenant
+      allow create: if request.auth != null && 
+                       request.resource.data.tenantId == getUserTenantId();
+      
+      // Allow reading designers in your tenant
+      allow read: if request.auth != null && 
+                     resource.data.tenantId == getUserTenantId();
+      
+      // Allow updating designers in your tenant
+      allow update: if request.auth != null && 
+                       resource.data.tenantId == getUserTenantId();
+      
+      // No deletes
+      allow delete: if false;
+    }
+    
+    // ============ FINANCIAL RECORDS COLLECTION ============
+    match /financialRecords/{recordId} {
+      // Allow creating financial records for your tenant
+      allow create: if request.auth != null && 
+                       request.resource.data.tenantId == getUserTenantId();
+      
+      // Allow reading financial records for your tenant
+      allow read: if request.auth != null && 
+                     resource.data.tenantId == getUserTenantId();
+      
+      // Allow updating financial records for your tenant
+      allow update: if request.auth != null && 
+                       resource.data.tenantId == getUserTenantId();
+      
+      // No deletes
+      allow delete: if false;
+    }
+  }
+}

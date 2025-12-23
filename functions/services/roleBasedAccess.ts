@@ -1,4 +1,4 @@
-import { Role, Project, User } from '../types';
+import { Role, Project, User } from '../../types';
 
 export interface AccessControl {
   canViewProject: boolean;

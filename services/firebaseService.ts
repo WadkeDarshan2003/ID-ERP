@@ -157,7 +157,6 @@ export async function syncAllVendorMetrics(): Promise<void> {
       }
     }
 
-    if (process.env.NODE_ENV !== 'production') console.log('✅ All vendor metrics synced successfully');
   } catch (error) {
     console.error('❌ Error syncing vendor metrics:', error);
   }
@@ -208,10 +207,29 @@ const cleanUndefined = (obj: any): any => {
 };
 
 // Create project
-export const createProject = async (project: Omit<Project, "id">): Promise<string> => {
+export const createProject = async (project: Omit<Project, "id">, tenantId: string, createdBy: string): Promise<string> => {
   try {
+    // CRITICAL: Log what we're actually saving
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('📝 createProject called with:');
+      console.log('  - tenantId param:', tenantId);
+      console.log('  - createdBy param:', createdBy);
+      console.log('  - project.tenantId:', project.tenantId);
+      console.log('  - project.createdBy:', project.createdBy);
+    }
+    
     const newDocRef = doc(projectsRef);
-    const cleanedProject = cleanUndefined(project);
+    // Merge parameters with project - parameters take precedence
+    const projectToSave = { ...project };
+    projectToSave.tenantId = tenantId || project.tenantId;
+    projectToSave.createdBy = createdBy || project.createdBy;
+    
+    const cleanedProject = cleanUndefined(projectToSave);
+    
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('💾 Final project being saved to Firestore:', { ...cleanedProject, financials: '[...]' });
+    }
+    
     await setDoc(newDocRef, cleanedProject);
     return newDocRef.id;
   } catch (error) {
@@ -243,8 +261,9 @@ export const deleteProject = async (projectId: string): Promise<void> => {
 };
 
 // Real-time listener for projects
-export const subscribeToProjects = (callback: (projects: Project[]) => void): Unsubscribe => {
-  return onSnapshot(projectsRef, (snapshot) => {
+export const subscribeToProjects = (tenantId: string, callback: (projects: Project[]) => void): Unsubscribe => {
+  const q = query(projectsRef, where('tenantId', '==', tenantId));
+  return onSnapshot(q, (snapshot) => {
     const projects = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as Project));
     callback(projects);
   }, (error) => {
@@ -386,9 +405,27 @@ export const claimPhoneUserProfile = async (uid: string, phoneNumber: string): P
 };
 
 // Create user
-export const createUser = async (user: User): Promise<string> => {
+export const createUser = async (user: User, tenantId: string, createdBy: string): Promise<string> => {
   try {
-    await setDoc(doc(db, "users", user.id), user);
+    // CRITICAL: Log what we're actually saving
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('📝 createUser called with:');
+      console.log('  - tenantId param:', tenantId);
+      console.log('  - createdBy param:', createdBy);
+      console.log('  - user.tenantId:', user.tenantId);
+      console.log('  - user.createdBy:', user.createdBy);
+    }
+    
+    // Merge parameters with user - parameters take precedence
+    const userToSave = { ...user };
+    userToSave.tenantId = tenantId || user.tenantId;
+    userToSave.createdBy = createdBy || user.createdBy;
+    
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('💾 Final user being saved to Firestore:', userToSave);
+    }
+    
+    await setDoc(doc(db, "users", user.id), userToSave);
     return user.id;
   } catch (error) {
     console.error("Error creating user:", error);
@@ -407,28 +444,17 @@ export const updateUser = async (userId: string, updates: Partial<User>): Promis
 };
 
 // Real-time listener for users
-export const subscribeToUsers = (callback: (users: User[]) => void): Unsubscribe => {
-  if (process.env.NODE_ENV !== 'production') console.log('🔔 Setting up real-time listener for users collection...');
-  
-  let allUsers: User[] = [];
-  let unsubscribers: Unsubscribe[] = [];
-
-  // Listen to main users collection
-  const unsubUser = onSnapshot(usersRef, (snapshot) => {
+export const subscribeToUsers = (tenantId: string, callback: (users: User[]) => void): Unsubscribe => {
+  const q = query(usersRef, where('tenantId', '==', tenantId));
+  return onSnapshot(q, (snapshot) => {
     const users = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as User));
-    if (process.env.NODE_ENV !== 'production') console.log(`📥 Real-time update from 'users': ${users.length} users`);
-    allUsers = users;
-    callback(allUsers);
+    callback(users);
   }, (error) => {
-    console.error('❌ Error in users collection listener:', error);
+    // Suppress permission-denied errors during logout
+    if (error.code !== 'permission-denied') {
+      console.error('❌ Error in users collection listener:', error);
+    }
   });
-
-  unsubscribers.push(unsubUser);
-
-  // Return cleanup function
-  return () => {
-    unsubscribers.forEach(unsub => unsub());
-  };
 };
 
 // ============ BULK OPERATIONS ============
@@ -458,11 +484,10 @@ export const seedDatabase = async (projects: Project[], users: User[]): Promise<
 // ============ ROLE-SPECIFIC COLLECTIONS ============
 
 // Real-time listener for designers
-export const subscribeToDesigners = (callback: (designers: User[]) => void): Unsubscribe => {
-  if (process.env.NODE_ENV !== 'production') console.log('🔔 Setting up real-time listener for designers collection...');
-  return onSnapshot(collection(db, "designers"), (snapshot) => {
+export const subscribeToDesigners = (tenantId: string, callback: (designers: User[]) => void): Unsubscribe => {
+  const q = query(collection(db, "designers"), where('tenantId', '==', tenantId));
+  return onSnapshot(q, (snapshot) => {
     const designers = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as User));
-    if (process.env.NODE_ENV !== 'production') console.log(`📥 Real-time update from 'designers': ${designers.length} designers`);
     callback(designers);
   }, (error) => {
     // Suppress permission-denied errors during logout
@@ -473,11 +498,10 @@ export const subscribeToDesigners = (callback: (designers: User[]) => void): Uns
 };
 
 // Real-time listener for vendors
-export const subscribeToVendors = (callback: (vendors: User[]) => void): Unsubscribe => {
-  if (process.env.NODE_ENV !== 'production') console.log('🔔 Setting up real-time listener for vendors collection...');
-  return onSnapshot(collection(db, "vendors"), (snapshot) => {
+export const subscribeToVendors = (tenantId: string, callback: (vendors: User[]) => void): Unsubscribe => {
+  const q = query(collection(db, "vendors"), where('tenantId', '==', tenantId));
+  return onSnapshot(q, (snapshot) => {
     const vendors = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as User));
-    if (process.env.NODE_ENV !== 'production') console.log(`📥 Real-time update from 'vendors': ${vendors.length} vendors`);
     callback(vendors);
   }, (error) => {
     // Suppress permission-denied errors during logout
@@ -488,11 +512,10 @@ export const subscribeToVendors = (callback: (vendors: User[]) => void): Unsubsc
 };
 
 // Real-time listener for clients
-export const subscribeToClients = (callback: (clients: User[]) => void): Unsubscribe => {
-  if (process.env.NODE_ENV !== 'production') console.log('🔔 Setting up real-time listener for clients collection...');
-  return onSnapshot(collection(db, "clients"), (snapshot) => {
+export const subscribeToClients = (tenantId: string, callback: (clients: User[]) => void): Unsubscribe => {
+  const q = query(collection(db, "clients"), where('tenantId', '==', tenantId));
+  return onSnapshot(q, (snapshot) => {
     const clients = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as User));
-    if (process.env.NODE_ENV !== 'production') console.log(`📥 Real-time update from 'clients': ${clients.length} clients`);
     callback(clients);
   }, (error) => {
     // Suppress permission-denied errors during logout

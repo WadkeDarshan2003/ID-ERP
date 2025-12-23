@@ -224,7 +224,7 @@ const Login: React.FC<LoginProps> = ({ users = [] }) => {
           {/* Login Method Tabs */}
           <div className="mb-8">
             <h2 className="text-2xl font-bold text-gray-900 mb-6">Sign In</h2>
-            <div className="flex gap-2 border-b border-gray-200">
+            <div className="flex gap-2 border-b border-gray-200 justify-center">
               <button
                 type="button"
                 onClick={() => {

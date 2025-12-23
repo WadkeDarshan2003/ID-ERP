@@ -3,6 +3,7 @@ import { User, Role, Project, ProjectStatus, ProjectType, ProjectCategory, Proje
 import { X, Calendar, IndianRupee, Image as ImageIcon, Loader, Upload, Trash2 } from 'lucide-react';
 import { useNotifications } from '../contexts/NotificationContext';
 import { useLoading } from '../contexts/LoadingContext';
+import { useAuth } from '../contexts/AuthContext';
 import { useProjectCrud } from '../hooks/useCrud';
 import { storage } from '../services/firebaseConfig';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
@@ -19,6 +20,7 @@ interface NewProjectModalProps {
 const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSave, initialProject }) => {
   const { addNotification } = useNotifications();
   const { createNewProject, updateExistingProject } = useProjectCrud();
+  const { user: currentUser } = useAuth();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const { showLoading, hideLoading } = useLoading();
   const isEditMode = !!initialProject;
@@ -182,6 +184,12 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
         addNotification('Success', `Project "${formData.name}" has been updated successfully.`, 'success');
       } else {
         // Create mode
+        if (process.env.NODE_ENV !== 'production') {
+          console.log('🔐 NewProjectModal - currentUser:', currentUser);
+          console.log('🔐 NewProjectModal - currentUser.tenantId:', currentUser?.tenantId);
+          console.log('🔐 NewProjectModal - currentUser.id:', currentUser?.id);
+        }
+        
         const newProject: Omit<Project, 'id'> = {
           name: formData.name!,
           clientId: formData.clientId!,
@@ -199,6 +207,8 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
           financials: [],
           meetings: [],
           documents: [],
+          tenantId: currentUser?.tenantId || '',
+          createdBy: currentUser?.id || '',
           activityLog: [
             {
               id: `log_${Date.now()}`,
@@ -324,18 +334,18 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
     <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
       <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto animate-fade-in">
         <div className="flex justify-between items-center p-6 border-b border-gray-100 bg-white sticky top-0 z-10">
-          <h2 className="text-xl font-bold text-gray-900">{isEditMode ? 'Edit Project' : 'Create New Project'}</h2>
+          <h2 className="text-2xl md:text-xl font-bold text-gray-900">{isEditMode ? 'Edit Project' : 'Create New Project'}</h2>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600 transition-colors" title="Close modal">
             <X className="w-6 h-6" />
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="p-8 space-y-6 bg-white">
+        <form onSubmit={handleSubmit} className="p-8 space-y-6 bg-white text-base md:text-sm">
           
           {/* Basic Info */}
             <div className="space-y-4">
             <div>
-              <label className="block text-sm font-bold text-gray-700 mb-1">Project Name <span className="text-red-500">*</span></label>
+              <label className="block text-base md:text-sm font-bold text-gray-700 mb-1">Project Name <span className="text-red-500">*</span></label>
               <input 
                 type="text" 
                 className={getInputClass(formData.name)}
@@ -346,7 +356,7 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
             </div>
             
             <div>
-              <label className="block text-sm font-bold text-gray-700 mb-1">Description</label>
+              <label className="block text-base md:text-sm font-bold text-gray-700 mb-1">Description</label>
               <textarea 
                 className="w-full px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-gray-900 focus:border-transparent outline-none h-24 resize-none bg-white text-gray-900 placeholder-gray-400"
                 placeholder="Briefly describe the scope of work..."
@@ -359,7 +369,7 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
           {/* People */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div>
-              <label className="block text-sm font-bold text-gray-700 mb-1">Client <span className="text-red-500">*</span></label>
+              <label className="block text-base md:text-sm font-bold text-gray-700 mb-1">Client <span className="text-red-500">*</span></label>
               <select 
                 className={getInputClass(formData.clientId)}
                 value={formData.clientId}
@@ -371,7 +381,7 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
               </select>
             </div>
             <div>
-              <label className="block text-sm font-bold text-gray-700 mb-1">Lead Designer <span className="text-red-500">*</span></label>
+              <label className="block text-base md:text-sm font-bold text-gray-700 mb-1">Lead Designer <span className="text-red-500">*</span></label>
               <select 
                 className={getInputClass(formData.leadDesignerId)}
                 value={formData.leadDesignerId}
@@ -387,7 +397,7 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
           {/* Project Type & Category */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <div>
-              <label className="block text-sm font-bold text-gray-700 mb-1">Project Type <span className="text-red-500">*</span></label>
+              <label className="block text-base md:text-sm font-bold text-gray-700 mb-1">Project Type <span className="text-red-500">*</span></label>
               <select 
                 className={getInputClass(formData.type)}
                 value={formData.type || ''}
@@ -400,7 +410,7 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
               </select>
             </div>
             <div>
-              <label className="block text-sm font-bold text-gray-700 mb-1">Category <span className="text-red-500">*</span></label>
+              <label className="block text-base md:text-sm font-bold text-gray-700 mb-1">Category <span className="text-red-500">*</span></label>
               <select 
                 className={getInputClass(formData.category)}
                 value={formData.category || ''}
@@ -417,39 +427,31 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
           {/* Logistics */}
           <div className="grid grid-cols-3 gap-2">
              <div>
-               <label className="block text-sm font-bold text-gray-700 mb-1 flex items-center gap-0.5">
+               <label className="block text-base md:text-sm font-bold text-gray-700 mb-1 flex items-center gap-0.5">
                  <Calendar className="w-3 h-3 text-gray-400"/> Start Date <span className="text-red-500">*</span>
                </label>
                <input 
-                 type="text"
-                 placeholder="DD/MM/YYYY"
+                 type="date"
                  className={getInputClass(formData.startDate)}
-                 value={formData.startDate ? formatDateToIndian(formData.startDate) : ''}
-                 onChange={e => {
-                   const isoDate = formatIndianToISO(e.target.value);
-                   handleDateChange('startDate', isoDate || e.target.value);
-                 }}
-                 title="Select the project start date (DD/MM/YYYY)"
+                 value={formData.startDate || ''}
+                 onChange={e => handleDateChange('startDate', e.target.value)}
+                 title="Select the project start date"
                />
              </div>
              <div>
-               <label className="block text-sm font-bold text-gray-700 mb-1 flex items-center gap-0.5">
+               <label className="block text-base md:text-sm font-bold text-gray-700 mb-1 flex items-center gap-0.5">
                  <Calendar className="w-3 h-3 text-gray-400"/> Deadline <span className="text-red-500">*</span>
                </label>
                <input 
-                 type="text"
-                 placeholder="DD/MM/YYYY"
+                 type="date"
                  className={getInputClass(formData.deadline)}
-                 value={formData.deadline ? formatDateToIndian(formData.deadline) : ''}
-                 onChange={e => {
-                   const isoDate = formatIndianToISO(e.target.value);
-                   handleDateChange('deadline', isoDate || e.target.value);
-                 }}
-                 title="Select the project deadline date (DD/MM/YYYY)"
+                 value={formData.deadline || ''}
+                 onChange={e => handleDateChange('deadline', e.target.value)}
+                 title="Select the project deadline date"
                />
              </div>
              <div>
-               <label className="block text-sm font-bold text-gray-700 mb-1 flex items-center gap-0.5">
+               <label className="block text-base md:text-sm font-bold text-gray-700 mb-1 flex items-center gap-0.5">
                  <IndianRupee className="w-3 h-3 text-gray-400"/> Budget <span className="text-red-500">*</span>
                </label>
                <input 
@@ -511,7 +513,7 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
           {/* Documents Upload */}
           <div>
             <div className="flex items-center justify-between mb-1">
-              <label className="block text-sm font-bold text-gray-700">Attached Documents (Optional)</label>
+              <label className="block text-base md:text-sm font-bold text-gray-700">Attached Documents (Optional)</label>
               {uploadedDocuments.length > 0 && (
                 <span className="text-base md:text-sm text-gray-500">{uploadedDocuments.length} file(s)</span>
               )}

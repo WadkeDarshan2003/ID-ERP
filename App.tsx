@@ -17,6 +17,7 @@ import Dashboard from './components/Dashboard';
 import ProjectDetail from './components/ProjectDetail';
 import PeopleList from './components/PeopleList';
 import Login from './components/Login';
+import AdminSignup from './components/AdminSignup';
 import NotificationPanel from './components/NotificationPanel';
 import NewProjectModal from './components/NewProjectModal';
 import Loader from './components/Loader';
@@ -167,11 +168,13 @@ const ProjectList = ({
 };
 
 type ViewState = 'dashboard' | 'projects' | 'clients' | 'vendors' | 'designers';
+type RouteState = 'app' | 'login' | 'admin-signup';
 
 function App() {
   // Lifted state to allow NotificationProvider access to projects
   const [projects, setProjects] = useState<Project[]>([]);
   const [users, setUsers] = useState<User[]>([]);
+  const [route, setRoute] = useState<RouteState>('app');
 
   return (
     <AuthProvider>
@@ -182,6 +185,8 @@ function App() {
             setProjects={setProjects}
             users={users}
             setUsers={setUsers}
+            route={route}
+            setRoute={setRoute}
           />
         </LoadingProvider>
       </NotificationProvider>
@@ -194,9 +199,11 @@ interface AppContentProps {
   setProjects: React.Dispatch<React.SetStateAction<Project[]>>;
   users: User[];
   setUsers: React.Dispatch<React.SetStateAction<User[]>>;
+  route: RouteState;
+  setRoute: React.Dispatch<React.SetStateAction<RouteState>>;
 }
 
-function AppContent({ projects, setProjects, users, setUsers }: AppContentProps) {
+function AppContent({ projects, setProjects, users, setUsers, route, setRoute }: AppContentProps) {
 
   const { user, logout, loading: authLoading } = useAuth();
   const { unreadCount, addNotification } = useNotifications();
@@ -220,9 +227,13 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
 
     setIsLoading(false); // No loading state needed, show empty immediately
 
+    // Skip subscriptions if user has no tenantId (not yet initialized)
+    if (!user?.tenantId) {
+      return;
+    }
+
     // Subscribe to projects (will be empty initially)
-    const unsubscribeProjects = subscribeToProjects((firebaseProjects) => {
-      if (process.env.NODE_ENV !== 'production') console.log('🔄 Projects updated in App:', firebaseProjects.length);
+    const unsubscribeProjects = subscribeToProjects(user.tenantId, (firebaseProjects) => {
       setProjects(firebaseProjects || []);
       
       // Sync all vendor metrics whenever projects change
@@ -232,14 +243,12 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
     });
 
     // Subscribe to users - combines from all role collections
-    const unsubscribeUsers = subscribeToUsers((firebaseUsers) => {
-      if (process.env.NODE_ENV !== 'production') console.log('🔄 Users updated in App:', firebaseUsers.length, firebaseUsers);
+    const unsubscribeUsers = subscribeToUsers(user.tenantId, (firebaseUsers) => {
       setUsers(firebaseUsers || []);
     });
 
     // Also subscribe to role-specific collections for redundancy/updates
-    const unsubscribeDesigners = subscribeToDesigners((designers) => {
-      if (process.env.NODE_ENV !== 'production') console.log('🔄 Designers updated:', designers.length);
+    const unsubscribeDesigners = subscribeToDesigners(user.tenantId, (designers) => {
       // Replace all designers with the new list, ensuring no ID duplicates
       setUsers(prev => {
         const newIds = new Set(designers.map(d => d.id));
@@ -248,8 +257,7 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
       });
     });
 
-    const unsubscribeVendors = subscribeToVendors((vendors) => {
-      if (process.env.NODE_ENV !== 'production') console.log('🔄 Vendors updated:', vendors.length);
+    const unsubscribeVendors = subscribeToVendors(user.tenantId, (vendors) => {
       // Replace all vendors with the new list, ensuring no ID duplicates
       setUsers(prev => {
         const newIds = new Set(vendors.map(v => v.id));
@@ -258,8 +266,7 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
       });
     });
 
-    const unsubscribeClients = subscribeToClients((clients) => {
-      if (process.env.NODE_ENV !== 'production') console.log('🔄 Clients updated:', clients.length);
+    const unsubscribeClients = subscribeToClients(user.tenantId, (clients) => {
       // Replace all clients with the new list, ensuring no ID duplicates
       setUsers(prev => {
         const newIds = new Set(clients.map(c => c.id));
@@ -297,8 +304,23 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
     }
   }, [projects, selectedProject]);
 
-  // If not logged in, show login screen
+  // Route handling - Check URL or route state
+  useEffect(() => {
+    const path = window.location.pathname;
+    if (path === '/admin-signup') {
+      setRoute('admin-signup');
+    } else if (!user) {
+      setRoute('login');
+    } else {
+      setRoute('app');
+    }
+  }, [user, setRoute]);
+
+  // If not logged in, show login or signup based on route
   if (!user) {
+    if (route === 'admin-signup') {
+      return <AdminSignup />;
+    }
     return <Login users={users} />;
   }
 

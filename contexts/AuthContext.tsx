@@ -62,6 +62,43 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
             };
           }
           
+          // --- TENANT MIGRATION LOGIC FOR ADMINS ---
+          // Only run for Admins (or adjust as needed)
+          if (userProfile.role === 'Admin' && !userProfile.tenantId) {
+            // Generate a new tenantId (UUID)
+            const tenantId = (window.crypto?.randomUUID?.() || Math.random().toString(36).slice(2) + Date.now());
+            // Use updateUser service to update user doc
+            try {
+              const { updateUser } = await import('../services/firebaseService');
+              await updateUser(authUser.uid, { tenantId });
+            } catch (e) {
+              // fallback to direct updateDoc if needed
+              const { updateDoc, doc } = await import('firebase/firestore');
+              const { db } = await import('../services/firebaseConfig');
+              await updateDoc(doc(db, 'users', authUser.uid), { tenantId });
+            }
+
+            // List of collections to update
+            const { collection, query, where, getDocs, updateDoc, doc: fsDoc, setDoc } = await import('firebase/firestore');
+            const { db } = await import('../services/firebaseConfig');
+            const collections = ['projects', 'vendors', 'clients', 'designers'];
+            for (const col of collections) {
+              const q = query(collection(db, col), where('createdBy', '==', authUser.uid));
+              const snap = await getDocs(q);
+              for (const docSnap of snap.docs) {
+                await updateDoc(docSnap.ref, { tenantId });
+              }
+            }
+            // Optionally: create a tenants collection for admin's firm
+            await setDoc(fsDoc(db, 'tenants', tenantId), {
+              name: userProfile.name || userProfile.email,
+              adminUid: authUser.uid,
+              createdAt: new Date()
+            });
+            // Update local userProfile
+            (userProfile as any).tenantId = tenantId;
+          }
+          // --- END TENANT MIGRATION LOGIC ---
           setFirebaseUser(authUser);
           setUser(userProfile);
         } else {

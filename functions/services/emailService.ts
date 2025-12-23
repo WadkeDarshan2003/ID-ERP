@@ -1,5 +1,5 @@
 
-import { formatDateToIndian } from '../utils/taskUtils';
+import { formatDateToIndian } from '../../utils/taskUtils';
 
 // Get Cloud Function URL from environment or use deployed URL
 const getCloudFunctionUrl = () => {

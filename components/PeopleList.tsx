@@ -56,6 +56,11 @@ const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, p
   // --- Collapsible Designer Tasks State ---
   const [expandedDesignerTasks, setExpandedDesignerTasks] = useState<Record<string, boolean>>({});
 
+  // Debug current user on mount
+  useEffect(() => {
+    // No logging in production
+  }, [currentUser]);
+
   // --- Real-time Projects State ---
   // Use parent's projects prop as the real-time source since App.tsx already subscribes
   const realtimeProjects = projects;
@@ -104,16 +109,6 @@ const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, p
       unsubscribers.forEach(unsub => unsub());
     };
   }, [projects]);
-
-  // Log for debugging
-  useEffect(() => {
-    if (process.env.NODE_ENV !== 'production') console.log('🔄 PeopleList projects updated:', projects.length, projects);
-  }, [projects]);
-
-  // Log financial updates
-  useEffect(() => {
-    if (process.env.NODE_ENV !== 'production') console.log('💰 PeopleList financials updated:', allProjectFinancials);
-  }, [allProjectFinancials]);
 
   useEffect(() => {
     if (!selectedVendor) return;
@@ -252,7 +247,9 @@ const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, p
         specialty: newUser.specialty || undefined,
         phone: newUser.phone || undefined,
         password: generatedPassword,
-        authMethod: (authMethod) as 'email' | 'phone'
+        authMethod: (authMethod) as 'email' | 'phone',
+        tenantId: currentUser?.tenantId || '',
+        createdBy: currentUser?.id || ''
       }, currentUser?.email, adminCredentials?.password);
 
       // Create local user object with Firebase UID
@@ -265,7 +262,9 @@ const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, p
         specialty: newUser.specialty || undefined,
         phone: newUser.phone || undefined,
         password: generatedPassword,
-        authMethod: (authMethod) as 'email' | 'phone'
+        authMethod: (authMethod) as 'email' | 'phone',
+        tenantId: currentUser?.tenantId || '',
+        createdBy: currentUser?.id || ''
       };
 
       // Don't add to local state immediately - let Firebase subscription handle all users
