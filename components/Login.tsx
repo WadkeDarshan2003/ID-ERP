@@ -10,6 +10,7 @@ import { auth } from '../services/firebaseConfig';
 import { getUser, claimPhoneUserProfile } from '../services/firebaseService';
 import { setupPhoneAuthentication, verifyPhoneOTP } from '../services/authService';
 import { getFirebaseErrorMessage } from '../utils/firebaseErrorMessages';
+import { createDeviceInfo, saveDeviceToLocal } from '../utils/deviceUtils';
 
 interface LoginProps {
   users?: User[];
@@ -29,6 +30,7 @@ const Login: React.FC<LoginProps> = ({ users = [] }) => {
   const [loginMethod, setLoginMethod] = useState<'email' | 'phone'>('email');
   const [otpSent, setOtpSent] = useState(false);
   const [confirmationResult, setConfirmationResult] = useState<any>(null);
+  const [rememberDevice, setRememberDevice] = useState(true);
 
   const handleFirebaseLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -63,16 +65,25 @@ const Login: React.FC<LoginProps> = ({ users = [] }) => {
         console.warn('Could not fetch user profile:', error);
       }
       
-      // If no profile found, create admin profile from auth data
+      // If no profile found, deny login
       if (!userProfile) {
-        userProfile = {
-          id: authResult.user.uid,
-          name: authResult.user.email?.split('@')[0] || 'Admin',
-          email: authResult.user.email || '',
-          role: 'Admin' as any,
-          phone: ''
-        };
-        if (process.env.NODE_ENV !== 'production') console.log('Admin logged in without profile (auto-created minimal profile)');
+        const errorMsg = 'Account not found. Please contact your administrator to set up your account.';
+        setError(errorMsg);
+        addNotification('Account Not Found', errorMsg, 'error');
+        await signOut(auth); // Sign out immediately
+        setLoading(false);
+        hideLoading();
+        return;
+      }
+      
+      // Store device info if "Remember Device" is checked
+      if (rememberDevice) {
+        const deviceInfo = createDeviceInfo();
+        saveDeviceToLocal(deviceInfo);
+        if (process.env.NODE_ENV !== 'production') {
+          console.log('📱 Device remembered:', deviceInfo);
+        }
+        addNotification('Device Remembered', `This device will be remembered for 30 days`, 'success');
       }
       
       login(userProfile);
@@ -291,6 +302,19 @@ const Login: React.FC<LoginProps> = ({ users = [] }) => {
                   disabled={loading}
                 />
               </div>
+              
+              {/* Remember This Device */}
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input 
+                  type="checkbox" 
+                  checked={rememberDevice}
+                  onChange={e => setRememberDevice(e.target.checked)}
+                  disabled={loading}
+                  className="w-4 h-4 rounded border-gray-300 cursor-pointer"
+                />
+                <span className="text-sm text-gray-700">Remember this device for 30 days</span>
+              </label>
+              
               {error && <p className="text-sm text-red-500 font-medium">{error}</p>}
               <button 
                 type="submit" 
@@ -299,6 +323,10 @@ const Login: React.FC<LoginProps> = ({ users = [] }) => {
               >
                 {loading ? 'Signing in...' : 'Login'} {!loading && <ArrowRight className="w-4 h-4" />}
               </button>
+              {/* Quick link to open Admin creation after sign-in */}
+              <div className="mt-3 text-center">
+                <a href="?open=admins" className="text-sm text-gray-600 hover:text-gray-900 underline">Create Admin account</a>
+              </div>
             </form>
           )}
 

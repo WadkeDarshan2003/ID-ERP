@@ -1,6 +1,6 @@
 import { getAllProjects, updateProject } from './firebaseService';
 import { createProjectFinancialRecord } from './financialService';
-import { FinancialRecord, Project } from '../types';
+import { FinancialRecord, Project } from '../../types';
 
 /**
  * Migrates legacy project.financials array to Firestore subcollection (finances)

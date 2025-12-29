@@ -8,7 +8,8 @@ interface NotificationPanelProps {
   isOpen: boolean;
   onClose: () => void;
   projects: Project[];
-  onSelectProject?: (project: Project) => void;
+  // Allow caller to receive optional opts (e.g. { initialTab }) when selecting
+  onSelectProject?: (project: Project, opts?: any) => void;
 }
 
 const NotificationPanel: React.FC<NotificationPanelProps> = ({ isOpen, onClose, projects, onSelectProject }) => {
@@ -21,8 +22,8 @@ const NotificationPanel: React.FC<NotificationPanelProps> = ({ isOpen, onClose, 
     // If project notification, navigate to it
     if (notification.projectId && onSelectProject) {
       const project = projects.find(p => p.id === notification.projectId);
-      if (project) {
-        onSelectProject(project);
+        if (project) {
+        onSelectProject?.(project);
         onClose();
       }
     }

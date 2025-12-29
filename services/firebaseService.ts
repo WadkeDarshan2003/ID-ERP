@@ -21,10 +21,14 @@ import { Project, User, Task, TaskStatus, FinancialRecord } from "../types";
  * Aggregates vendor earnings and designer charges from all projects and updates each vendor's Firestore document.
  * Adds fields: totalEarnings, totalDesignerCharges, projectBreakdown (per project) to each vendor doc.
  */
-export async function syncAllVendorsEarnings() {
+export async function syncAllVendorsEarnings(tenantId?: string) {
   try {
     // Fetch all projects
-    const projectsSnap = await getDocs(collection(db, 'projects'));
+    let q = query(collection(db, 'projects'));
+    if (tenantId) {
+      q = query(collection(db, 'projects'), where('tenantId', '==', tenantId));
+    }
+    const projectsSnap = await getDocs(q);
     const projects: Project[] = projectsSnap.docs.map(snap => ({ ...snap.data(), id: snap.id } as Project));
 
     // Map: vendorId -> { totalEarnings, totalDesignerCharges, projectBreakdown }
@@ -86,10 +90,14 @@ export async function syncAllVendorsEarnings() {
  * Aggregates vendor metrics from all projects and stores them in each vendor's document
  * This ensures all vendor data comes from one place (the vendor document itself)
  */
-export async function syncAllVendorMetrics(): Promise<void> {
+export async function syncAllVendorMetrics(tenantId?: string): Promise<void> {
   try {
     // Fetch all projects
-    const projectsSnap = await getDocs(collection(db, 'projects'));
+    let q = query(collection(db, 'projects'));
+    if (tenantId) {
+      q = query(collection(db, 'projects'), where('tenantId', '==', tenantId));
+    }
+    const projectsSnap = await getDocs(q);
     const projects: Project[] = projectsSnap.docs.map(snap => ({ ...snap.data(), id: snap.id } as Project));
 
     // Map: vendorId -> { projectId -> { projectName, taskCount, netAmount } }
@@ -243,8 +251,13 @@ export const deleteProject = async (projectId: string): Promise<void> => {
 };
 
 // Real-time listener for projects
-export const subscribeToProjects = (callback: (projects: Project[]) => void): Unsubscribe => {
-  return onSnapshot(projectsRef, (snapshot) => {
+export const subscribeToProjects = (callback: (projects: Project[]) => void, tenantId?: string): Unsubscribe => {
+  let q = query(projectsRef);
+  if (tenantId) {
+    q = query(projectsRef, where('tenantId', '==', tenantId));
+  }
+
+  return onSnapshot(q, (snapshot) => {
     const projects = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as Project));
     callback(projects);
   }, (error) => {
@@ -267,6 +280,10 @@ export const subscribeToUserProjects = (
     constraints = [where("clientId", "==", userId)];
   } else if (userRole === "Designer") {
     constraints = [where("leadDesignerId", "==", userId)];
+  } else if (userRole === "Vendor") {
+    constraints = [where("vendorIds", "array-contains", userId)];
+  } else if (userRole === "Vendor") {
+    constraints = [where("vendorIds", "array-contains", userId)];
   }
 
   const q = query(projectsRef, ...constraints);
@@ -300,10 +317,52 @@ export const getAllUsers = async (): Promise<User[]> => {
 // Get single user
 export const getUser = async (userId: string): Promise<User | null> => {
   try {
+    // First try: Check users collection
     const docSnap = await getDoc(doc(db, "users", userId));
     if (docSnap.exists()) {
-      return { ...docSnap.data(), id: docSnap.id } as User;
+      const userData = { ...docSnap.data(), id: docSnap.id } as User;
+      
+      // IMPORTANT: Ensure every user has a tenantId for proper data isolation
+      // If missing, assign UID as tenantId (this is a fallback for existing users)
+      if (!userData.tenantId) {
+        console.warn(`⚠️ User ${userId} missing tenantId. Assigning UID as tenantId.`);
+        userData.tenantId = userId;
+        
+        // Persist the fix back to Firestore
+        try {
+          await updateDoc(doc(db, "users", userId), { tenantId: userId });
+          console.log(`✅ Updated user ${userId} with tenantId in Firestore`);
+        } catch (updateError) {
+          console.warn(`⚠️ Could not persist tenantId to Firestore for ${userId}, will use in-memory value`);
+        }
+      }
+      
+      return userData;
     }
+    
+    // Second try: Check clients collection if not in users
+    console.log(`User ${userId} not found in users collection, checking clients...`);
+    const clientSnap = await getDoc(doc(db, "clients", userId));
+    if (clientSnap.exists()) {
+      const userData = { ...clientSnap.data(), id: clientSnap.id } as User;
+      
+      // Ensure tenantId is set
+      if (!userData.tenantId) {
+        console.warn(`⚠️ Client ${userId} missing tenantId. Assigning UID as tenantId.`);
+        userData.tenantId = userId;
+        
+        // Persist the fix back to Firestore
+        try {
+          await updateDoc(doc(db, "clients", userId), { tenantId: userId });
+          console.log(`✅ Updated client ${userId} with tenantId in Firestore`);
+        } catch (updateError) {
+          console.warn(`⚠️ Could not persist tenantId to Firestore for ${userId}, will use in-memory value`);
+        }
+      }
+      
+      return userData;
+    }
+    
     console.warn(`User document not found for ID: ${userId}. Make sure to create a user profile in Firestore.`);
     return null;
   } catch (error: any) {
@@ -352,12 +411,17 @@ export const claimPhoneUserProfile = async (uid: string, phoneNumber: string): P
       
       let finalData = oldDocData;
       
+      // Ensure tenantId is set - use UID for data isolation
+      if (!finalData.tenantId) {
+        finalData.tenantId = uid;
+      }
+      
       // NOW MIGRATE: Update document ID from temporary ID to real Firebase Auth UID
       if (oldDocId !== uid) {
         console.log(`🔄 Migrating document from ${oldDocId} to real UID: ${uid}`);
         
-        // Update data with new UID
-        const updatedData = { ...oldDocData, id: uid };
+        // Update data with new UID and tenantId
+        const updatedData = { ...oldDocData, id: uid, tenantId: uid };
         finalData = updatedData;
         
         // Save to new UID location in users collection
@@ -366,12 +430,11 @@ export const claimPhoneUserProfile = async (uid: string, phoneNumber: string): P
         // Save to new UID location in vendors collection
         await setDoc(doc(db, "vendors", uid), updatedData);
         
-        // Delete old temporary documents
-        if (oldDocId.startsWith('phone_')) {
-          await deleteDoc(doc(db, "users", oldDocId));
-          await deleteDoc(doc(db, "vendors", oldDocId));
-          console.log(`✅ Deleted temporary documents with ID: ${oldDocId}`);
-        }
+        // Delete old temporary documents (from ALL sources to prevent duplicates)
+        console.log(`🗑️ Deleting old documents with ID: ${oldDocId}`);
+        await deleteDoc(doc(db, "users", oldDocId));
+        await deleteDoc(doc(db, "vendors", oldDocId));
+        console.log(`✅ Deleted old documents with ID: ${oldDocId}`);
       }
       
       return finalData;
@@ -407,16 +470,20 @@ export const updateUser = async (userId: string, updates: Partial<User>): Promis
 };
 
 // Real-time listener for users
-export const subscribeToUsers = (callback: (users: User[]) => void): Unsubscribe => {
-  if (process.env.NODE_ENV !== 'production') console.log('🔔 Setting up real-time listener for users collection...');
+export const subscribeToUsers = (callback: (users: User[]) => void, tenantId?: string): Unsubscribe => {
   
   let allUsers: User[] = [];
   let unsubscribers: Unsubscribe[] = [];
 
+  let q = query(usersRef);
+  if (tenantId) {
+    q = query(usersRef, where('tenantId', '==', tenantId));
+  }
+
   // Listen to main users collection
-  const unsubUser = onSnapshot(usersRef, (snapshot) => {
+  const unsubUser = onSnapshot(q, (snapshot) => {
     const users = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as User));
-    if (process.env.NODE_ENV !== 'production') console.log(`📥 Real-time update from 'users': ${users.length} users`);
+    // Real-time update received for users
     allUsers = users;
     callback(allUsers);
   }, (error) => {
@@ -458,11 +525,14 @@ export const seedDatabase = async (projects: Project[], users: User[]): Promise<
 // ============ ROLE-SPECIFIC COLLECTIONS ============
 
 // Real-time listener for designers
-export const subscribeToDesigners = (callback: (designers: User[]) => void): Unsubscribe => {
-  if (process.env.NODE_ENV !== 'production') console.log('🔔 Setting up real-time listener for designers collection...');
-  return onSnapshot(collection(db, "designers"), (snapshot) => {
+export const subscribeToDesigners = (callback: (designers: User[]) => void, tenantId?: string): Unsubscribe => {
+  let q = query(collection(db, "designers"));
+  if (tenantId) {
+    q = query(collection(db, "designers"), where('tenantId', '==', tenantId));
+  }
+  return onSnapshot(q, (snapshot) => {
     const designers = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as User));
-    if (process.env.NODE_ENV !== 'production') console.log(`📥 Real-time update from 'designers': ${designers.length} designers`);
+    // Real-time update received for designers
     callback(designers);
   }, (error) => {
     // Suppress permission-denied errors during logout
@@ -473,11 +543,14 @@ export const subscribeToDesigners = (callback: (designers: User[]) => void): Uns
 };
 
 // Real-time listener for vendors
-export const subscribeToVendors = (callback: (vendors: User[]) => void): Unsubscribe => {
-  if (process.env.NODE_ENV !== 'production') console.log('🔔 Setting up real-time listener for vendors collection...');
-  return onSnapshot(collection(db, "vendors"), (snapshot) => {
+export const subscribeToVendors = (callback: (vendors: User[]) => void, tenantId?: string): Unsubscribe => {
+  let q = query(collection(db, "vendors"));
+  if (tenantId) {
+    q = query(collection(db, "vendors"), where('tenantId', '==', tenantId));
+  }
+  return onSnapshot(q, (snapshot) => {
     const vendors = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as User));
-    if (process.env.NODE_ENV !== 'production') console.log(`📥 Real-time update from 'vendors': ${vendors.length} vendors`);
+    // Real-time update received for vendors
     callback(vendors);
   }, (error) => {
     // Suppress permission-denied errors during logout
@@ -488,11 +561,14 @@ export const subscribeToVendors = (callback: (vendors: User[]) => void): Unsubsc
 };
 
 // Real-time listener for clients
-export const subscribeToClients = (callback: (clients: User[]) => void): Unsubscribe => {
-  if (process.env.NODE_ENV !== 'production') console.log('🔔 Setting up real-time listener for clients collection...');
-  return onSnapshot(collection(db, "clients"), (snapshot) => {
+export const subscribeToClients = (callback: (clients: User[]) => void, tenantId?: string): Unsubscribe => {
+  let q = query(collection(db, "clients"));
+  if (tenantId) {
+    q = query(collection(db, "clients"), where('tenantId', '==', tenantId));
+  }
+  return onSnapshot(q, (snapshot) => {
     const clients = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as User));
-    if (process.env.NODE_ENV !== 'production') console.log(`📥 Real-time update from 'clients': ${clients.length} clients`);
+    // Real-time update received for clients
     callback(clients);
   }, (error) => {
     // Suppress permission-denied errors during logout

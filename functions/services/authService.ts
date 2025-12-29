@@ -123,7 +123,7 @@ export const verifyPhoneOTP = async (confirmationResult: any, otp: string): Prom
 // Phone + PIN login (backup to OTP)
 import { collection, query, where, getDocs } from 'firebase/firestore';
 import { db } from './firebaseConfig';
-import { User } from '../types';
+import { User } from '../../types';
 
 // Logout
 export const logout = async (): Promise<void> => {

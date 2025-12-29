@@ -1,6 +1,11 @@
 import { Task, Project, TaskStatus } from '../types';
 
 export const calculateTaskProgress = (task: Task | Partial<Task>): number => {
+  // If task has explicit progress field set, use that
+  if (task.progress !== undefined && task.progress !== null) {
+    return Math.min(Math.max(task.progress, 0), 100); // Clamp between 0-100
+  }
+  
   // If task has subtasks, calculate based on completion
   if (task.subtasks && task.subtasks.length > 0) {
     const completedCount = task.subtasks.filter(s => s.isCompleted).length;

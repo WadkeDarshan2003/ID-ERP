@@ -78,11 +78,20 @@ export const getProjectFinancialRecords = async (projectId: string): Promise<Fin
 
 // Real-time listener for project's financial records (subcollection)
 export const subscribeToProjectFinancialRecords = (projectId: string, callback: (records: FinancialRecord[]) => void): Unsubscribe => {
-  return onSnapshot(collection(db, "projects", projectId, "finances"), (snapshot) => {
-    const records = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as FinancialRecord));
-    if (process.env.NODE_ENV !== 'production') console.log(`📥 Financial records updated for project ${projectId}: ${records.length} records`);
-    callback(records);
-  });
+  return onSnapshot(
+    collection(db, "projects", projectId, "finances"),
+    (snapshot) => {
+      const records = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as FinancialRecord));
+        // Financial records updated for project
+        callback(records);
+    },
+    (error) => {
+      // Suppress permission-denied errors during logout (expected behavior)
+      if (error.code !== 'permission-denied') {
+        console.error("Error subscribing to financial records:", error);
+      }
+    }
+  );
 };
 
 // ============ FINANCIAL CALCULATIONS ============

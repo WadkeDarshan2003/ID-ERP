@@ -3,8 +3,8 @@
  * Handles automated email sending for various events
  */
 
-import { Task, User, Project, ProjectDocument } from '../types';
-import { formatDateToIndian } from '../utils/taskUtils';
+import { Task, User, Project, ProjectDocument } from '../../types';
+import { formatDateToIndian } from '../../utils/taskUtils';
 import {
   sendTaskAssignmentEmail,
   sendTaskReminder,

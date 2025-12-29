@@ -41,6 +41,7 @@ export interface User {
   password?: string; // Acts as Password (Aadhar)
   phone?: string;
   avatar?: string;
+  tenantId?: string;
   company?: string; // For vendors
   specialty?: string; // For designers/vendors
   authMethod?: 'email' | 'phone'; // Authentication method for vendors (email or phone-based OTP)
@@ -117,6 +118,7 @@ export interface Task {
   title: string;
   description?: string;
   status: TaskStatus;
+  progress?: number; // 0-100, explicit progress tracking (independent of status)
   category: string; // e.g. Civil, Electrical, Painting
   assigneeId: string; // ID of Designer or Vendor
   startDate: string; // YYYY-MM-DD
@@ -177,15 +179,23 @@ export interface ProjectDocument {
   uploadDate: string;
   sharedWith: string[]; // User IDs that can see this file
   comments?: Comment[]; // Comments on this document
-  approvalStatus: 'pending' | 'approved' | 'rejected'; // Document approval status
-  approvedBy?: string; // User ID of approver
-  rejectedBy?: string; // User ID of rejector
+  approvalStatus: 'pending' | 'approved' | 'rejected'; // Admin approval status
+  approvedBy?: string; // Admin user ID of approver
+  rejectedBy?: string; // Admin user ID of rejector
   approvalDate?: string;
   rejectionDate?: string;
+  clientApprovalStatus?: 'pending' | 'approved' | 'rejected'; // Client approval status
+  clientApprovedBy?: string; // Client user ID of approver
+  clientApprovedDate?: string;
 }
 
 export interface Project {
   id: string;
+  tenantId?: string;
+  createdBy?: string;
+  createdAt?: string;
+  updatedBy?: string;
+  updatedAt?: string;
   name: string;
   clientId: string; // Primary client
   clientIds?: string[]; // Additional clients
@@ -193,6 +203,7 @@ export interface Project {
   teamMembers?: string[]; // IDs of explicitly added members
   team?: User[];
   vendorIds?: string[];
+  hiddenVendors?: string[]; // IDs of vendors hidden from clients
   status: ProjectStatus;
   type: ProjectType; // Designing or Turnkey
   category: ProjectCategory; // Commercial or Residential

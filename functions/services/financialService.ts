@@ -9,7 +9,7 @@ import {
   Unsubscribe
 } from "firebase/firestore";
 import { db } from "./firebaseConfig";
-import { FinancialRecord } from "../types";
+import { FinancialRecord } from "../../types";
 
 // ============ PROJECT FINANCIAL RECORDS - SUBCOLLECTION ONLY ============
 

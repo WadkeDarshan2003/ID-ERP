@@ -102,6 +102,49 @@ export const createTask = async (projectId: string, task: Omit<Task, 'id'>): Pro
       createdAt: new Date(),
       updatedAt: new Date()
     });
+
+    // If task is assigned to a vendor, add them to project's vendorIds
+    if (task.assigneeId) {
+      // Check if assignee is a vendor (we can't check role easily here without fetching user, 
+      // but adding to vendorIds is harmless if they are not a vendor, or we can check if they are in vendors collection)
+      // For simplicity and performance, we'll add to vendorIds if it looks like a user ID.
+      // Ideally we should check user role, but let's assume the UI handles role filtering.
+      // Actually, let's just add to vendorIds. If it's a designer, it won't hurt (though semantically incorrect).
+      // Better approach: The UI calling this knows the role. But here we are in service.
+      // Let's just add to vendorIds array using arrayUnion.
+      // Note: This might add designers to vendorIds, which is not ideal but acceptable for visibility.
+      // A better fix is to check if the user is a vendor before calling this, or check here.
+      // Since we can't easily check here, we will rely on the fact that `vendorIds` is used for visibility.
+      
+      // Wait, we should only add if it IS a vendor.
+      // Let's try to fetch the user to check role? No, that's slow.
+      // Let's just update the project document to include this assignee in a generic 'participants' or 'vendorIds' if we can't distinguish.
+      // However, to fix the immediate bug:
+      
+      const projectRef = doc(db, "projects", projectId);
+      // We will blindly add to vendorIds for now to ensure visibility. 
+      // If we want to be strict, we should fetch the user doc.
+      // Let's fetch the user doc to be safe.
+      try {
+        const userDoc = await getDoc(doc(db, "users", task.assigneeId));
+        if (userDoc.exists() && userDoc.data().role === 'Vendor') {
+           await updateDoc(projectRef, {
+             vendorIds: arrayUnion(task.assigneeId)
+           });
+        } else {
+           // Fallback: check vendors collection directly
+           const vendorDoc = await getDoc(doc(db, "vendors", task.assigneeId));
+           if (vendorDoc.exists()) {
+              await updateDoc(projectRef, {
+                vendorIds: arrayUnion(task.assigneeId)
+              });
+           }
+        }
+      } catch (e) {
+        console.warn("Failed to update project vendorIds:", e);
+      }
+    }
+
     return newDocRef.id;
   } catch (error) {
     console.error("Error creating task:", error);
@@ -120,6 +163,30 @@ export const updateTask = async (projectId: string, taskId: string, updates: Par
       ...cleanedUpdates,
       updatedAt: new Date()
     });
+
+    // If task is assigned to a vendor, add them to project's vendorIds
+    if (updates.assigneeId) {
+      const projectRef = doc(db, "projects", projectId);
+      try {
+        const userDoc = await getDoc(doc(db, "users", updates.assigneeId));
+        if (userDoc.exists() && userDoc.data().role === 'Vendor') {
+           await updateDoc(projectRef, {
+             vendorIds: arrayUnion(updates.assigneeId)
+           });
+        } else {
+           // Fallback: check vendors collection directly
+           const vendorDoc = await getDoc(doc(db, "vendors", updates.assigneeId));
+           if (vendorDoc.exists()) {
+              await updateDoc(projectRef, {
+                vendorIds: arrayUnion(updates.assigneeId)
+              });
+           }
+        }
+      } catch (e) {
+        console.warn("Failed to update project vendorIds on task update:", e);
+      }
+    }
+
     if (process.env.NODE_ENV !== 'production') console.log(`✅ Task ${taskId} updated in Firestore`);
   } catch (error) {
     console.error("Error updating task:", error);
@@ -147,10 +214,19 @@ export const getProjectTasks = async (projectId: string): Promise<Task[]> => {
 };
 
 export const subscribeToProjectTasks = (projectId: string, callback: (tasks: Task[]) => void): Unsubscribe => {
-  return onSnapshot(collection(db, "projects", projectId, "tasks"), (snapshot) => {
-    const tasks = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as Task));
-    callback(tasks);
-  });
+  return onSnapshot(
+    collection(db, "projects", projectId, "tasks"),
+    (snapshot) => {
+      const tasks = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as Task));
+      callback(tasks);
+    },
+    (error) => {
+      // Suppress permission-denied errors during logout (expected behavior)
+      if (error.code !== 'permission-denied') {
+        console.error("Error subscribing to tasks:", error);
+      }
+    }
+  );
 };
 
 // ============ MEETINGS COLLECTION ============
@@ -211,10 +287,19 @@ export const getProjectMeetings = async (projectId: string): Promise<Meeting[]> 
 };
 
 export const subscribeToProjectMeetings = (projectId: string, callback: (meetings: Meeting[]) => void): Unsubscribe => {
-  return onSnapshot(collection(db, "projects", projectId, "meetings"), (snapshot) => {
-    const meetings = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as Meeting));
-    callback(meetings);
-  });
+  return onSnapshot(
+    collection(db, "projects", projectId, "meetings"),
+    (snapshot) => {
+      const meetings = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as Meeting));
+      callback(meetings);
+    },
+    (error) => {
+      // Suppress permission-denied errors during logout (expected behavior)
+      if (error.code !== 'permission-denied') {
+        console.error("Error subscribing to meetings:", error);
+      }
+    }
+  );
 };
 
 // ============ MEETING COMMENTS SUBCOLLECTION ============
@@ -340,30 +425,39 @@ export const subscribeToProjectDocuments = (projectId: string, callback: (docume
   const unsubscribers: Unsubscribe[] = [];
   
   // Subscribe to documents collection
-  const docsUnsubscribe = onSnapshot(collection(db, "projects", projectId, "documents"), (snapshot) => {
-    // Handle document changes (additions/updates/deletions)
-    snapshot.docs.forEach(docSnapshot => {
-      const docId = docSnapshot.id;
-      const docData = docSnapshot.data() as ProjectDocument;
-      
-      // Add or update document in map
-      // Use comments from document field (which is synced via arrayUnion)
-      documentsMap.set(docId, {
-        ...docData,
-        id: docId,
-        comments: docData.comments || []  // Use document field as source of truth
+  const docsUnsubscribe = onSnapshot(
+    collection(db, "projects", projectId, "documents"),
+    (snapshot) => {
+      // Handle document changes (additions/updates/deletions)
+      snapshot.docs.forEach(docSnapshot => {
+        const docId = docSnapshot.id;
+        const docData = docSnapshot.data() as ProjectDocument;
+        
+        // Add or update document in map
+        // Use comments from document field (which is synced via arrayUnion)
+        documentsMap.set(docId, {
+          ...docData,
+          id: docId,
+          comments: docData.comments || []  // Use document field as source of truth
+        });
       });
-    });
-    
-    // Remove deleted documents
-    documentsMap.forEach((_, docId) => {
-      if (!snapshot.docs.find(d => d.id === docId)) {
-        documentsMap.delete(docId);
+      
+      // Remove deleted documents
+      documentsMap.forEach((_, docId) => {
+        if (!snapshot.docs.find(d => d.id === docId)) {
+          documentsMap.delete(docId);
+        }
+      });
+      
+      callback(Array.from(documentsMap.values()));
+    },
+    (error) => {
+      // Suppress permission-denied errors during logout (expected behavior)
+      if (error.code !== 'permission-denied') {
+        console.error("Error subscribing to documents:", error);
       }
-    });
-    
-    callback(Array.from(documentsMap.values()));
-  });
+    }
+  );
   
   unsubscribers.push(docsUnsubscribe);
   
@@ -613,11 +707,20 @@ export const getTimelines = async (projectId: string): Promise<Timeline[]> => {
 export const subscribeToTimelines = (projectId: string, callback: (timelines: Timeline[]) => void): Unsubscribe => {
   try {
     const timelinesRef = collection(db, "projects", projectId, "timelines");
-    return onSnapshot(timelinesRef, (snapshot) => {
-      const timelines = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as Timeline));
-      if (process.env.NODE_ENV !== 'production') console.log(`📥 Real-time update from timelines: ${timelines.length} timelines`);
-      callback(timelines);
-    });
+    return onSnapshot(
+      timelinesRef,
+      (snapshot) => {
+        const timelines = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as Timeline));
+        if (process.env.NODE_ENV !== 'production') console.log(`📥 Real-time update from timelines: ${timelines.length} timelines`);
+        callback(timelines);
+      },
+      (error) => {
+        // Suppress permission-denied errors during logout (expected behavior)
+        if (error.code !== 'permission-denied') {
+          console.error("Error subscribing to timelines:", error);
+        }
+      }
+    );
   } catch (error) {
     console.error("Error subscribing to timelines:", error);
     throw error;

@@ -1,8 +1,8 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { User, Role, Project, ProjectStatus, ProjectType, ProjectCategory, ProjectDocument } from '../types';
+import { useAuth } from '../contexts/AuthContext';
 import { X, Calendar, IndianRupee, Image as ImageIcon, Loader, Upload, Trash2 } from 'lucide-react';
 import { useNotifications } from '../contexts/NotificationContext';
-import { useLoading } from '../contexts/LoadingContext';
 import { useProjectCrud } from '../hooks/useCrud';
 import { storage } from '../services/firebaseConfig';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
@@ -18,9 +18,9 @@ interface NewProjectModalProps {
 
 const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSave, initialProject }) => {
   const { addNotification } = useNotifications();
+  const { user } = useAuth();
   const { createNewProject, updateExistingProject } = useProjectCrud();
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const { showLoading, hideLoading } = useLoading();
   const isEditMode = !!initialProject;
   
   // Initialize dates with today's date in YYYY-MM-DD format
@@ -29,6 +29,7 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
   const [formData, setFormData] = useState<Partial<Project>>(
     initialProject ? {
       name: initialProject.name,
+      tenantId: initialProject.tenantId,
       status: initialProject.status,
       type: initialProject.type,
       category: initialProject.category,
@@ -37,9 +38,11 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
       startDate: initialProject.startDate,
       deadline: initialProject.deadline,
       clientId: initialProject.clientId,
+      clientIds: initialProject.clientIds || [initialProject.clientId],
       leadDesignerId: initialProject.leadDesignerId
     } : {
       name: '',
+      tenantId: user?.tenantId || user?.id || '',
       status: ProjectStatus.DISCOVERY,
       type: ProjectType.DESIGNING,
       category: ProjectCategory.COMMERCIAL,
@@ -48,6 +51,7 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
       startDate: today,
       deadline: today,
       clientId: '',
+      clientIds: [],
       leadDesignerId: ''
     }
   );
@@ -58,7 +62,10 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
   const documentInputRef = useRef<HTMLInputElement>(null);
 
   const validate = () => {
-    if (!formData.name || !formData.clientId || !formData.leadDesignerId || !formData.startDate || !formData.deadline || !formData.budget) {
+    // clientIds must have at least one client (use clientIds if available, otherwise check clientId)
+    const selectedClients = formData.clientIds && formData.clientIds.length > 0 ? formData.clientIds : (formData.clientId ? [formData.clientId] : []);
+    
+    if (!formData.name || !formData.leadDesignerId || !formData.startDate || !formData.deadline || !formData.budget) {
       setShowErrors(true);
       addNotification('Validation Error', 'Please complete all required fields marked in red.', 'error');
       return false;
@@ -103,14 +110,17 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
     if (!validate()) return;
 
     setIsSubmitting(true);
-    showLoading(isEditMode ? 'Updating project...' : 'Creating project...');
 
     try {
-      if (isEditMode && initialProject) {
+        if (isEditMode && initialProject) {
         // Update mode
+        const selectedClients = formData.clientIds && formData.clientIds.length > 0 ? formData.clientIds : (formData.clientId ? [formData.clientId] : []);
+        
         const updates: Partial<Project> = {
           name: formData.name!,
-          clientId: formData.clientId!,
+          clientId: selectedClients[0] || '', // Keep for backward compatibility; empty if none
+          clientIds: selectedClients, // All clients treated equally (may be empty)
+          tenantId: initialProject.tenantId || user?.tenantId || user?.id || '',
           leadDesignerId: formData.leadDesignerId!,
           status: formData.status || ProjectStatus.DISCOVERY,
           type: formData.type as ProjectType,
@@ -120,6 +130,9 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
           budget: Number(formData.budget),
           description: formData.description || ''
         };
+        // Audit fields for update
+        updates.updatedBy = user?.id || '';
+        updates.updatedAt = new Date().toISOString();
 
         // Upload cover image if provided
         if (coverImageFile) {
@@ -156,7 +169,7 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
                   name: doc.name || doc.file.name,
                   type: docType,
                   url: fileUrl,
-                  uploadedBy: 'system',
+                  uploadedBy: user?.id || 'system',
                   uploadDate: new Date().toISOString(),
                   sharedWith: [Role.ADMIN, Role.DESIGNER, Role.CLIENT],
                   approvalStatus: 'pending'
@@ -182,9 +195,13 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
         addNotification('Success', `Project "${formData.name}" has been updated successfully.`, 'success');
       } else {
         // Create mode
+        const selectedClients = formData.clientIds && formData.clientIds.length > 0 ? formData.clientIds : (formData.clientId ? [formData.clientId] : []);
+        
         const newProject: Omit<Project, 'id'> = {
           name: formData.name!,
-          clientId: formData.clientId!,
+          clientId: selectedClients[0] || '', // Keep for backward compatibility; empty if none
+          clientIds: selectedClients, // All clients treated equally (may be empty)
+          tenantId: user?.tenantId || user?.id || '',
           leadDesignerId: formData.leadDesignerId!,
           status: formData.status || ProjectStatus.DISCOVERY,
           type: formData.type as ProjectType,
@@ -202,13 +219,15 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
           activityLog: [
             {
               id: `log_${Date.now()}`,
-              userId: 'system',
+              userId: user?.id || 'system',
               action: 'Project Created',
               details: 'Project initialized via Admin Dashboard',
               timestamp: new Date().toISOString(),
               type: 'creation'
             }
-          ]
+          ],
+          createdBy: user?.id || '',
+          createdAt: new Date().toISOString()
         };
 
         // Create project first
@@ -249,7 +268,7 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
               name: doc.name || doc.file.name,
               type: docType,
               url: fileUrl,
-              uploadedBy: 'system',
+              uploadedBy: user?.id || 'system',
               uploadDate: new Date().toISOString(),
               sharedWith: [Role.ADMIN, Role.DESIGNER, Role.CLIENT],
               approvalStatus: 'pending'
@@ -291,12 +310,24 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
       addNotification('Error', `Failed to ${isEditMode ? 'update' : 'create'} project: ${error.message}`, 'error');
     } finally {
       setIsSubmitting(false);
-      hideLoading();
     }
   };
 
   const clients = users.filter(u => u.role === Role.CLIENT);
   const designers = users.filter(u => u.role === Role.DESIGNER);
+
+  const [showClientDropdown, setShowClientDropdown] = useState(false);
+  const clientsDropdownRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (clientsDropdownRef.current && !clientsDropdownRef.current.contains(e.target as Node)) {
+        setShowClientDropdown(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   const handleDateChange = (field: 'startDate' | 'deadline', value: string) => {
     // Ensure date is in valid YYYY-MM-DD format
@@ -359,16 +390,55 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
           {/* People */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div>
-              <label className="block text-sm font-bold text-gray-700 mb-1">Client <span className="text-red-500">*</span></label>
-              <select 
-                className={getInputClass(formData.clientId)}
-                value={formData.clientId}
-                onChange={e => setFormData({...formData, clientId: e.target.value})}
-                title="Select a client for the project"
-              >
-                <option value="">Select Client...</option>
-                {clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-              </select>
+              <label className="block text-sm font-bold text-gray-700 mb-2">Clients</label>
+              <div className="relative" ref={clientsDropdownRef}>
+                <button
+                  type="button"
+                  onClick={() => setShowClientDropdown(s => !s)}
+                  className={`w-full text-left px-3 py-2 border rounded-lg bg-white border-gray-300`}
+                  title="Select clients"
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="text-sm text-gray-700 truncate">
+                      {(formData.clientIds && formData.clientIds.length > 0)
+                        ? `${formData.clientIds.length} client${formData.clientIds.length !== 1 ? 's' : ''} selected`
+                        : 'Select clients...'}
+                    </div>
+                    <div className="text-gray-400">{showClientDropdown ? '▴' : '▾'}</div>
+                  </div>
+                </button>
+
+                {showClientDropdown && (
+                  <div className="absolute z-30 left-0 right-0 mt-2 bg-white border border-gray-200 rounded-md shadow-md max-h-48 overflow-y-auto">
+                    {clients.length === 0 ? (
+                      <p className="text-gray-500 text-sm p-3">No clients available</p>
+                    ) : (
+                      clients.map(client => (
+                        <label key={client.id} className="flex items-center gap-2 cursor-pointer hover:bg-gray-50 p-2 rounded transition-colors">
+                          <input
+                            type="checkbox"
+                            checked={(formData.clientIds || []).includes(client.id)}
+                            onChange={(e) => {
+                              const currentIds = formData.clientIds || [];
+                              const newIds = e.target.checked
+                                ? [...currentIds, client.id]
+                                : currentIds.filter(id => id !== client.id);
+                              setFormData({ ...formData, clientIds: newIds, clientId: newIds[0] || '' });
+                            }}
+                            className="w-4 h-4 rounded border-gray-300 cursor-pointer"
+                          />
+                          <span className="text-sm text-gray-700">{client.name}</span>
+                        </label>
+                      ))
+                    )}
+                  </div>
+                )}
+              </div>
+              {formData.clientIds && formData.clientIds.length > 0 && (
+                <p className="text-xs text-gray-500 mt-2">
+                  {formData.clientIds.length} client{formData.clientIds.length !== 1 ? 's' : ''} selected
+                </p>
+              )}
             </div>
             <div>
               <label className="block text-sm font-bold text-gray-700 mb-1">Lead Designer <span className="text-red-500">*</span></label>
@@ -420,32 +490,24 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
                <label className="block text-sm font-bold text-gray-700 mb-1 flex items-center gap-0.5">
                  <Calendar className="w-3 h-3 text-gray-400"/> Start Date <span className="text-red-500">*</span>
                </label>
-               <input 
-                 type="text"
-                 placeholder="DD/MM/YYYY"
+               <input
+                 type="date"
                  className={getInputClass(formData.startDate)}
-                 value={formData.startDate ? formatDateToIndian(formData.startDate) : ''}
-                 onChange={e => {
-                   const isoDate = formatIndianToISO(e.target.value);
-                   handleDateChange('startDate', isoDate || e.target.value);
-                 }}
-                 title="Select the project start date (DD/MM/YYYY)"
+                 value={formData.startDate || ''}
+                 onChange={e => handleDateChange('startDate', e.target.value)}
+                 title="Select the project start date"
                />
              </div>
              <div>
                <label className="block text-sm font-bold text-gray-700 mb-1 flex items-center gap-0.5">
                  <Calendar className="w-3 h-3 text-gray-400"/> Deadline <span className="text-red-500">*</span>
                </label>
-               <input 
-                 type="text"
-                 placeholder="DD/MM/YYYY"
+               <input
+                 type="date"
                  className={getInputClass(formData.deadline)}
-                 value={formData.deadline ? formatDateToIndian(formData.deadline) : ''}
-                 onChange={e => {
-                   const isoDate = formatIndianToISO(e.target.value);
-                   handleDateChange('deadline', isoDate || e.target.value);
-                 }}
-                 title="Select the project deadline date (DD/MM/YYYY)"
+                 value={formData.deadline || ''}
+                 onChange={e => handleDateChange('deadline', e.target.value)}
+                 title="Select the project deadline date"
                />
              </div>
              <div>

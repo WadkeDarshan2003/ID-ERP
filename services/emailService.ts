@@ -162,7 +162,8 @@ export const sendTaskAssignmentEmail = async (
   taskTitle: string,
   projectName: string,
   dueDate: string,
-  description?: string
+  description?: string,
+  deepLink?: string
 ): Promise<{ success: boolean; error?: string }> => {
   const htmlContent = `
     <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 600px; margin: 0 auto; background-color: #f9fafb; padding: 20px;">
@@ -191,11 +192,14 @@ export const sendTaskAssignmentEmail = async (
     </div>
   `;
 
+  // If a deep link is provided, append an action button
+  const finalHtml = deepLink ? htmlContent.replace('</div>\n  `;', `</div>\n  <div style="margin:20px 0; text-align:center;"><a href="${deepLink}" style="display:inline-block;background-color:#16a34a;color:#fff;padding:12px 20px;border-radius:6px;text-decoration:none;font-weight:bold;">Open Task</a></div>\n  </div>\n  `) : htmlContent;
+
   return sendEmail({
     to: recipientEmail,
     recipientName,
     subject: `Task Assigned: ${taskTitle}`,
-    htmlContent,
+    htmlContent: finalHtml,
   });
 };
 
@@ -207,7 +211,8 @@ export const sendDocumentSharedEmail = async (
   recipientName: string,
   documentName: string,
   projectName: string,
-  senderName: string
+  senderName: string,
+  deepLink?: string
 ): Promise<{ success: boolean; error?: string }> => {
   const htmlContent = `
     <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 600px; margin: 0 auto; background-color: #f9fafb; padding: 20px;">
@@ -235,10 +240,12 @@ export const sendDocumentSharedEmail = async (
     </div>
   `;
 
+  const finalHtml = deepLink ? htmlContent.replace('</div>\n  </div>\n  `;', `</div>\n  <div style="margin:20px 0; text-align:center;"><a href="${deepLink}" style="display:inline-block;background-color:#0284c7;color:#fff;padding:12px 20px;border-radius:6px;text-decoration:none;font-weight:bold;">Open Document</a></div>\n  </div>\n  `) : htmlContent;
+
   return sendEmail({
     to: recipientEmail,
     recipientName,
     subject: `Document Shared: ${documentName}`,
-    htmlContent,
+    htmlContent: finalHtml,
   });
 };

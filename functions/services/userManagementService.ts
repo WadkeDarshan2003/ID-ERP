@@ -1,7 +1,7 @@
 import { createUserWithEmailAndPassword, signOut, signInWithEmailAndPassword, getAuth } from 'firebase/auth';
 import { auth, db, firebaseConfig } from './firebaseConfig';
 import { setDoc, doc, updateDoc } from 'firebase/firestore';
-import { User, Role } from '../types';
+import { User, Role } from '../../types';
 import { sendEmail } from './emailService';
 import { initializeApp, deleteApp } from 'firebase/app';
 

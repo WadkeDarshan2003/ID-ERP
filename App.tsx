@@ -1,25 +1,28 @@
 import React, { useState, useEffect } from 'react';
 import { 
   LayoutDashboard, FolderKanban, Users, ShoppingBag, 
-  Palette, LogOut, Bell, Menu, X, Tag, Edit, Trash2
+  Palette, LogOut, Bell, Menu, X, Tag, Edit, Trash2, Settings, Shield
 } from 'lucide-react';
 import { MOCK_PROJECTS, MOCK_USERS } from './constants';
-import { Project, Role, User, ProjectStatus, ProjectType, ProjectCategory } from './types';
+import { Project, Role, User, ProjectStatus, ProjectType, ProjectCategory, Task } from './types';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { NotificationProvider, useNotifications } from './contexts/NotificationContext';
 import { LoadingProvider } from './contexts/LoadingContext';
-import { subscribeToProjects, subscribeToUsers, subscribeToDesigners, subscribeToVendors, subscribeToClients, seedDatabase, updateProject, deleteProject, syncAllVendorMetrics } from './services/firebaseService';
+import { subscribeToProjects, subscribeToUserProjects, subscribeToUsers, subscribeToDesigners, subscribeToVendors, subscribeToClients, seedDatabase, updateProject, deleteProject, syncAllVendorMetrics } from './services/firebaseService';
+import { subscribeToProjectTasks } from './services/projectDetailsService';
 import { AvatarCircle } from './utils/avatarUtils';
 import { formatDateToIndian } from './utils/taskUtils';
 
 // Components
 import Dashboard from './components/Dashboard';
-import ProjectDetail from './components/ProjectDetail';
+import { ProjectDetail } from './components/ProjectDetail';
 import PeopleList from './components/PeopleList';
 import Login from './components/Login';
 import NotificationPanel from './components/NotificationPanel';
 import NewProjectModal from './components/NewProjectModal';
 import Loader from './components/Loader';
+import RememberedDevices from './components/RememberedDevices';
+import SessionExpiryWarning from './components/SessionExpiryWarning';
 
 import { calculateProjectProgress } from './utils/taskUtils';
 
@@ -30,15 +33,24 @@ const ProjectList = ({
   user,
   setEditingProject,
   setIsNewProjectModalOpen,
-  onDeleteProject
+  onDeleteProject,
+  realTimeTasks
 }: { 
   projects: Project[], 
   onSelect: (p: Project) => void,
   user: User | null,
   setEditingProject: (project: Project | null) => void,
   setIsNewProjectModalOpen: (open: boolean) => void,
-  onDeleteProject: (project: Project) => void
+  onDeleteProject: (project: Project) => void,
+  realTimeTasks: Map<string, Task[]>
 }) => {
+  const getSafeTimestamp = (date: any) => {
+    if (!date) return 0;
+    if (typeof date === 'string') return new Date(date).getTime();
+    if (date.toDate && typeof date.toDate === 'function') return date.toDate().getTime();
+    return new Date(date).getTime() || 0;
+  };
+
   const getStatusColor = (status: ProjectStatus) => {
     switch (status) {
       case ProjectStatus.DISCOVERY: return 'bg-teal-100 text-teal-700';
@@ -61,6 +73,8 @@ const ProjectList = ({
     acc[category].push(project);
     return acc;
   }, {} as Record<ProjectCategory, Project[]>);
+
+  // (No per-category sorting on the Project page)
 
   // Sort categories (Commercial first, then Residential)
   const sortedCategories = Object.keys(groupedProjects).sort((a, b) => {
@@ -91,9 +105,6 @@ const ProjectList = ({
                   <img src={project.thumbnail} alt={project.name} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" />
                   {/* Edit/Delete moved to card footer for left-aligned placement */}
                   <div className="absolute top-3 right-3 flex gap-2 items-center">
-                    <div className={`backdrop-blur-md px-3 py-1 rounded text-sm font-bold md:px-2 md:text-xs md:font-bold shadow-sm border border-white/20 ${getStatusColor(project.status)}`}>
-                      {project.status}
-                    </div>
                     <div className={`backdrop-blur-md px-3 py-1 rounded text-sm font-bold md:px-2 md:text-xs md:font-bold shadow-sm border border-white/20 ${getTypeColor(project.type)}`}>
                       {project.type}
                     </div>
@@ -114,12 +125,12 @@ const ProjectList = ({
                      <div className="flex justify-between text-xs mb-1">
                         <span className="text-gray-500 mobile-increase">Progress</span>
                         <span className="text-gray-900 font-bold mobile-increase">
-                          {calculateProjectProgress(project.tasks)}%
+                          {calculateProjectProgress(realTimeTasks.get(project.id) || project.tasks)}%
                         </span>
                       </div>
                      <div className="w-full bg-gray-100 rounded-full h-1.5">
                        <div 
-                         {...{ style: { width: `${calculateProjectProgress(project.tasks)}%` } }}
+                         {...{ style: { width: `${calculateProjectProgress(realTimeTasks.get(project.id) || project.tasks)}%` } }}
                          className="bg-gray-900 h-1.5 rounded-full transition-all duration-1000" 
                        />
                      </div>
@@ -166,7 +177,7 @@ const ProjectList = ({
   );
 };
 
-type ViewState = 'dashboard' | 'projects' | 'clients' | 'vendors' | 'designers';
+type ViewState = 'dashboard' | 'projects' | 'clients' | 'vendors' | 'designers' | 'admins' | 'settings';
 
 function App() {
   // Lifted state to allow NotificationProvider access to projects
@@ -206,6 +217,11 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
     return (user && user.role === Role.CLIENT) ? 'projects' : 'dashboard';
   });
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
+  const [selectedTask, setSelectedTask] = useState<Task | null>(null);
+  const [isTaskOnlyView, setIsTaskOnlyView] = useState(false);
+  const [initialProjectTab, setInitialProjectTab] = useState<'discovery' | 'plan' | 'financials' | 'team' | 'timeline' | 'documents' | 'meetings' | undefined>(undefined);
+  // Store pending deep-link params found on page load and apply them after projects/tasks load
+  const [pendingDeepLink, setPendingDeepLink] = useState<{ projectId?: string; taskId?: string; meetingId?: string; tab?: string; open?: string } | null>(null);
 
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
@@ -213,60 +229,82 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
   const [isNewProjectModalOpen, setIsNewProjectModalOpen] = useState(false);
   const [editingProject, setEditingProject] = useState<Project | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [realTimeTasks, setRealTimeTasks] = useState<Map<string, Task[]>>(new Map());
 
   // Subscribe to Firebase real-time updates
   useEffect(() => {
+    // Capture URL query params on load and defer applying until data is available
+    try {
+      if (typeof window !== 'undefined') {
+        const params = new URLSearchParams(window.location.search);
+        const qProject = params.get('projectId') || params.get('project') || undefined;
+        const qTask = params.get('taskId') || params.get('task') || undefined;
+        const qMeeting = params.get('meetingId') || undefined;
+        const qTab = params.get('tab') || undefined;
+        const qOpen = params.get('open') || undefined;
+        if (qProject || qTask || qMeeting || qTab || qOpen) {
+          setPendingDeepLink({ projectId: qProject, taskId: qTask, meetingId: qMeeting, tab: qTab, open: qOpen });
+        }
+      }
+    } catch (e) {
+      // ignore URL parse errors
+    }
+
     if (!user) return;
 
     setIsLoading(false); // No loading state needed, show empty immediately
 
     // Subscribe to projects (will be empty initially)
-    const unsubscribeProjects = subscribeToProjects((firebaseProjects) => {
-      if (process.env.NODE_ENV !== 'production') console.log('🔄 Projects updated in App:', firebaseProjects.length);
+    let unsubscribeProjects: any;
+    
+    // Use global subscription for all roles for now to ensure visibility
+    // The security rules are permissive enough to allow this, and it fixes the issue where
+    // vendors couldn't see projects they were assigned to via tasks but not in vendorIds array.
+    // Long term fix: Ensure vendorIds is always updated when tasks are assigned (implemented in projectDetailsService)
+    // But for immediate fix for existing data, we fetch all.
+    unsubscribeProjects = subscribeToProjects((firebaseProjects) => {
       setProjects(firebaseProjects || []);
       
-      // Sync all vendor metrics whenever projects change
-      syncAllVendorMetrics().catch((err: any) => {
-        console.error('Failed to sync vendor metrics:', err);
-      });
-    });
+      // Sync all vendor metrics whenever projects change (except for vendors)
+      if (user.role !== Role.VENDOR) {
+        syncAllVendorMetrics(user.tenantId).catch((err: any) => {
+          console.error('Failed to sync vendor metrics:', err);
+        });
+      }
+    }, user.tenantId);
 
     // Subscribe to users - combines from all role collections
     const unsubscribeUsers = subscribeToUsers((firebaseUsers) => {
-      if (process.env.NODE_ENV !== 'production') console.log('🔄 Users updated in App:', firebaseUsers.length, firebaseUsers);
       setUsers(firebaseUsers || []);
-    });
+    }, user.tenantId);
 
     // Also subscribe to role-specific collections for redundancy/updates
     const unsubscribeDesigners = subscribeToDesigners((designers) => {
-      if (process.env.NODE_ENV !== 'production') console.log('🔄 Designers updated:', designers.length);
       // Replace all designers with the new list, ensuring no ID duplicates
       setUsers(prev => {
         const newIds = new Set(designers.map(d => d.id));
         const others = prev.filter(u => !newIds.has(u.id));
         return [...others, ...designers];
       });
-    });
+    }, user.tenantId);
 
     const unsubscribeVendors = subscribeToVendors((vendors) => {
-      if (process.env.NODE_ENV !== 'production') console.log('🔄 Vendors updated:', vendors.length);
       // Replace all vendors with the new list, ensuring no ID duplicates
       setUsers(prev => {
         const newIds = new Set(vendors.map(v => v.id));
         const others = prev.filter(u => !newIds.has(u.id));
         return [...others, ...vendors];
       });
-    });
+    }, user.tenantId);
 
     const unsubscribeClients = subscribeToClients((clients) => {
-      if (process.env.NODE_ENV !== 'production') console.log('🔄 Clients updated:', clients.length);
       // Replace all clients with the new list, ensuring no ID duplicates
       setUsers(prev => {
         const newIds = new Set(clients.map(c => c.id));
         const others = prev.filter(u => !newIds.has(u.id));
         return [...others, ...clients];
       });
-    });
+    }, user.tenantId);
 
     // Cleanup subscriptions on unmount
     return () => {
@@ -278,11 +316,71 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
     };
   }, [user, setProjects, setUsers]);
 
+    // Apply pending deep-link after projects or realTimeTasks update
+    useEffect(() => {
+      if (!pendingDeepLink) return;
+      const { projectId, taskId, meetingId, tab } = pendingDeepLink;
+      if (!projectId) return;
+
+      const proj = projects.find(p => p.id === projectId);
+      if (proj) {
+        setSelectedProject(proj);
+        setInitialProjectTab((tab as any) || undefined);
+
+        if (taskId) {
+          const tasks = realTimeTasks.get(projectId) || proj.tasks || [];
+          const t = tasks.find(tsk => tsk.id === taskId) || null;
+          if (t) {
+            setSelectedTask(t);
+            setIsTaskOnlyView(true);
+          }
+        }
+
+        // If meetingId provided, just ensure project opens with meetings tab
+        if (meetingId && !taskId) {
+          setInitialProjectTab('meetings');
+        }
+
+        // Clear pending deep link so it doesn't re-run
+        setPendingDeepLink(null);
+        // Remove query params from URL so child components can also check URL if needed
+        try { window.history.replaceState({}, document.title, window.location.pathname); } catch (e) { /* ignore */ }
+      }
+    }, [projects, realTimeTasks, pendingDeepLink]);
+
+  // Subscribe to all project tasks for real-time updates
+  useEffect(() => {
+    if (projects.length === 0) return;
+
+    const unsubscribers: Array<() => void> = [];
+
+    projects.forEach((project) => {
+      const unsubscribe = subscribeToProjectTasks(project.id, (tasks) => {
+        setRealTimeTasks((prev) => new Map(prev).set(project.id, tasks));
+      });
+      unsubscribers.push(unsubscribe);
+    });
+
+    return () => {
+      unsubscribers.forEach((unsub) => unsub());
+    };
+  }, [projects]);
+
   // Reset view to dashboard on login
   useEffect(() => {
     if (user) {
-      // Send clients directly to Projects, other roles to Dashboard
-      setCurrentView(user.role === Role.CLIENT ? 'projects' : 'dashboard');
+      // If a pending deep-link requests opening Admins, honor it after login
+      try {
+        const p = (pendingDeepLink as any) || {};
+        if (p.open === 'admins') {
+          setCurrentView('admins');
+        } else {
+          // Send clients directly to Projects, other roles to Dashboard
+          setCurrentView(user.role === Role.CLIENT ? 'projects' : 'dashboard');
+        }
+      } catch (e) {
+        setCurrentView(user.role === Role.CLIENT ? 'projects' : 'dashboard');
+      }
       setSelectedProject(null);
     }
   }, [user]);
@@ -318,7 +416,7 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
       console.error('Failed to save project update to Firebase:', err);
     });
     // Sync vendor metrics after project change
-    syncAllVendorMetrics().catch((err: any) => {
+    syncAllVendorMetrics(user.tenantId).catch((err: any) => {
       console.error('Failed to sync vendor metrics:', err);
     });
   };
@@ -345,11 +443,13 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
   // Filter Projects for List View based on Role
   const visibleProjects = projects.filter(p => {
     if (user.role === Role.ADMIN) return true;
-    if (user.role === Role.DESIGNER) return p.leadDesignerId === user.id;
-    if (user.role === Role.CLIENT) return p.clientId === user.id;
+    if (user.role === Role.DESIGNER) return p.leadDesignerId === user.id || (p.teamMembers || []).includes(user.id);
+    if (user.role === Role.CLIENT) return p.clientId === user.id || (p.clientIds || []).includes(user.id);
     if (user.role === Role.VENDOR) {
-      // Vendors see projects they have tasks in
-      return p.tasks.some(t => t.assigneeId === user.id);
+      // Vendors see projects they have tasks in, are explicitly added to, or included in vendorIds
+      // Use realTimeTasks map which has tasks fetched from subcollection, not p.tasks which may be empty
+      const projectTasks = realTimeTasks.get(p.id) || [];
+      return projectTasks.some(t => t.assigneeId === user.id) || (p.vendorIds || []).includes(user.id) || (p.teamMembers || []).includes(user.id);
     }
     return false;
   });
@@ -359,6 +459,8 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
       onClick={() => {
         setCurrentView(view);
         setSelectedProject(null);
+        setSelectedTask(null);
+        setIsTaskOnlyView(false);
         setIsSidebarOpen(false);
       }}
       className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors mb-1 ${isSidebarCollapsed ? 'justify-center' : ''}
@@ -375,6 +477,7 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
   return (
     <div className="flex h-screen bg-gray-50 overflow-hidden">
       <Loader />
+      <SessionExpiryWarning />
       {/* Mobile Overlay */}
       {isSidebarOpen && (
         <div className="fixed inset-0 bg-black/50 z-20 md:hidden" onClick={() => setIsSidebarOpen(false)} />
@@ -445,8 +548,14 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
                 {canSeeClients && <SidebarItem view="clients" icon={Users} label="Clients" />}
                 {canSeeDesigners && <SidebarItem view="designers" icon={Palette} label="Team" />}
                 {canSeeVendors && <SidebarItem view="vendors" icon={ShoppingBag} label="Vendors" />}
+                {user.role === Role.ADMIN && <SidebarItem view="admins" icon={Shield} label="Admins" />}
               </div>
             )}
+
+            <div className="mb-6">
+              {!isSidebarCollapsed && <p className="px-4 text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Account</p>}
+              <SidebarItem view="settings" icon={Settings} label="Settings" />
+            </div>
           </div>
 
           <div className="p-4 border-t border-gray-200">
@@ -495,7 +604,12 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
                 isOpen={isNotifOpen} 
                 onClose={() => setIsNotifOpen(false)}
                 projects={projects}
-                onSelectProject={setSelectedProject}
+                onSelectProject={(project, opts) => {
+                  setSelectedProject(project);
+                  setSelectedTask(null);
+                  setIsTaskOnlyView(false);
+                  setInitialProjectTab(opts?.initialTab);
+                }}
               />
             </div>
 
@@ -530,35 +644,62 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
                    project={selectedProject} 
                    users={users} 
                    onUpdateProject={handleUpdateProject}
-                   onBack={() => setSelectedProject(null)} 
+                   onBack={() => { 
+                     setSelectedProject(null); 
+                     setSelectedTask(null); 
+                     setIsTaskOnlyView(false);
+                     setInitialProjectTab(undefined);
+                   }} 
+                   initialTask={selectedTask || undefined}
+                   initialTab={initialProjectTab}
+                   onCloseTask={() => {
+                     if (isTaskOnlyView) {
+                       setSelectedProject(null);
+                       setSelectedTask(null);
+                       setIsTaskOnlyView(false);
+                     }
+                   }}
                  />
               ) : (
                 <>
-                  {currentView === 'dashboard' && <Dashboard projects={projects} users={users} onSelectProject={setSelectedProject} onSelectTask={(task, project) => {
+                  {currentView === 'dashboard' && <Dashboard projects={projects} users={users} onSelectProject={(project, opts) => {
                     setSelectedProject(project);
+                    setSelectedTask(null);
+                    setIsTaskOnlyView(false);
+                    setInitialProjectTab(opts?.initialTab);
+                  }} onSelectTask={(task, project) => {
+                    setSelectedProject(project);
+                    setSelectedTask(task);
+                    setIsTaskOnlyView(true);
                   }} />}
                   
                   {currentView === 'projects' && (
                     <div className="space-y-6">
                       <div className="flex justify-between items-center">
                         <h2 className="text-2xl font-bold text-gray-800">Projects</h2>
-                        {(user.role === Role.ADMIN || user.role === Role.DESIGNER) && (
-                          <button 
-                            onClick={() => setIsNewProjectModalOpen(true)}
-                            className="bg-gray-900 text-white px-4 py-2 rounded-lg font-medium hover:bg-gray-800 transition-colors shadow-sm flex items-center gap-2"
-                          >
-                             <Palette className="w-4 h-4" /> New Project
-                          </button>
-                        )}
+                          {(user.role === Role.ADMIN) && (
+                            <button 
+                              onClick={() => setIsNewProjectModalOpen(true)}
+                              className="bg-gray-900 text-white px-4 py-2 rounded-lg font-medium hover:bg-gray-800 transition-colors shadow-sm flex items-center gap-2"
+                            >
+                               <Palette className="w-4 h-4" /> New Project
+                            </button>
+                          )}
                       </div>
                       {visibleProjects.length > 0 ? (
                         <ProjectList 
                           projects={visibleProjects} 
-                          onSelect={setSelectedProject}
+                          onSelect={(project) => {
+                            setSelectedProject(project);
+                            setSelectedTask(null);
+                            setIsTaskOnlyView(false);
+                            setInitialProjectTab(undefined);
+                          }}
                           user={user}
                           setEditingProject={setEditingProject}
                           setIsNewProjectModalOpen={setIsNewProjectModalOpen}
                           onDeleteProject={handleDeleteProject}
+                          realTimeTasks={realTimeTasks}
                         />
                       ) : (
                         <div className="text-center py-20 bg-white rounded-xl border border-dashed border-gray-300">
@@ -568,15 +709,87 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
                     </div>
                   )}
 
-                  {currentView === 'clients' && <PeopleList users={users} roleFilter={Role.CLIENT} onAddUser={handleAddUser} projects={projects} onSelectProject={setSelectedProject} onSelectTask={(task, project) => {
+                  {currentView === 'clients' && <PeopleList users={users} roleFilter={Role.CLIENT} onAddUser={handleAddUser} projects={projects} onSelectProject={(project) => {
                     setSelectedProject(project);
-                  }} />}
-                  {currentView === 'vendors' && <PeopleList users={users} roleFilter={Role.VENDOR} onAddUser={handleAddUser} projects={projects} onSelectProject={setSelectedProject} onSelectTask={(task, project) => {
+                    setSelectedTask(null);
+                    setIsTaskOnlyView(false);
+                    setInitialProjectTab(undefined);
+                  }} onSelectTask={(task, project) => {
                     setSelectedProject(project);
+                    setSelectedTask(task);
+                    setIsTaskOnlyView(true);
                   }} />}
-                  {currentView === 'designers' && <PeopleList users={users} roleFilter={Role.DESIGNER} onAddUser={handleAddUser} projects={projects} onSelectProject={setSelectedProject} onSelectTask={(task, project) => {
+                  {currentView === 'vendors' && <PeopleList users={users} roleFilter={Role.VENDOR} onAddUser={handleAddUser} projects={projects} onSelectProject={(project) => {
                     setSelectedProject(project);
+                    setSelectedTask(null);
+                    setIsTaskOnlyView(false);
+                    setInitialProjectTab(undefined);
+                  }} onSelectTask={(task, project) => {
+                    setSelectedProject(project);
+                    setSelectedTask(task);
+                    setIsTaskOnlyView(true);
                   }} />}
+                  {currentView === 'designers' && <PeopleList users={users} roleFilter={Role.DESIGNER} onAddUser={handleAddUser} projects={projects} onSelectProject={(project) => {
+                    setSelectedProject(project);
+                    setSelectedTask(null);
+                    setIsTaskOnlyView(false);
+                    setInitialProjectTab(undefined);
+                  }} onSelectTask={(task, project) => {
+                    setSelectedProject(project);
+                    setSelectedTask(task);
+                    setIsTaskOnlyView(true);
+                  }} />}
+                  {currentView === 'admins' && <PeopleList users={users} roleFilter={Role.ADMIN} onAddUser={handleAddUser} projects={projects} onSelectProject={(project) => {
+                    setSelectedProject(project);
+                    setSelectedTask(null);
+                    setIsTaskOnlyView(false);
+                    setInitialProjectTab(undefined);
+                  }} onSelectTask={(task, project) => {
+                    setSelectedProject(project);
+                    setSelectedTask(task);
+                    setIsTaskOnlyView(true);
+                  }} />}
+                  
+                  {currentView === 'settings' && (
+                    <div className="max-w-3xl mx-auto space-y-8">
+                      <div>
+                        <h2 className="text-2xl font-bold text-gray-800 mb-2">Settings</h2>
+                        <p className="text-gray-600">Manage your account security and preferences</p>
+                      </div>
+
+                      {/* Account Info Card */}
+                      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+                        <h3 className="text-lg font-bold text-gray-900 mb-4">Account Information</h3>
+                        <div className="space-y-4">
+                          <div className="grid grid-cols-2 gap-4">
+                            <div>
+                              <p className="text-xs text-gray-500 uppercase font-semibold">Name</p>
+                              <p className="text-gray-900 font-medium">{user.name}</p>
+                            </div>
+                            <div>
+                              <p className="text-xs text-gray-500 uppercase font-semibold">Email</p>
+                              <p className="text-gray-900 font-medium">{user.email}</p>
+                            </div>
+                            <div>
+                              <p className="text-xs text-gray-500 uppercase font-semibold">Role</p>
+                              <p className="text-gray-900 font-medium capitalize">{user.role}</p>
+                            </div>
+                            {user.phone && (
+                              <div>
+                                <p className="text-xs text-gray-500 uppercase font-semibold">Phone</p>
+                                <p className="text-gray-900 font-medium">{user.phone}</p>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Remembered Devices */}
+                      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+                        <RememberedDevices />
+                      </div>
+                    </div>
+                  )}
                 </>
               )}
             </>

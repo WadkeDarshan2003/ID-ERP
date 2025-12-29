@@ -15,7 +15,7 @@ import {
   arrayRemove
 } from "firebase/firestore";
 import { db } from "./firebaseConfig";
-import { Task, Meeting, ProjectDocument, Comment, Role, FinancialRecord, Timeline, SubTask } from "../types";
+import { Task, Meeting, ProjectDocument, Comment, Role, FinancialRecord, Timeline, SubTask } from "../../types";
 
 // ============ AUTO-LOG TIMELINE EVENTS ============
 /**

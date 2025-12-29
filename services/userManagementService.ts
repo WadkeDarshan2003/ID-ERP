@@ -97,6 +97,7 @@ export const createUserInFirebase = async (
     if (user.company) userProfile.company = user.company;
     if (user.specialty) userProfile.specialty = user.specialty;
     if (user.password) userProfile.password = user.password;
+    if (user.tenantId) userProfile.tenantId = user.tenantId;
 
     // Step 3: Save profile to Firestore - BOTH to users collection AND role-specific collection
     // Save to users collection

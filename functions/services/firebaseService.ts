@@ -13,7 +13,7 @@ import {
   Unsubscribe
 } from "firebase/firestore";
 import { db } from "./firebaseConfig";
-import { Project, User, Task, TaskStatus, FinancialRecord } from "../types";
+import { Project, User, Task, TaskStatus, FinancialRecord } from "../../types";
 
 // ============ VENDOR EARNINGS SYNC ============
 
@@ -104,7 +104,7 @@ export async function syncAllVendorMetrics(): Promise<void> {
       // Get all distinct vendor IDs from tasks ONLY (not from names)
       const vendorIds = new Set<string>();
       
-      project.tasks?.forEach(task => {
+      project.tasks?.forEach((task: Task) => {
         if (task.assigneeId) vendorIds.add(task.assigneeId);
       });
 
@@ -116,22 +116,22 @@ export async function syncAllVendorMetrics(): Promise<void> {
 
         // Count ALL tasks assigned to this vendor (not just DONE)
         const allTaskCount = (project.tasks || []).filter(
-          t => t.assigneeId === vendorId
+          (t: Task) => t.assigneeId === vendorId
         ).length;
 
         // Calculate net amount from approved financials
-        const vendorFinancials = (project.financials || []).filter(f => 
+        const vendorFinancials = (project.financials || []).filter((f: FinancialRecord) => 
           (f.adminApproved && f.clientApproved) &&
           (f.vendorId === vendorId)
         );
 
         const totalPaidToVendor = vendorFinancials
-          .filter(f => f.receivedByName && f.receivedByName.includes(vendorId))
-          .reduce((sum, f) => sum + f.amount, 0);
+          .filter((f: FinancialRecord) => f.receivedByName && f.receivedByName.includes(vendorId))
+          .reduce((sum: number, f: FinancialRecord) => sum + f.amount, 0);
 
         const totalPaidByVendor = vendorFinancials
-          .filter(f => f.vendorId === vendorId)
-          .reduce((sum, f) => sum + f.amount, 0);
+          .filter((f: FinancialRecord) => f.vendorId === vendorId)
+          .reduce((sum: number, f: FinancialRecord) => sum + f.amount, 0);
 
         const netAmount = totalPaidToVendor - totalPaidByVendor;
 
@@ -408,15 +408,13 @@ export const updateUser = async (userId: string, updates: Partial<User>): Promis
 
 // Real-time listener for users
 export const subscribeToUsers = (callback: (users: User[]) => void): Unsubscribe => {
-  if (process.env.NODE_ENV !== 'production') console.log('🔔 Setting up real-time listener for users collection...');
-  
   let allUsers: User[] = [];
   let unsubscribers: Unsubscribe[] = [];
 
   // Listen to main users collection
   const unsubUser = onSnapshot(usersRef, (snapshot) => {
     const users = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as User));
-    if (process.env.NODE_ENV !== 'production') console.log(`📥 Real-time update from 'users': ${users.length} users`);
+    // Real-time update received for users
     allUsers = users;
     callback(allUsers);
   }, (error) => {
@@ -459,10 +457,9 @@ export const seedDatabase = async (projects: Project[], users: User[]): Promise<
 
 // Real-time listener for designers
 export const subscribeToDesigners = (callback: (designers: User[]) => void): Unsubscribe => {
-  if (process.env.NODE_ENV !== 'production') console.log('🔔 Setting up real-time listener for designers collection...');
   return onSnapshot(collection(db, "designers"), (snapshot) => {
     const designers = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as User));
-    if (process.env.NODE_ENV !== 'production') console.log(`📥 Real-time update from 'designers': ${designers.length} designers`);
+    // Real-time update received for designers
     callback(designers);
   }, (error) => {
     // Suppress permission-denied errors during logout
@@ -474,10 +471,9 @@ export const subscribeToDesigners = (callback: (designers: User[]) => void): Uns
 
 // Real-time listener for vendors
 export const subscribeToVendors = (callback: (vendors: User[]) => void): Unsubscribe => {
-  if (process.env.NODE_ENV !== 'production') console.log('🔔 Setting up real-time listener for vendors collection...');
   return onSnapshot(collection(db, "vendors"), (snapshot) => {
     const vendors = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as User));
-    if (process.env.NODE_ENV !== 'production') console.log(`📥 Real-time update from 'vendors': ${vendors.length} vendors`);
+    // Real-time update received for vendors
     callback(vendors);
   }, (error) => {
     // Suppress permission-denied errors during logout
@@ -489,10 +485,9 @@ export const subscribeToVendors = (callback: (vendors: User[]) => void): Unsubsc
 
 // Real-time listener for clients
 export const subscribeToClients = (callback: (clients: User[]) => void): Unsubscribe => {
-  if (process.env.NODE_ENV !== 'production') console.log('🔔 Setting up real-time listener for clients collection...');
   return onSnapshot(collection(db, "clients"), (snapshot) => {
     const clients = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as User));
-    if (process.env.NODE_ENV !== 'production') console.log(`📥 Real-time update from 'clients': ${clients.length} clients`);
+    // Real-time update received for clients
     callback(clients);
   }, (error) => {
     // Suppress permission-denied errors during logout

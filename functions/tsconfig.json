@@ -1,5 +1,6 @@
 {
   "compilerOptions": {
+     "jsx": "react-jsx",
     "target": "ES2020",
     "module": "ESNext",
     "lib": ["ES2020"],
@@ -10,7 +11,8 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
-    "moduleResolution": "bundler"
+    "moduleResolution": "bundler",
+    "downlevelIteration": true
   },
   "include": ["src"],
   "exclude": ["node_modules", "lib", "**/*.spec.ts"]

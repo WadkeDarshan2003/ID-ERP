@@ -7,7 +7,7 @@ import { useProjectCrud, useFinancialCrud } from '../hooks/useCrud';
 import { createMeeting, updateMeeting, deleteMeeting, createDocument, addCommentToDocument, deleteDocument, updateDocument, createTask, updateTask, deleteTask, subscribeToProjectMeetings, subscribeToProjectDocuments, subscribeToTimelines, subscribeToProjectTasks, logTimelineEvent, addTeamMember, addCommentToMeeting, deleteCommentFromMeeting, subscribeToMeetingComments } from '../services/projectDetailsService';
 import { subscribeToProjectFinancialRecords, updateProjectFinancialRecord, createProjectFinancialRecord } from '../services/financialService';
 import { sendTaskReminder, sendPaymentReminder } from '../services/emailService';
-import { sendTaskCreationEmail, sendProjectWelcomeEmail, sendDocumentApprovalEmail, sendTaskApprovalEmail } from '../services/emailTriggerService';
+import { sendProjectWelcomeEmail, sendDocumentApprovalEmail, sendTaskApprovalEmail, sendMeetingNotificationEmail, sendTaskAssignmentNotificationEmail, sendTaskStartApprovalNotificationEmail, sendTaskCompletionApprovalNotificationEmail, sendTaskCommentNotificationEmail, sendDocumentCommentNotificationEmail, sendDocumentAdminApprovalNotificationEmail, sendDocumentClientApprovalNotificationEmail, sendFinancialApprovalNotificationEmail } from '../services/emailTriggerService';
 import { syncAllVendorsEarnings } from '../services/firebaseService';
 import { doc, updateDoc } from 'firebase/firestore';
 import { db } from '../services/firebaseConfig';
@@ -16,12 +16,13 @@ import { AvatarCircle, getInitials, getInitialsBgColor } from '../utils/avatarUt
 import { calculateTaskProgress, deriveStatus, formatRelativeTime, formatDateToIndian, formatIndianToISO } from '../utils/taskUtils';
 import KanbanBoard from './KanbanBoard';
 import MeetingForm from './MeetingForm';
+import Spinner from './Spinner';
 import { 
   Calendar, DollarSign, Plus, CheckCircle, 
   ChevronRight, Lock, Clock, FileText,
   Layout, ListChecks, ArrowRight, User as UserIcon, X,
   MessageSquare, ThumbsUp, ThumbsDown, Send, Shield, History, Layers, Link2, AlertCircle, Tag, Upload, Ban, PauseCircle, PlayCircle,
-  File as FileIcon, Eye, Download, Pencil, Mail, Filter, IndianRupee, Bell, MessageCircle, Users, MessageCircle as CommentIcon, Trash2, Edit3, Check
+  File as FileIcon, Eye, EyeOff, Download, Pencil, Mail, Filter, IndianRupee, Bell, MessageCircle, Users, MessageCircle as CommentIcon, Trash2, Edit3, Check
 } from 'lucide-react';
 import { useNotifications } from '../contexts/NotificationContext';
 import { useLoading } from '../contexts/LoadingContext';
@@ -31,13 +32,15 @@ interface ProjectDetailProps {
   users: User[];
   onUpdateProject: (updatedProject: Project) => void;
   onBack: () => void;
-  initialTab?: 'discovery' | 'plan' | 'financials' | 'team' | 'timeline' | 'documents';
+  initialTab?: 'discovery' | 'plan' | 'financials' | 'team' | 'timeline' | 'documents' | 'meetings';
+  initialTask?: Task;
+  onCloseTask?: () => void;
 }
 
 const ROW_HEIGHT = 48; // Fixed height for Gantt rows
 const DEFAULT_AVATAR = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"%3E%3Ccircle cx="12" cy="12" r="12" fill="%23e5e7eb"/%3E%3C/svg%3E';
 
-const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateProject, onBack, initialTab }) => {
+const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateProject, onBack, initialTab, initialTask, onCloseTask }) => {
   const { user } = useAuth();
   const { addNotification } = useNotifications();
   const { updateExistingProject, deleteExistingProject, loading: projectLoading } = useProjectCrud();
@@ -68,7 +71,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       const newRecord = { ...record, id } as FinancialRecord;
       // Sync after successful creation
       await Promise.all([
-        syncAllVendorsEarnings(),
+        syncAllVendorsEarnings(user?.tenantId),
         syncProjectBudget(project.id, [...currentFinancials, newRecord])
       ]);
       return id;
@@ -85,7 +88,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       await updateFinancialRecord(recordId, updates);
       // Sync after successful update
       await Promise.all([
-        syncAllVendorsEarnings(),
+        syncAllVendorsEarnings(user?.tenantId),
         syncProjectBudget(project.id, currentFinancials)
       ]);
     } catch (error) {
@@ -98,7 +101,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       await deleteFinancialRecord(recordId);
       // Sync after successful deletion
       await Promise.all([
-        syncAllVendorsEarnings(),
+        syncAllVendorsEarnings(user?.tenantId),
         syncProjectBudget(project.id, currentFinancials)
       ]);
     } catch (error) {
@@ -107,12 +110,24 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
     }
   };
   
-  const [activeTab, setActiveTab] = useState<'discovery' | 'plan' | 'financials' | 'team' | 'timeline' | 'documents'>('plan');
+  const [activeTab, setActiveTab] = useState<'discovery' | 'plan' | 'financials' | 'team' | 'timeline' | 'documents' | 'meetings'>('plan');
   const [planView, setPlanView] = useState<'list' | 'gantt' | 'kanban'>('list');
-  const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
-  const [editingTask, setEditingTask] = useState<Partial<Task> | null>(null);
+  const [isTaskModalOpen, setIsTaskModalOpen] = useState(!!initialTask);
+  const [editingTask, setEditingTask] = useState<Partial<Task> | null>(initialTask || null);
+
+  // Handle closing task modal and returning to dashboard if needed
+  const prevIsTaskModalOpen = useRef(isTaskModalOpen);
+  useEffect(() => {
+    if (prevIsTaskModalOpen.current && !isTaskModalOpen && onCloseTask) {
+      onCloseTask();
+    }
+    prevIsTaskModalOpen.current = isTaskModalOpen;
+  }, [isTaskModalOpen, onCloseTask]);
+
   const [showTaskErrors, setShowTaskErrors] = useState(false);
   const [mobileTaskTab, setMobileTaskTab] = useState<'details' | 'activity'>('details');
+  const [processingApproval, setProcessingApproval] = useState<string | null>(null);
+  const [isSavingTask, setIsSavingTask] = useState(false);
   
   // Comments State
   const [newComment, setNewComment] = useState('');
@@ -122,6 +137,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
 
   // Email/Action Loading States
   const [sendingEmailFor, setSendingEmailFor] = useState<string | null>(null);
+  const [processingAction, setProcessingAction] = useState<string | null>(null);
 
 
 
@@ -134,6 +150,10 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
   const [selectedDocument, setSelectedDocument] = useState<ProjectDocument | null>(null);
   const [isDocDetailOpen, setIsDocDetailOpen] = useState(false);
   const [documentCommentText, setDocumentCommentText] = useState('');
+  // Admin: edit sharedWith for existing documents
+  const [isShareEditOpen, setIsShareEditOpen] = useState(false);
+  const [editingSharedDoc, setEditingSharedDoc] = useState<ProjectDocument | null>(null);
+  const [tempSharedWith, setTempSharedWith] = useState<string[]>([]);
   const [isTaskDocModalOpen, setIsTaskDocModalOpen] = useState(false);
 
   // Financials State
@@ -247,6 +267,22 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       }
     }
   }, [currentTasks]);
+
+  // Handle meetingId query parameter to open meeting modal
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const meetingId = params.get('meetingId');
+    if (meetingId && realTimeMeetings.length > 0) {
+      const meeting = realTimeMeetings.find(m => m.id === meetingId);
+      if (meeting) {
+        setActiveTab('meetings');
+        setEditingMeeting(meeting);
+        setIsMeetingModalOpen(true);
+        // Remove the meetingId from URL
+        window.history.replaceState({}, document.title, window.location.pathname);
+      }
+    }
+  }, [realTimeMeetings]);
 
   // Auto-update Overdue Items (Tasks & Financials)
   useEffect(() => {
@@ -383,7 +419,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
         // Update local state immediately for instant UI feedback
         onUpdateProject({ ...project, budget: newBudget });
         
-        if (process.env.NODE_ENV !== 'production') console.log('✅ Project budget synced in real-time:', newBudget);
+        // Project budget updated in real-time (logging removed for production cleanliness)
       } catch (error) {
         console.error('❌ Error syncing project budget in real-time:', error);
       }
@@ -537,6 +573,14 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
     }
     if (project.leadDesignerId) teamIds.add(project.leadDesignerId);
 
+    // Vendors (include visible and hidden vendors so they can be shared)
+    if (project.vendorIds) {
+      project.vendorIds.forEach(id => teamIds.add(id));
+    }
+    if (project.hiddenVendors) {
+      project.hiddenVendors.forEach(id => teamIds.add(id));
+    }
+
     // Admins (always available)
     users.filter(u => u.role === Role.ADMIN).forEach(u => teamIds.add(u.id));
 
@@ -557,7 +601,15 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
   const handleMeetingSubmit = async (meeting: Omit<Meeting, 'id'>) => {
     try {
       setIsSavingMeeting(true);
-      await createMeeting(project.id, meeting);
+      const meetingId = await createMeeting(project.id, meeting);
+      
+      // Send meeting notification emails to attendees
+      if (meeting.attendees && meeting.attendees.length > 0) {
+        const attendeeUsers = projectTeam.filter(u => meeting.attendees.includes(u.id));
+        const createdMeeting = { ...meeting, id: meetingId };
+        await sendMeetingNotificationEmail(createdMeeting, attendeeUsers, project.name, project.id, 'created');
+      }
+      
       addNotification('Success', 'Meeting added successfully', 'success');
     } catch (error) {
       console.error('Error creating meeting:', error);
@@ -568,11 +620,29 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
     }
   };
 
+  // Open Share Edit modal (admin)
+  const handleOpenShareEdit = (doc: ProjectDocument) => {
+    try {
+      setEditingSharedDoc(doc);
+      setTempSharedWith(doc.sharedWith || []);
+      setIsShareEditOpen(true);
+    } catch (err) {
+      console.error('Error opening share edit modal:', err);
+    }
+  };
+
   // Handle Meeting Update
   const handleMeetingUpdate = async (meeting: Meeting) => {
     try {
       setIsSavingMeeting(true);
       await updateMeeting(project.id, meeting.id, meeting);
+      
+      // Send meeting update notification emails to attendees
+      if (meeting.attendees && meeting.attendees.length > 0) {
+        const attendeeUsers = projectTeam.filter(u => meeting.attendees.includes(u.id));
+        await sendMeetingNotificationEmail(meeting, attendeeUsers, project.name, project.id, 'updated');
+      }
+      
       addNotification('Success', 'Meeting updated successfully', 'success');
     } catch (error) {
       console.error('Error updating meeting:', error);
@@ -666,10 +736,11 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       const admins = users.filter(u => u.role === Role.ADMIN);
       // Find Lead Designer
       const designer = users.find(u => u.id === project.leadDesignerId);
-      // Find Client
-      const client = users.find(u => u.id === project.clientId);
+      // Find all Clients (combine primary and additional)
+      const clientIds = Array.from(new Set([project.clientId, ...(project.clientIds || [])].filter(Boolean)));
+      const clients = clientIds.map(id => users.find(u => u.id === id)).filter((u): u is User => !!u);
       
-      const recipients = [...admins, designer, client];
+      const recipients = [...admins, designer, ...clients];
       
       // Also include explicitly added Team Members (BUT EXCLUDE VENDORS)
       if (project.teamMembers) {
@@ -725,6 +796,22 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
     return currentTasks.filter(t => task.dependencies?.includes(t.id) && t.status !== TaskStatus.DONE);
   };
 
+  // Helper to safely parse timestamps in this file (used for document sorting)
+  const getSafeTimestamp = (date: any) => {
+    if (!date) return 0;
+    if (typeof date === 'string') return new Date(date).getTime();
+    if (date.toDate && typeof date.toDate === 'function') return date.toDate().getTime();
+    if (date instanceof Date) return date.getTime();
+    return new Date(date).getTime() || 0;
+  };
+
+  const getDocumentRecentTimestamp = (doc: ProjectDocument) => {
+    // ProjectDocument fields: uploadDate, approvalDate, clientApprovedDate, approvalDate, rejectionDate
+    return getSafeTimestamp(
+      (doc as any).approvalDate || (doc as any).clientApprovedDate || doc.uploadDate || (doc as any).approvalDate || (doc as any).rejectionDate || (doc as any).uploadDate
+    );
+  };
+
   // Replaced local getTaskProgress with imported utility
   // const getTaskProgress = (task: Task | Partial<Task>) => { ... }
 
@@ -750,8 +837,8 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
         return;
     }
     const defaultApprovals = {
-       start: { client: { status: 'pending' }, admin: { status: 'pending' } },
-       completion: { client: { status: 'pending' }, admin: { status: 'pending' } }
+      start: { client: { status: 'pending' as ApprovalStatus }, admin: { status: 'pending' as ApprovalStatus } },
+      completion: { client: { status: 'pending' as ApprovalStatus }, admin: { status: 'pending' as ApprovalStatus } }
     };
     setEditingTask({
       ...task,
@@ -765,106 +852,62 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
 
   const handleInviteMember = async () => {
     if (!selectedMemberId) {
-        addNotification("Validation Error", "Please select a user", "error");
+        addNotification("Validation Error", "Please select at least one user", "error");
         return;
     }
-    const member = users.find(u => u.id === selectedMemberId);
-    if (!member) return;
-
+    
+    // Handle multiple selections
+    const memberIds = selectedMemberId.split(',').filter(Boolean);
+    
     try {
       if (memberModalType === 'client') {
-        // Add as additional client
-        const updatedClientIds = [...(project.clientIds || []), selectedMemberId];
-        
-        const log = logActivity('Client Added', `${member.name} added as client to project`);
-        
-        await logTimelineEvent(
-          project.id,
-          `Client Added: ${member.name}`,
-          `${member.name} added as additional client to the project`,
-          'completed',
-          new Date().toISOString(),
-          new Date().toISOString()
+        // Add as additional clients
+        const newClientIds = memberIds.filter(id => 
+          id !== project.clientId && !(project.clientIds || []).includes(id)
         );
+        
+        if (newClientIds.length === 0) {
+          addNotification("Info", "All selected clients are already added", "info");
+          return;
+        }
+        
+        const updatedClientIds = [...(project.clientIds || []), ...newClientIds];
+        
+        newClientIds.forEach(clientId => {
+          const member = users.find(u => u.id === clientId);
+          const log = logActivity('Client Added', `${member?.name} added as client to project`);
+          notifyUser(clientId, 'Added to Project', `You have been added as a client to "${project.name}"`, 'success', 'dashboard');
+        });
         
         onUpdateProject({
             ...project,
-            clientIds: updatedClientIds,
-            activityLog: [log, ...(project.activityLog || [])]
+            clientIds: updatedClientIds
         });
         
-        notifyUser(member.id, 'Added to Project', `You have been added as a client to "${project.name}"`, 'success', 'dashboard');
-        addNotification('Success', `${member.name} added as client`, 'success');
-      } else if (memberModalType === 'vendor') {
-        // Add as vendor
-        const updatedVendorIds = [...(project.vendorIds || []), selectedMemberId];
+        addNotification('Success', `${newClientIds.length} client${newClientIds.length !== 1 ? 's' : ''} added`, 'success');
+      } else if (memberModalType === 'member') {
+        // Add as team members (vendors and designers)
+        const newMemberIds = memberIds.filter(id => !(project.teamMembers || []).includes(id));
         
-        const log = logActivity('Vendor Added', `${member.name} added as vendor to project`);
+        if (newMemberIds.length === 0) {
+          addNotification("Info", "All selected members are already added", "info");
+          return;
+        }
         
-        await logTimelineEvent(
-          project.id,
-          `Vendor Added: ${member.name}`,
-          `${member.name} added as vendor to the project`,
-          'completed',
-          new Date().toISOString(),
-          new Date().toISOString()
-        );
+        const updatedTeamMembers = [...(project.teamMembers || []), ...newMemberIds];
+        
+        newMemberIds.forEach(memberId => {
+          const member = users.find(u => u.id === memberId);
+          const log = logActivity('Team Member Added', `${member?.name} added as team member to project`);
+          notifyUser(memberId, 'Added to Project', `You have been added to "${project.name}"`, 'success', 'dashboard');
+        });
         
         onUpdateProject({
             ...project,
-            vendorIds: updatedVendorIds,
-            activityLog: [log, ...(project.activityLog || [])]
+            teamMembers: updatedTeamMembers
         });
         
-        notifyUser(member.id, 'Added to Project', `You have been added as a vendor to "${project.name}"`, 'success', 'dashboard');
-        addNotification('Success', `${member.name} added as vendor`, 'success');
-      } else if (memberModalType === 'designer') {
-        // Set as lead designer
-        const log = logActivity('Lead Designer Set', `${member.name} set as lead designer`);
-        
-        await logTimelineEvent(
-          project.id,
-          `Lead Designer Set: ${member.name}`,
-          `${member.name} set as lead designer for the project`,
-          'completed',
-          new Date().toISOString(),
-          new Date().toISOString()
-        );
-        
-        onUpdateProject({
-            ...project,
-            leadDesignerId: selectedMemberId,
-            activityLog: [log, ...(project.activityLog || [])]
-        });
-        
-        notifyUser(member.id, 'Added to Project', `You have been set as lead designer for "${project.name}"`, 'success', 'dashboard');
-        addNotification('Success', `${member.name} set as lead designer`, 'success');
-      } else {
-        // Add as team member
-        const updatedTeamMembers = [...(project.teamMembers || []), selectedMemberId];
-        
-        const log = logActivity('Team Member Added', `${member.name} added as team member to project`);
-        
-        await logTimelineEvent(
-          project.id,
-          `Team Member Added: ${member.name}`,
-          `${member.name} added as team member to the project`,
-          'completed',
-          new Date().toISOString(),
-          new Date().toISOString()
-        );
-        
-        onUpdateProject({
-            ...project,
-            teamMembers: updatedTeamMembers,
-            activityLog: [log, ...(project.activityLog || [])]
-        });
-        
-        // Send welcome email to new team member
-        await sendProjectWelcomeEmail(member, project.name, user);
-        
-        notifyUser(member.id, 'Added to Project', `You have been added as a team member to "${project.name}"`, 'success', 'dashboard');
-        addNotification('Success', `${member.name} added as team member`, 'success');
+        addNotification('Success', `${newMemberIds.length} member${newMemberIds.length !== 1 ? 's' : ''} added`, 'success');
       }
       
       setIsMemberModalOpen(false);
@@ -1088,6 +1131,8 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
   };
 
   const handleApproveDocument = async (doc: ProjectDocument) => {
+    if (processingAction) return;
+    setProcessingAction(`approve-doc-${doc.id}`);
     try {
       await updateDocument(project.id, doc.id, {
         approvalStatus: 'approved',
@@ -1095,34 +1140,168 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
         approvalDate: new Date().toISOString()
       });
       
-      // Send approval email to document recipients
-      if (doc.sharedWith && doc.sharedWith.length > 0) {
-        for (const recipientId of doc.sharedWith) {
-          const recipient = projectTeam.find(u => u.id === recipientId);
-          if (recipient && recipient.email) {
-            await sendDocumentApprovalEmail(doc, recipient, project.name, user.name);
-          }
-        }
+      // Show loader for at least 500ms for visibility
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      // Send approval email to document recipients and team
+      const recipientIds = new Set<string>();
+      // Include lead designer and uploader
+      if (project.leadDesignerId) recipientIds.add(project.leadDesignerId);
+      if (doc.uploadedBy) recipientIds.add(doc.uploadedBy);
+      // Include anyone the document is explicitly shared with
+      (doc.sharedWith || []).forEach(id => recipientIds.add(id));
+      // Include client only if the document was shared with them
+      if (project.clientId && doc.sharedWith?.includes(project.clientId)) recipientIds.add(project.clientId);
+
+      const relevantUsers = users.filter(u => recipientIds.has(u.id));
+
+      if (relevantUsers.length > 0) {
+        await sendDocumentAdminApprovalNotificationEmail(
+          doc,
+          user.name || 'Unknown User',
+          relevantUsers,
+          project.name,
+          project.id,
+          'approved'
+        );
       }
       
       addNotification("Success", `Document "${doc.name}" approved`, "success");
     } catch (error) {
       console.error('Error approving document:', error);
       addNotification("Error", "Failed to approve document", "error");
+    } finally {
+      setProcessingAction(null);
     }
   };
 
   const handleRejectDocument = async (doc: ProjectDocument) => {
+    if (processingAction) return;
+    setProcessingAction(`reject-doc-${doc.id}`);
     try {
       await updateDocument(project.id, doc.id, {
         approvalStatus: 'rejected',
         rejectedBy: user.id,
         rejectionDate: new Date().toISOString()
       });
+
+      // Show loader for at least 500ms for visibility
+      await new Promise(resolve => setTimeout(resolve, 500));
+
+      // Send rejection email to document recipients and team
+
+      const recipientIds = new Set<string>();
+      // Notify admins and project owners on client action
+      users.filter(u => u.role === Role.ADMIN).forEach(u => recipientIds.add(u.id));
+      if (project.leadDesignerId) recipientIds.add(project.leadDesignerId);
+      if (doc.uploadedBy) recipientIds.add(doc.uploadedBy);
+      (doc.sharedWith || []).forEach(id => {
+        if (id !== user.id) recipientIds.add(id);
+      });
+
+      const relevantUsers = users.filter(u => recipientIds.has(u.id));
+
+      if (relevantUsers.length > 0) {
+        await sendDocumentAdminApprovalNotificationEmail(
+          doc,
+          user.name || 'Unknown User',
+          relevantUsers,
+          project.name,
+          project.id,
+          'rejected'
+        );
+      }
+
       addNotification("Success", `Document "${doc.name}" rejected`, "success");
     } catch (error) {
       console.error('Error rejecting document:', error);
       addNotification("Error", "Failed to reject document", "error");
+    } finally {
+      setProcessingAction(null);
+    }
+  };
+
+  const handleClientApproveDocument = async (doc: ProjectDocument) => {
+    if (processingAction) return;
+    setProcessingAction(`client-approve-doc-${doc.id}`);
+    try {
+      await updateDocument(project.id, doc.id, {
+        clientApprovalStatus: 'approved',
+        clientApprovedBy: user.id,
+        clientApprovedDate: new Date().toISOString()
+      });
+
+      // Show loader for at least 500ms for visibility
+      await new Promise(resolve => setTimeout(resolve, 500));
+
+      // Send approval email to admin and document owners
+      const relevantUsers = users.filter(u => {
+        // Include admin/lead designer
+        if (u.id === project.leadDesignerId) return true;
+        // Include anyone the document is shared with (except client themselves)
+        if (doc.sharedWith?.includes(u.id) && u.id !== user.id) return true;
+        return false;
+      });
+
+      if (relevantUsers.length > 0) {
+        await sendDocumentClientApprovalNotificationEmail(
+          doc,
+          user.name || 'Unknown User',
+          relevantUsers,
+          project.name,
+          project.id,
+          'approved'
+        );
+      }
+
+      addNotification("Success", `Document "${doc.name}" approved by you`, "success");
+    } catch (error) {
+      console.error('Error approving document as client:', error);
+      addNotification("Error", "Failed to approve document", "error");
+    } finally {
+      setProcessingAction(null);
+    }
+  };
+
+  const handleClientRejectDocument = async (doc: ProjectDocument) => {
+    if (processingAction) return;
+    setProcessingAction(`client-reject-doc-${doc.id}`);
+    try {
+      await updateDocument(project.id, doc.id, {
+        clientApprovalStatus: 'rejected',
+        clientApprovedBy: user.id,
+        clientApprovedDate: new Date().toISOString()
+      });
+
+      // Show loader for at least 500ms for visibility
+      await new Promise(resolve => setTimeout(resolve, 500));
+
+      // Send rejection email to admin and document owners
+      const relevantUsers = users.filter(u => {
+        // Include admin/lead designer
+        if (u.id === project.leadDesignerId) return true;
+        // Include anyone the document is shared with (except client themselves)
+        if (doc.sharedWith?.includes(u.id) && u.id !== user.id) return true;
+        return false;
+      });
+
+      if (relevantUsers.length > 0) {
+        await sendDocumentClientApprovalNotificationEmail(
+          doc,
+          user.name || 'Unknown User',
+          relevantUsers,
+          project.name,
+          project.id,
+          'rejected'
+        );
+      }
+
+      addNotification("Success", `Document "${doc.name}" rejected by you`, "success");
+    } catch (error) {
+      console.error('Error rejecting document as client:', error);
+      addNotification("Error", "Failed to reject document", "error");
+    } finally {
+      setProcessingAction(null);
     }
   };
 
@@ -1139,6 +1318,34 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
 
       // Save to Firestore - real-time listener will update state automatically
       await addCommentToDocument(project.id, selectedDocument.id, comment as Omit<Comment, 'id'>);
+
+      // Send comment notification email to relevant team members
+      const commentWithId: Comment = {
+        ...comment,
+        id: Math.random().toString(36).substr(2, 9)
+      };
+
+      // Get all users who should be notified (shared users, admins, client)
+      const relevantUsers = users.filter(u => {
+        // Include admin/lead designer
+        if (u.id === project.leadDesignerId) return true;
+        // Include client
+        if (u.id === project.clientId) return true;
+        // Include anyone the document is shared with
+        if (selectedDocument.sharedWith?.includes(u.id)) return true;
+        return false;
+      });
+
+      if (relevantUsers.length > 0) {
+        await sendDocumentCommentNotificationEmail(
+          selectedDocument,
+          commentWithId,
+          user.name || 'Unknown User',
+          relevantUsers,
+          project.name,
+          project.id
+        );
+      }
 
       // Clear input field
       setDocumentCommentText('');
@@ -1566,6 +1773,8 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
 
   // Handle approval for additional budgets
   const handleApproveAdditionalBudget = async (transactionId: string, approvalType: 'client' | 'admin', status: 'approved' | 'rejected') => {
+    if (processingAction) return;
+    setProcessingAction(`approve-budget-${transactionId}-${approvalType}-${status}`);
     try {
       const key = approvalType === 'client' ? 'clientApprovalForAdditionalBudget' : 'adminApprovalForAdditionalBudget';
       
@@ -1622,17 +1831,41 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
           new Date().toISOString(),
           new Date().toISOString()
         );
+
+        // Send email notification to relevant users
+        const relevantUsers = users.filter(u => {
+          if (u.id === project.leadDesignerId) return true;
+          if (u.id === project.clientId) return true;
+          return false;
+        });
+
+        if (relevantUsers.length > 0) {
+          await sendFinancialApprovalNotificationEmail(
+            txn,
+            user.name || 'Unknown User',
+            relevantUsers,
+            project.name,
+            project.id,
+            status,
+            approvalType,
+            'additional-budget'
+          );
+        }
       }
 
       addNotification("Success", `Additional budget ${status === 'approved' ? 'approved' : 'rejected'} by ${approvalType === 'client' ? 'Client' : 'Admin'}`, "success", undefined, project.id, project.name);
     } catch (error: any) {
       console.error('Approval error:', error);
       addNotification("Error", "Unable to process approval. Please try again.", "error", undefined, project.id, project.name);
+    } finally {
+      setProcessingAction(null);
     }
   };
 
   // Handle approval for received payments
   const handleApprovePayment = async (transactionId: string, approvalType: 'client' | 'admin', status: 'approved' | 'rejected') => {
+    if (processingAction) return;
+    setProcessingAction(`approve-payment-${transactionId}-${approvalType}-${status}`);
     try {
       const key = approvalType === 'client' ? 'clientApprovalForPayment' : 'adminApprovalForPayment';
       
@@ -1660,16 +1893,40 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
           approvalNow,
           approvalNow
         );
+
+        // Send email notification to relevant users
+        const relevantUsers = users.filter(u => {
+          if (u.id === project.leadDesignerId) return true;
+          if (u.id === project.clientId) return true;
+          return false;
+        });
+
+        if (relevantUsers.length > 0) {
+          await sendFinancialApprovalNotificationEmail(
+            txn,
+            user.name || 'Unknown User',
+            relevantUsers,
+            project.name,
+            project.id,
+            status,
+            approvalType,
+            'payment'
+          );
+        }
       }
 
       addNotification("Success", `Payment ${status === 'approved' ? 'confirmed' : 'disputed'} by ${approvalType === 'client' ? 'Client' : 'Admin'}`, "success", undefined, project.id, project.name);
     } catch (error: any) {
       console.error('Approval error:', error);
       addNotification("Error", "Unable to process approval. Please try again.", "error", undefined, project.id, project.name);
+    } finally {
+      setProcessingAction(null);
     }
   };
 
   const handleApproveExpense = useCallback(async (transactionId: string, approvalType: 'client' | 'admin', isApproved: boolean) => {
+    if (processingAction) return;
+    setProcessingAction(`approve-expense-${transactionId}-${approvalType}-${isApproved}`);
     const key = approvalType === 'client' ? 'clientApproved' : 'adminApproved';
     
     try {
@@ -1683,14 +1940,40 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
         });
       }
 
+      // Get the transaction for email notification
+      const txn = currentFinancials.find(f => f.id === transactionId);
+      if (txn) {
+        // Send email notification to relevant users
+        const relevantUsers = users.filter(u => {
+          if (u.id === project.leadDesignerId) return true;
+          if (u.id === project.clientId) return true;
+          return false;
+        });
+
+        if (relevantUsers.length > 0) {
+          await sendFinancialApprovalNotificationEmail(
+            txn,
+            user.name || 'Unknown User',
+            relevantUsers,
+            project.name,
+            project.id,
+            isApproved ? 'approved' : 'rejected',
+            approvalType,
+            'expense'
+          );
+        }
+      }
+
       const actionText = isApproved ? 'approved' : 'rejected';
       const roleText = approvalType === 'client' ? 'client' : 'admin';
       addNotification("Success", `Expense ${actionText} by ${roleText}`, "success", undefined, project.id, project.name);
     } catch (error) {
       console.error('Approval error:', error);
       addNotification("Error", "Unable to process approval. Please try again.", "error", undefined, project.id, project.name);
+    } finally {
+      setProcessingAction(null);
     }
-  }, [project.id, addNotification, realTimeFinancials]);
+  }, [project.id, addNotification, realTimeFinancials, currentFinancials, project.leadDesignerId, project.clientId, users, user.name, processingAction]);
 
   const handleDependencyChange = (dependencyId: string, isChecked: boolean) => {
      if (!editingTask || isTaskFrozen(editingTask.status)) return;
@@ -1729,8 +2012,10 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
        addNotification("Action Denied", "This task is frozen and cannot be modified.", "error");
        return;
     }
-    
-    // Default structure for new tasks
+
+    setIsSavingTask(true);
+
+    try {
     const defaultApprovals = {
        start: { client: { status: 'pending' }, admin: { status: 'pending' } },
        completion: { client: { status: 'pending' }, admin: { status: 'pending' } }
@@ -1793,9 +2078,8 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
 
     const oldTask = currentTasks.find(t => t.id === taskData.id);
 
-    try {
-      if (!isNew) {
-        // UPDATE EXISTING TASK
+    if (!isNew) {
+      // UPDATE EXISTING TASK
         if (index >= 0) {
             updatedTasks[index] = taskData;
         }
@@ -1832,7 +2116,12 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
         
         // Notify Assignee if changed
         if (oldTask && oldTask.assigneeId !== taskData.assigneeId && taskData.assigneeId) {
-            notifyUser(taskData.assigneeId, 'New Task Assignment', `You have been assigned to task "${taskData.title}" in "${project.name}"`, 'info', 'plan');
+            const newAssignee = users.find(u => u.id === taskData.assigneeId);
+            if (newAssignee) {
+              // Send task assignment notification with link
+              await sendTaskAssignmentNotificationEmail(taskData, newAssignee, project.name, project.id, 'updated');
+            }
+            notifyUser(taskData.assigneeId, 'Task Reassignment', `You have been assigned to task "${taskData.title}" in "${project.name}"`, 'info', 'plan');
         }
       } else {
         // CREATE NEW TASK
@@ -1857,7 +2146,8 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
         if (taskData.assigneeId) {
           const assignee = users.find(u => u.id === taskData.assigneeId);
           if (assignee) {
-            await sendTaskCreationEmail(taskData, assignee, project.name);
+            // Send new detailed notification with task link (single notification)
+            await sendTaskAssignmentNotificationEmail(taskData, assignee, project.name, project.id, 'created');
           }
           
           // In-app notification
@@ -1888,9 +2178,14 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       setIsTaskModalOpen(false);
       setEditingTask(null);
       setShowTaskErrors(false);
+      
+      // Add visibility delay for spinner
+      await new Promise(resolve => setTimeout(resolve, 500));
     } catch (error: any) {
       console.error('Error saving task:', error);
       addNotification('Error', 'Unable to save task. Please check your input and try again.', 'error', undefined, project.id, project.name);
+    } finally {
+      setIsSavingTask(false);
     }
   };
 
@@ -2054,22 +2349,32 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
   };
 
   const handleKanbanStatusUpdate = async (taskId: string, newStatus: TaskStatus) => {
+    console.log('🚀 handleKanbanStatusUpdate called for task:', taskId, 'new status:', newStatus);
     const task = currentTasks.find(t => t.id === taskId);
-    if (!task) return;
+    if (!task) {
+      console.log('❌ Task not found:', taskId);
+      return;
+    }
+
+    console.log('📋 Found task:', task.title, 'current status:', task.status);
 
     if (isTaskFrozen(task.status)) {
+        console.log('❌ Task is frozen, cannot update');
         addNotification("Action Blocked", "Task is frozen (Aborted or On Hold).", "error");
         return;
     }
 
     // STRICT: Check Approvals before DONE
     if (newStatus === TaskStatus.DONE) {
+         console.log('🔍 Checking approvals before marking as DONE');
          const startClient = task.approvals?.start?.client?.status === 'approved';
          const startAdmin = task.approvals?.start?.admin?.status === 'approved';
          const completionClient = task.approvals?.completion?.client?.status === 'approved';
          const completionAdmin = task.approvals?.completion?.admin?.status === 'approved';
+         console.log('📋 Approvals - Start Client:', startClient, 'Start Admin:', startAdmin, 'Completion Client:', completionClient, 'Completion Admin:', completionAdmin);
          
          if (!startClient || !startAdmin || !completionClient || !completionAdmin) {
+             console.log('❌ Missing required approvals');
              addNotification('Approval Required', 'All 4 approvals (Start & Completion from both Client & Admin) are required.', 'warning');
              return;
          }
@@ -2120,6 +2425,15 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       
       // Update task in Firebase
       await updateTask(project.id, taskId, { status: newStatus });
+
+      // Send completion approval notification if task reaches 100% progress
+      if (newStatus === TaskStatus.REVIEW || (newStatus === TaskStatus.DONE && task.status !== TaskStatus.DONE)) {
+        // Get client and admin users to notify them for completion approval
+        const clientAndAdmin = users.filter(u => u.role === Role.CLIENT || u.role === Role.ADMIN);
+        if (clientAndAdmin.length > 0) {
+          await sendTaskCompletionApprovalNotificationEmail(task, clientAndAdmin, project.name, project.id);
+        }
+      }
 
       // AUTOMATIC PROJECT STATUS UPDATE
       // If a task moves to IN_PROGRESS, check if we should advance the project phase
@@ -2245,9 +2559,15 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
 
   const handleQuickComplete = (e: React.MouseEvent, task: Task) => {
     e.stopPropagation();
-    if (isTaskFrozen(task.status)) return;
+    console.log('🟢 Quick Complete clicked for task:', task.title, 'by user:', user.name, 'Current status:', task.status);
+    
+    if (isTaskFrozen(task.status)) {
+      console.log('❌ Task is frozen, cannot proceed');
+      return;
+    }
 
     if (isTaskBlocked(task) && task.status !== TaskStatus.DONE) {
+      console.log('❌ Task is blocked by dependencies');
       addNotification('Locked', "Cannot complete task. Dependencies pending.", 'error');
       return;
     }
@@ -2256,31 +2576,40 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
     // If checklist exists, logic is driven by toggles mostly, but we allow manual "Submit for Review"
     let newStatus = task.status;
     
+    console.log('🔄 Processing status change. Has subtasks:', task.subtasks.length > 0, 'Current status:', task.status);
+    
     if (task.subtasks.length === 0) {
+        console.log('🔹 No subtasks - using simple flow');
         if (task.status === TaskStatus.TODO) newStatus = TaskStatus.IN_PROGRESS;
         else if (task.status === TaskStatus.IN_PROGRESS) newStatus = TaskStatus.REVIEW;
         else if (task.status === TaskStatus.REVIEW) {
              // Check Approvals before DONE
              const clientApproved = task.approvals?.completion?.client?.status === 'approved';
              const adminApproved = task.approvals?.completion?.admin?.status === 'approved';
+             console.log('🔍 Checking approvals - Client:', clientApproved, 'Admin:', adminApproved);
              if (clientApproved && adminApproved) {
                  newStatus = TaskStatus.DONE;
              } else {
                  addNotification('Approval Required', 'Wait for Client and Admin approvals.', 'warning');
+                 console.log('⏸️ Approvals needed, cannot mark as done');
                  return;
              }
         }
         else if (task.status === TaskStatus.DONE) newStatus = TaskStatus.IN_PROGRESS; 
     } else {
+        console.log('🔸 Has subtasks - using checklist flow');
         // If has checklist, button acts as "Submit for Review" if all done
         const allDone = task.subtasks.every(s => s.isCompleted);
+        console.log('📋 All subtasks done:', allDone);
         if (allDone && task.status === TaskStatus.IN_PROGRESS) newStatus = TaskStatus.REVIEW;
         else if (task.status === TaskStatus.REVIEW) {
              addNotification('Pending', 'Task is under review. Approvals needed.', 'info');
+             console.log('⏸️ Task under review, cannot change status');
              return;
         }
     }
     
+    console.log('✅ Status will change from', task.status, 'to', newStatus);
     handleKanbanStatusUpdate(task.id, newStatus);
   };
 
@@ -2309,6 +2638,29 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
     if (editingTask.id) {
         try {
             await updateTask(project.id, editingTask.id, { comments: updatedComments });
+            
+            // Send comment notification email to relevant team members
+            // Get all users involved with this task (assignee and team members)
+            const relevantUsers = users.filter(u => {
+              // Include task assignee
+              if (u.id === editingTask.assigneeId) return true;
+              // Include project admins
+              if (u.id === project.leadDesignerId) return true;
+              // Include client
+              if (u.id === project.clientId) return true;
+              return false;
+            });
+            
+            if (relevantUsers.length > 0) {
+              await sendTaskCommentNotificationEmail(
+                editingTask as Task,
+                comment,
+                user.name || 'Unknown User',
+                relevantUsers,
+                project.name,
+                project.id
+              );
+            }
         } catch (error) {
             console.error("Failed to save comment", error);
         }
@@ -2319,175 +2671,187 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
     if (!editingTask || !editingTask.approvals) return;
     if (isTaskFrozen(editingTask.status)) return;
     
-    // For revoke, only admins can revoke
-    if (action === 'revoke') {
-      if (!isAdmin) {
-        addNotification('Access Denied', 'Only admins can revoke approvals', 'error');
+    // Prevent duplicate submissions
+    const approvalId = `${stage}-${action}-${targetRole || (isClient ? 'client' : 'admin')}`;
+    if (processingApproval) return;
+    setProcessingApproval(approvalId);
+
+    try {
+      // For revoke, only admins can revoke
+      if (action === 'revoke') {
+        if (!isAdmin) {
+          addNotification('Access Denied', 'Only admins can revoke approvals', 'error');
+          return;
+        }
+        if (!targetRole) return;
+      
+        // Check if both have approved - if so, prevent revocation
+        const clientApproved = editingTask.approvals?.[stage]?.client?.status === 'approved';
+        const adminApproved = editingTask.approvals?.[stage]?.admin?.status === 'approved';
+        
+        if (clientApproved && adminApproved) {
+          addNotification('Locked', 'Cannot revoke approvals once both parties have approved.', 'error');
+          return;
+        }
+        
+        const updatedApprovals = {
+          ...editingTask.approvals,
+          [stage]: {
+            ...editingTask.approvals[stage],
+            [targetRole]: {
+              status: 'pending' as ApprovalStatus,
+              updatedBy: user.id,
+              timestamp: new Date().toISOString()
+            }
+          }
+        };
+        
+        setEditingTask({ 
+          ...editingTask, 
+          approvals: updatedApprovals
+        });
+        
+        if (editingTask.id) {
+          try {
+            if (process.env.NODE_ENV !== 'production') console.log(`🔄 Revoking ${stage}/${targetRole} approval...`);
+            if (process.env.NODE_ENV !== 'production') console.log(`📝 Updated approvals:`, updatedApprovals);
+            
+            await updateTask(project.id, editingTask.id, { 
+              approvals: updatedApprovals
+            });
+            if (process.env.NODE_ENV !== 'production') console.log(`✅ Approval updated in Firebase`);
+            
+            const revokeNow = new Date().toISOString();
+            await logTimelineEvent(
+              project.id,
+              `Approval Revoked: ${editingTask.title}`,
+              `${stage} approval revoked for ${targetRole} by ${user.name}`,
+              'in-progress',
+              revokeNow,
+              revokeNow
+            );
+            if (process.env.NODE_ENV !== 'production') console.log(`✅ Timeline event logged`);
+            
+            addNotification('Approval Revoked', `${targetRole} approval for ${stage} stage revoked.`, 'info');
+          } catch (error) {
+            console.error("Failed to revoke approval", error);
+            addNotification("Error", "Failed to revoke approval", "error");
+          }
+        }
         return;
       }
-      if (!targetRole) return;
       
-      // Check if both have approved - if so, prevent revocation
-      const clientApproved = editingTask.approvals?.[stage]?.client?.status === 'approved';
-      const adminApproved = editingTask.approvals?.[stage]?.admin?.status === 'approved';
-      
-      if (clientApproved && adminApproved) {
-        addNotification('Locked', 'Cannot revoke approvals once both parties have approved.', 'error');
-        return;
-      }
-      
-      const updatedApprovals = {
+      const roleKey = (user.role === Role.CLIENT) ? 'client' : (user.role === Role.ADMIN) ? 'admin' : null;
+      if (!roleKey) return;
+
+      const newStatus: ApprovalStatus = action === 'approve' ? 'approved' : 'rejected';
+
+      let updatedApprovals = {
         ...editingTask.approvals,
         [stage]: {
           ...editingTask.approvals[stage],
-          [targetRole]: {
-            status: 'pending' as ApprovalStatus,
+          [roleKey]: {
+            status: newStatus,
             updatedBy: user.id,
             timestamp: new Date().toISOString()
           }
         }
       };
-      
-      setEditingTask({ 
-        ...editingTask, 
-        approvals: updatedApprovals
-      });
-      
-      if (editingTask.id) {
-        try {
-          if (process.env.NODE_ENV !== 'production') console.log(`🔄 Revoking ${stage}/${targetRole} approval...`);
-          if (process.env.NODE_ENV !== 'production') console.log(`📝 Updated approvals:`, updatedApprovals);
-          
-          await updateTask(project.id, editingTask.id, { 
-            approvals: updatedApprovals
-          });
-          if (process.env.NODE_ENV !== 'production') console.log(`✅ Approval updated in Firebase`);
-          
-          const revokeNow = new Date().toISOString();
-          await logTimelineEvent(
-            project.id,
-            `Approval Revoked: ${editingTask.title}`,
-            `${stage} approval revoked for ${targetRole} by ${user.name}`,
-            'in-progress',
-            revokeNow,
-            revokeNow
-          );
-          if (process.env.NODE_ENV !== 'production') console.log(`✅ Timeline event logged`);
-          
-          addNotification('Approval Revoked', `${targetRole} approval for ${stage} stage revoked.`, 'info');
-        } catch (error) {
-          console.error("Failed to revoke approval", error);
-          addNotification("Error", "Failed to revoke approval", "error");
+
+      let updatedTaskStatus = editingTask.status;
+
+      // Handle Rejection Logic
+      if (action === 'reject') {
+        updatedTaskStatus = stage === 'start' ? TaskStatus.TODO : TaskStatus.IN_PROGRESS;
+        addNotification('Task Rejected', "Status has been reset. Please review comments.", 'warning');
+        
+        // Notify Assignee
+        if (editingTask.assigneeId) {
+            notifyUser(editingTask.assigneeId, 'Work Rejected', `${user.name} rejected ${stage} approval for "${editingTask.title}".`, 'warning', 'plan');
         }
-      }
-      return;
-    }
-    
-    const roleKey = (user.role === Role.CLIENT) ? 'client' : (user.role === Role.ADMIN) ? 'admin' : null;
-    if (!roleKey) return;
 
-    const newStatus: ApprovalStatus = action === 'approve' ? 'approved' : 'rejected';
+      } else {
+          // Check if ALL 4 Approved, then set to DONE
+          const startClient = updatedApprovals.start?.client?.status === 'approved';
+          const startAdmin = updatedApprovals.start?.admin?.status === 'approved';
+          const completionClient = updatedApprovals.completion?.client?.status === 'approved';
+          const completionAdmin = updatedApprovals.completion?.admin?.status === 'approved';
 
-    let updatedApprovals = {
-      ...editingTask.approvals,
-      [stage]: {
-        ...editingTask.approvals[stage],
-        [roleKey]: {
-          status: newStatus,
-          updatedBy: user.id,
-          timestamp: new Date().toISOString()
-        }
-      }
-    };
-
-    let updatedTaskStatus = editingTask.status;
-
-    // Handle Rejection Logic
-    if (action === 'reject') {
-      updatedTaskStatus = stage === 'start' ? TaskStatus.TODO : TaskStatus.IN_PROGRESS;
-      addNotification('Task Rejected', "Status has been reset. Please review comments.", 'warning');
-      
-      // Notify Assignee
-      if (editingTask.assigneeId) {
-          notifyUser(editingTask.assigneeId, 'Work Rejected', `${user.name} rejected ${stage} approval for "${editingTask.title}".`, 'warning', 'plan');
-      }
-
-    } else {
-        // Check if ALL 4 Approved, then set to DONE
-        const startClient = updatedApprovals.start?.client?.status === 'approved';
-        const startAdmin = updatedApprovals.start?.admin?.status === 'approved';
-        const completionClient = updatedApprovals.completion?.client?.status === 'approved';
-        const completionAdmin = updatedApprovals.completion?.admin?.status === 'approved';
-
-        if (startClient && startAdmin && completionClient && completionAdmin) {
-             updatedTaskStatus = TaskStatus.DONE;
-             addNotification('Task Approved', "Task fully approved and marked as DONE.", 'success');
-             if (editingTask.assigneeId) {
-                 notifyUser(editingTask.assigneeId, 'Work Approved', `Great job! "${editingTask.title}" is officially approved and done in "${project.name}".`, 'success', 'plan');
-                 // Send task approval email
+          if (startClient && startAdmin && completionClient && completionAdmin) {
+               updatedTaskStatus = TaskStatus.DONE;
+               addNotification('Task Approved', "Task fully approved and marked as DONE.", 'success');
+               if (editingTask.assigneeId) {
+                   notifyUser(editingTask.assigneeId, 'Work Approved', `Great job! "${editingTask.title}" is officially approved and done in "${project.name}".`, 'success', 'plan');
+                   // Send task approval email
+                   const assignee = projectTeam.find(u => u.id === editingTask.assigneeId);
+                   if (assignee && assignee.email && editingTask.title) {
+                     await sendTaskApprovalEmail(editingTask.title, assignee, project.name, user.name, 'completion');
+                   }
+               }
+          } else if (stage === 'completion') {
+               addNotification('Approved', `Task completion approved by ${roleKey}. Waiting for others.`, 'success');
+               // Send approval email for this stage
+               if (editingTask.assigneeId) {
                  const assignee = projectTeam.find(u => u.id === editingTask.assigneeId);
                  if (assignee && assignee.email && editingTask.title) {
                    await sendTaskApprovalEmail(editingTask.title, assignee, project.name, user.name, 'completion');
                  }
-             }
-        } else if (stage === 'completion') {
-             addNotification('Approved', `Task completion approved by ${roleKey}. Waiting for others.`, 'success');
-             // Send approval email for this stage
-             if (editingTask.assigneeId) {
-               const assignee = projectTeam.find(u => u.id === editingTask.assigneeId);
-               if (assignee && assignee.email && editingTask.title) {
-                 await sendTaskApprovalEmail(editingTask.title, assignee, project.name, user.name, 'completion');
                }
-             }
-        } else {
-            addNotification('Approved', `Task ${stage} approved.`, 'success');
-            // Send approval email for this stage
-            if (editingTask.assigneeId) {
-              const assignee = projectTeam.find(u => u.id === editingTask.assigneeId);
-              if (assignee && assignee.email && editingTask.title) {
-                await sendTaskApprovalEmail(editingTask.title, assignee, project.name, user.name, stage);
+          } else {
+              addNotification('Approved', `Task ${stage} approved.`, 'success');
+              // Send approval email for this stage
+              if (editingTask.assigneeId) {
+                const assignee = projectTeam.find(u => u.id === editingTask.assigneeId);
+                if (assignee && assignee.email && editingTask.title) {
+                  await sendTaskApprovalEmail(editingTask.title, assignee, project.name, user.name, stage);
+                }
               }
-            }
-        }
-    }
+          }
+      }
 
-    setEditingTask({ 
-      ...editingTask, 
-      approvals: updatedApprovals,
-      status: updatedTaskStatus
-    });
+      setEditingTask({ 
+        ...editingTask, 
+        approvals: updatedApprovals,
+        status: updatedTaskStatus
+      });
 
-    // Persist immediately if editing an existing task
-    if (editingTask.id) {
-        try {
-            await updateTask(project.id, editingTask.id, { 
-                approvals: updatedApprovals,
-                status: updatedTaskStatus
-            });
-            
-            // Update parent component's task list to refresh Kanban board
-            const updatedTaskList = currentTasks.map(t => 
-                t.id === editingTask.id 
-                    ? { ...t, approvals: updatedApprovals, status: updatedTaskStatus as TaskStatus }
-                    : t
-            ) as Task[];
-            onUpdateProject({ ...project, tasks: updatedTaskList });
-            
-            const approvalNow = new Date().toISOString();
-            // Log timeline event for approval
-            await logTimelineEvent(
-                project.id,
-                `Approval: ${editingTask.title}`,
-                `${stage} approval ${action}ed by ${user.name}`,
-                'completed',
-                approvalNow,
-                approvalNow
-            );
+      // Persist immediately if editing an existing task
+      if (editingTask.id) {
+          try {
+              await updateTask(project.id, editingTask.id, { 
+                  approvals: updatedApprovals,
+                  status: updatedTaskStatus
+              });
+              
+              // Update parent component's task list to refresh Kanban board
+              const updatedTaskList = currentTasks.map(t => 
+                  t.id === editingTask.id 
+                      ? { ...t, approvals: updatedApprovals, status: updatedTaskStatus as TaskStatus }
+                      : t
+              ) as Task[];
+              onUpdateProject({ ...project, tasks: updatedTaskList });
+              
+              const approvalNow = new Date().toISOString();
+              // Log timeline event for approval
+              await logTimelineEvent(
+                  project.id,
+                  `Approval: ${editingTask.title}`,
+                  `${stage} approval ${action}ed by ${user.name}`,
+                  'completed',
+                  approvalNow,
+                  approvalNow
+              );
 
-        } catch (error) {
-            console.error("Failed to save approval", error);
-            addNotification("Error", "Failed to save approval status", "error");
-        }
+          } catch (error) {
+              console.error("Failed to save approval", error);
+              addNotification("Error", "Failed to save approval status", "error");
+          }
+      }
+      
+      // Add visibility delay for spinner
+      await new Promise(resolve => setTimeout(resolve, 500));
+    } finally {
+      setProcessingApproval(null);
     }
   };
 
@@ -2601,10 +2965,41 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       return users.filter(u => u.role === Role.VENDOR && vendorIds.has(u.id));
   }, [currentTasks, users]);
 
+  // Combine assigned vendors with team member vendors (treat all equally)
+  const allProjectVendors = useMemo(() => {
+    const vendorSet = new Map<string, User>();
+    
+    // Add vendors from assigned tasks
+    assignedVendors.forEach(v => vendorSet.set(v.id, v));
+    
+    // Add vendors from team members (no special filtering)
+    if (project.teamMembers) {
+      project.teamMembers.forEach(memberId => {
+        const member = users.find(u => u.id === memberId);
+        if (member && member.role === Role.VENDOR) {
+          vendorSet.set(member.id, member);
+        }
+      });
+    }
+    
+    return Array.from(vendorSet.values());
+  }, [assignedVendors, project.teamMembers, users]);
+
+  // Filter vendors based on visibility settings (clients shouldn't see hidden vendors)
+  const visibleVendors = useMemo(() => {
+      if (isAdmin || isLeadDesigner) {
+        // Admins and designers see all vendors
+        return allProjectVendors;
+      }
+      // Clients and others don't see hidden vendors
+      const hiddenVendorIds = project.hiddenVendors || [];
+      return allProjectVendors.filter(v => !hiddenVendorIds.includes(v.id));
+  }, [allProjectVendors, project.hiddenVendors, isAdmin, isLeadDesigner]);
+
   // Group Vendors by Specialty
   const vendorsByCategory = useMemo(() => {
       const groups: Record<string, User[]> = {};
-      assignedVendors.forEach(v => {
+      visibleVendors.forEach(v => {
           const category = v.specialty || 'General';
           if (!groups[category]) {
               groups[category] = [];
@@ -2612,7 +3007,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
           groups[category].push(v);
       });
       return groups;
-  }, [assignedVendors]);
+  }, [visibleVendors]);
 
   // Sort vendor categories by standard order
   const sortedVendorCategories = useMemo(() => {
@@ -2736,18 +3131,6 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
               )}
             </div>
             <div className="flex flex-wrap items-center gap-3 md:gap-4 text-sm md:text-xs text-gray-500 mt-4 md:mt-3">
-              <span className={`px-2 py-0.5 rounded-md text-sm md:text-xs font-medium whitespace-nowrap ${getStatusColor(project.status)}`}>
-                {project.status}
-              </span>
-              {canEditProject && getNextStatus(project.status) && (
-                <button 
-                  onClick={handleAdvanceStatus}
-                  className="text-sm md:text-xs text-blue-600 hover:text-blue-800 font-bold flex items-center gap-1 bg-blue-50 px-2 py-0.5 rounded-md border border-blue-100 hover:bg-blue-100 transition-colors whitespace-nowrap"
-                  title={`Advance to ${getNextStatus(project.status)}`}
-                >
-                  Next Phase <ArrowRight className="w-3 h-3" />
-                </button>
-              )}
               {isAdmin && (
                 <button
                   onClick={handleToggleHold}
@@ -2854,10 +3237,10 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       <div ref={tabsContainerRef} className="border-b border-gray-200 bg-gray-50 overflow-x-auto md:overflow-hidden [&::-webkit-scrollbar]:h-2 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-gray-300 [&::-webkit-scrollbar-thumb]:rounded [&:hover::-webkit-scrollbar-thumb]:bg-gray-400 hover:[scrollbar-color:rgb(107_114_128)_transparent]" style={{scrollbarWidth: 'thin', scrollbarColor: 'transparent transparent'}}>
         <div className="flex gap-1 md:gap-6 px-4 md:px-6 min-w-max md:min-w-0 md:w-full md:justify-center">
           {[
-            { id: 'discovery', label: '1. Meetings', icon: FileText, hidden: isVendor },
-            { id: 'plan', label: '2. Plan', icon: Layout },
+            { id: 'discovery', label: 'Meetings', icon: FileText, hidden: isVendor },
+            { id: 'plan', label: 'WIP', icon: Layout },
             { id: 'documents', label: 'Documents', icon: FileIcon },
-            { id: 'financials', label: '3. Financials', icon: IndianRupee, hidden: !canViewFinancials },
+            { id: 'financials', label: 'Financials', icon: IndianRupee, hidden: !canViewFinancials },
             { id: 'timeline', label: 'Timeline', icon: History, hidden: isVendor },
             { id: 'team', label: 'Team', icon: UserIcon }
           ].map((tab) => {
@@ -2884,9 +3267,6 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       {/* Content Area */}
       <div 
         className="flex-1 overflow-y-auto bg-gray-50"
-        onTouchStart={onTouchStart}
-        onTouchMove={onTouchMove}
-        onTouchEnd={onTouchEnd}
       >
         
         {/* PHASE 1: MEETINGS */}
@@ -2896,7 +3276,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
             <div className="bg-white p-4 md:p-6 rounded-xl border border-gray-200 shadow-sm">
               <div className="flex flex-col md:flex-row items-start md:items-center justify-between mb-4 gap-3 md:gap-0">
                 <div className="w-full">
-                  <h3 className="text-lg md:text-xl font-bold text-gray-800">Phase 1: Meetings</h3>
+                  <h3 className="text-lg md:text-xl font-bold text-gray-800">Meetings</h3>
                   <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 sm:gap-4 mt-2">
                     <div className="flex items-center gap-2 text-base md:text-sm text-gray-600">
                       <Calendar className="w-5 h-5 md:w-4 md:h-4 flex-shrink-0" />
@@ -3133,7 +3513,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
 
             {/* GANTT VIEW (Detailed) */}
             {planView === 'gantt' && ganttConfig && (
-              <div className="bg-white rounded-xl shadow-sm overflow-hidden flex-1 flex flex-col">
+              <div className="bg-white rounded-xl shadow-sm overflow-hidden flex-1 flex flex-col min-h-[600px]">
                  {/* ... Gantt SVG Logic ... */}
                  <div className="p-4 md:p-5 bg-gray-50 flex justify-between items-center">
                    <h3 className="font-bold text-base md:text-lg text-gray-800">Timeline & Dependencies</h3>
@@ -3365,6 +3745,8 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                         const frozen = isTaskFrozen(task.status);
                         const progress = calculateTaskProgress(task);
                         const isMyTask = user.id === task.assigneeId;
+                        
+                        console.log(`🔍 Task "${task.title}": isMyTask=${isMyTask}, blocked=${blocked}, frozen=${frozen}, status=${task.status}, assigneeId=${task.assigneeId}, userId=${user.id}`);
 
                         return (
                         <div key={task.id} className={`bg-white p-4 md:p-6 rounded-xl border border-gray-200 shadow-sm hover:shadow-md transition-all ${blocked || frozen ? 'opacity-75 bg-gray-50' : ''}`}>
@@ -3382,6 +3764,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                     <>
                                         {blocked && <span title="Blocked by dependency"><Lock className="w-4 h-4 text-red-400" /></span>}
                                         {/* Quick Complete Checkbox for Assignee - Only if NOT frozen */}
+                                        {console.log(`🔘 Button visibility check for "${task.title}": isMyTask=${isMyTask} && !blocked=${!blocked} && !frozen=${!frozen} = ${isMyTask && !blocked && !frozen}`)}
                                         {isMyTask && !blocked && !frozen && (
                                         <button 
                                             onClick={(e) => handleQuickComplete(e, task)} 
@@ -3683,10 +4066,13 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                       // Fallback: only show to admin
                       return user.role === Role.ADMIN;
                     })
+                    .sort((a, b) => {
+                      return getDocumentRecentTimestamp(b) - getDocumentRecentTimestamp(a);
+                    })
                     .map(doc => (
                     <div key={doc.id} className="group relative bg-white border border-gray-200 rounded-xl overflow-hidden hover:shadow-lg transition-shadow">
                        {/* Overlay Actions */}
-                       <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center gap-2 z-10">
+                       <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center gap-2 z-10 pointer-events-none group-hover:pointer-events-auto">
                           <div className="flex items-center justify-center gap-2">
                             <button 
                               className="p-2 bg-white rounded-full text-gray-900 hover:bg-gray-100" 
@@ -3718,6 +4104,15 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                  <Trash2 className="w-4 h-4" />
                               </button>
                             )}
+                            {user.role === Role.ADMIN && (
+                              <button
+                                className="p-2 bg-white rounded-full text-gray-900 hover:bg-gray-100"
+                                title="Edit Share"
+                                onClick={(e) => { e.stopPropagation(); handleOpenShareEdit(doc); }}
+                              >
+                                <Users className="w-4 h-4" />
+                              </button>
+                            )}
                           </div>
                           {user.role === Role.ADMIN && doc.approvalStatus === 'pending' && (
                             <div className="flex items-center justify-center gap-2">
@@ -3725,15 +4120,37 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                 className="p-2 bg-white rounded-full text-green-600 hover:bg-green-50" 
                                 title="Approve"
                                 onClick={() => handleApproveDocument(doc)}
+                                disabled={processingAction === `approve-doc-${doc.id}`}
                               >
-                                 <Check className="w-4 h-4" />
+                                 {processingAction === `approve-doc-${doc.id}` ? <Spinner size="md" color="currentColor" /> : <Check className="w-4 h-4" />}
                               </button>
                               <button 
                                 className="p-2 bg-white rounded-full text-red-600 hover:bg-red-50" 
                                 title="Reject"
                                 onClick={() => handleRejectDocument(doc)}
+                                disabled={processingAction === `reject-doc-${doc.id}`}
                               >
-                                 <X className="w-4 h-4" />
+                                 {processingAction === `reject-doc-${doc.id}` ? <Spinner size="md" color="currentColor" /> : <X className="w-4 h-4" />}
+                              </button>
+                            </div>
+                          )}
+                          {user.role === Role.CLIENT && doc.approvalStatus === 'approved' && doc.clientApprovalStatus !== 'approved' && (
+                            <div className="flex items-center justify-center gap-2">
+                              <button 
+                                className="p-2 bg-white rounded-full text-green-600 hover:bg-green-50" 
+                                title="Approve as Client"
+                                onClick={() => handleClientApproveDocument(doc)}
+                                disabled={processingAction === `client-approve-doc-${doc.id}`}
+                              >
+                                 {processingAction === `client-approve-doc-${doc.id}` ? <Spinner size="md" color="currentColor" /> : <Check className="w-4 h-4" />}
+                              </button>
+                              <button 
+                                className="p-2 bg-white rounded-full text-red-600 hover:bg-red-50" 
+                                title="Reject as Client"
+                                onClick={() => handleClientRejectDocument(doc)}
+                                disabled={processingAction === `client-reject-doc-${doc.id}`}
+                              >
+                                 {processingAction === `client-reject-doc-${doc.id}` ? <Spinner size="md" color="currentColor" /> : <X className="w-4 h-4" />}
                               </button>
                             </div>
                           )}
@@ -3764,24 +4181,37 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                           )}
                        </div>
                        <div className="p-3">
-                          <p className="text-lg md:text-sm font-bold text-gray-800 truncate" title={doc.name}>{doc.name}</p>
-                          <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-1 mt-3">
-                            <span className="text-sm md:text-xs text-gray-400">{formatDateToIndian(doc.uploadDate)}</span>
-                            {/* Approval Status Indicator */}
-                            <div className="flex-none w-auto">
-                              <span className={`inline-block text-xs font-bold px-2 py-0.5 rounded mt-1 sm:mt-0 ${doc.approvalStatus === 'pending' ? 'bg-yellow-100 text-yellow-700' : doc.approvalStatus === 'approved' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>{doc.approvalStatus === 'pending' ? 'Approval Pending' : doc.approvalStatus === 'approved' ? 'Approved' : 'Rejected'}</span>
-                            </div>
+                          {/* Row 1: Document name and date */}
+                          <div className="flex justify-between items-start gap-2">
+                            <p className="text-lg md:text-sm font-bold text-gray-800 flex-1 truncate" title={doc.name}>{doc.name}</p>
+                            <span className="text-sm md:text-xs text-gray-400 whitespace-nowrap">{formatDateToIndian(doc.uploadDate)}</span>
                           </div>
+                          
+                          {/* Row 2: Shared with people */}
                           <div className="mt-2 flex gap-1 flex-wrap">
                               {(Array.isArray(doc.sharedWith) ? doc.sharedWith : []).map(userId => {
                                 const sharedUser = users.find(u => u.id === userId);
+                                if (!sharedUser?.name) return null; // don't show placeholder when name missing
                                 return (
-                                  <span key={userId} className="text-xs bg-blue-100 text-blue-600 px-1.5 py-0.5 rounded font-semibold" title={sharedUser?.name}>
-                                    {sharedUser?.name?.split(' ')[0] || 'Unknown'}
+                                  <span key={userId} className="text-xs bg-blue-100 text-blue-600 px-1.5 py-0.5 rounded font-semibold" title={sharedUser.name}>
+                                    {sharedUser.name.split(' ')[0]}
                                   </span>
                                 );
                               })}
+                          </div>
+                          
+                          {/* Row 3: Approval Status Indicators */}
+                          <div className="flex flex-col gap-1 mt-2">
+                            <div className="flex-none w-auto">
+                              <span className={`inline-block text-xs font-bold px-2 py-0.5 rounded ${doc.approvalStatus === 'pending' ? 'bg-yellow-100 text-yellow-700' : doc.approvalStatus === 'approved' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>Admin: {doc.approvalStatus === 'pending' ? 'Pending' : doc.approvalStatus === 'approved' ? 'Approved' : 'Rejected'}</span>
                             </div>
+                            {doc.approvalStatus === 'approved' && doc.clientApprovalStatus && (
+                              <div className="flex-none w-auto">
+                                <span className={`inline-block text-xs font-bold px-2 py-0.5 rounded ${doc.clientApprovalStatus === 'approved' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>{doc.clientApprovedBy ? users.find(u => u.id === doc.clientApprovedBy)?.name || 'Client' : 'Client'}: {doc.clientApprovalStatus === 'approved' ? 'Approved' : 'Rejected'}</span>
+                              </div>
+                            )}
+                          </div>
+                          
                           {doc.comments && doc.comments.length > 0 && (
                             <div className="mt-2 text-xs text-blue-600 font-medium">
                               {doc.comments.length} {doc.comments.length === 1 ? 'comment' : 'comments'}
@@ -3797,7 +4227,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
         {/* PHASE 3: FINANCIALS */}
         {activeTab === 'financials' && canViewFinancials && (
           <div className="w-full mx-auto space-y-8 p-4 md:p-6">
-            <h3 className="text-lg md:text-base font-bold text-gray-800">Phase 3: Financial Management</h3>
+            <h3 className="text-lg md:text-base font-bold text-gray-800">Financial Management</h3>
             
             {/* NEW: Budget Overview Section */}
             <div className="bg-gray-900 text-white p-4 md:p-8 rounded-xl shadow-lg flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
@@ -4080,14 +4510,20 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                   <div className="flex gap-0.5">
                                     <button 
                                       onClick={() => handleApproveAdditionalBudget(fin.id, 'client', 'approved')}
-                                      className="text-white bg-green-600 hover:bg-green-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer"
+                                      className="text-white bg-green-600 hover:bg-green-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                       title="Approve"
-                                    >✓</button>
+                                      disabled={processingAction === `approve-budget-${fin.id}-client-approved`}
+                                    >
+                                      {processingAction === `approve-budget-${fin.id}-client-approved` ? <Spinner size="sm" color="currentColor" /> : '✓'}
+                                    </button>
                                     <button 
                                       onClick={() => handleApproveAdditionalBudget(fin.id, 'client', 'rejected')}
-                                      className="text-white bg-red-600 hover:bg-red-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer"
+                                      className="text-white bg-red-600 hover:bg-red-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                       title="Reject"
-                                    >✗</button>
+                                      disabled={processingAction === `approve-budget-${fin.id}-client-rejected`}
+                                    >
+                                      {processingAction === `approve-budget-${fin.id}-client-rejected` ? <Spinner size="sm" color="currentColor" /> : '✗'}
+                                    </button>
                                   </div>
                                 )}
                                 {(fin.clientApprovalForAdditionalBudget === 'pending' || (!fin.clientApprovalForAdditionalBudget && !fin.clientApproved)) && user?.role !== Role.CLIENT && (
@@ -4110,14 +4546,20 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                   <div className="flex gap-0.5">
                                     <button 
                                       onClick={() => handleApproveAdditionalBudget(fin.id, 'admin', 'approved')}
-                                      className="text-white bg-green-600 hover:bg-green-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer"
+                                      className="text-white bg-green-600 hover:bg-green-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                       title="Approve"
-                                    >✓</button>
+                                      disabled={processingAction === `approve-budget-${fin.id}-admin-approved`}
+                                    >
+                                      {processingAction === `approve-budget-${fin.id}-admin-approved` ? <Spinner size="sm" color="currentColor" /> : '✓'}
+                                    </button>
                                     <button 
                                       onClick={() => handleApproveAdditionalBudget(fin.id, 'admin', 'rejected')}
-                                      className="text-white bg-red-600 hover:bg-red-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer"
+                                      className="text-white bg-red-600 hover:bg-red-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                       title="Reject"
-                                    >✗</button>
+                                      disabled={processingAction === `approve-budget-${fin.id}-admin-rejected`}
+                                    >
+                                      {processingAction === `approve-budget-${fin.id}-admin-rejected` ? <Spinner size="sm" color="currentColor" /> : '✗'}
+                                    </button>
                                   </div>
                                 )}
                                 {(fin.adminApprovalForAdditionalBudget === 'pending' || (!fin.adminApprovalForAdditionalBudget && !fin.adminApproved)) && user?.role !== Role.ADMIN && (
@@ -4142,14 +4584,20 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                   <div className="flex gap-0.5">
                                     <button 
                                       onClick={() => handleApprovePayment(fin.id, 'client', 'approved')}
-                                      className="text-white bg-green-600 hover:bg-green-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer"
+                                      className="text-white bg-green-600 hover:bg-green-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                       title="Confirm payment"
-                                    >✓</button>
+                                      disabled={processingAction === `approve-payment-${fin.id}-client-approved`}
+                                    >
+                                      {processingAction === `approve-payment-${fin.id}-client-approved` ? <Spinner size="sm" color="currentColor" /> : '✓'}
+                                    </button>
                                     <button 
                                       onClick={() => handleApprovePayment(fin.id, 'client', 'rejected')}
-                                      className="text-white bg-red-600 hover:bg-red-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer"
+                                      className="text-white bg-red-600 hover:bg-red-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                       title="Dispute payment"
-                                    >✗</button>
+                                      disabled={processingAction === `approve-payment-${fin.id}-client-rejected`}
+                                    >
+                                      {processingAction === `approve-payment-${fin.id}-client-rejected` ? <Spinner size="sm" color="currentColor" /> : '✗'}
+                                    </button>
                                   </div>
                                 )}
                                 {(fin.clientApprovalForPayment === 'pending' || (!fin.clientApprovalForPayment && !fin.clientApproved)) && user?.role !== Role.CLIENT && (
@@ -4172,14 +4620,20 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                   <div className="flex gap-0.5">
                                     <button 
                                       onClick={() => handleApprovePayment(fin.id, 'admin', 'approved')}
-                                      className="text-white bg-green-600 hover:bg-green-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer"
+                                      className="text-white bg-green-600 hover:bg-green-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                       title="Approve payment"
-                                    >✓</button>
+                                      disabled={processingAction === `approve-payment-${fin.id}-admin-approved`}
+                                    >
+                                      {processingAction === `approve-payment-${fin.id}-admin-approved` ? <Spinner size="sm" color="currentColor" /> : '✓'}
+                                    </button>
                                     <button 
                                       onClick={() => handleApprovePayment(fin.id, 'admin', 'rejected')}
-                                      className="text-white bg-red-600 hover:bg-red-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer"
+                                      className="text-white bg-red-600 hover:bg-red-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                       title="Reject payment"
-                                    >✗</button>
+                                      disabled={processingAction === `approve-payment-${fin.id}-admin-rejected`}
+                                    >
+                                      {processingAction === `approve-payment-${fin.id}-admin-rejected` ? <Spinner size="sm" color="currentColor" /> : '✗'}
+                                    </button>
                                   </div>
                                 )}
                                 {(fin.adminApprovalForPayment === 'pending' || (!fin.adminApprovalForPayment && !fin.adminApproved)) && user?.role !== Role.ADMIN && (
@@ -4204,14 +4658,20 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                   <div className="flex gap-0.5">
                                     <button 
                                       onClick={() => handleApproveExpense(fin.id, 'client', true)}
-                                      className="text-white bg-green-600 hover:bg-green-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer"
+                                      className="text-white bg-green-600 hover:bg-green-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                       title="Approve expense"
-                                    >✓</button>
+                                      disabled={processingAction === `approve-expense-${fin.id}-client-true`}
+                                    >
+                                      {processingAction === `approve-expense-${fin.id}-client-true` ? <Spinner size="sm" color="currentColor" /> : '✓'}
+                                    </button>
                                     <button 
                                       onClick={() => handleApproveExpense(fin.id, 'client', false)}
-                                      className="text-white bg-red-600 hover:bg-red-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer"
+                                      className="text-white bg-red-600 hover:bg-red-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                       title="Reject expense"
-                                    >✗</button>
+                                      disabled={processingAction === `approve-expense-${fin.id}-client-false`}
+                                    >
+                                      {processingAction === `approve-expense-${fin.id}-client-false` ? <Spinner size="sm" color="currentColor" /> : '✗'}
+                                    </button>
                                   </div>
                                 )}
                                 {fin.clientApproved === undefined && user?.role !== Role.CLIENT && (
@@ -4234,14 +4694,20 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                   <div className="flex gap-0.5">
                                     <button 
                                       onClick={() => handleApproveExpense(fin.id, 'admin', true)}
-                                      className="text-white bg-green-600 hover:bg-green-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer"
+                                      className="text-white bg-green-600 hover:bg-green-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                       title="Approve expense"
-                                    >✓</button>
+                                      disabled={processingAction === `approve-expense-${fin.id}-admin-true`}
+                                    >
+                                      {processingAction === `approve-expense-${fin.id}-admin-true` ? <Spinner size="sm" color="currentColor" /> : '✓'}
+                                    </button>
                                     <button 
                                       onClick={() => handleApproveExpense(fin.id, 'admin', false)}
-                                      className="text-white bg-red-600 hover:bg-red-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer"
+                                      className="text-white bg-red-600 hover:bg-red-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                       title="Reject expense"
-                                    >✗</button>
+                                      disabled={processingAction === `approve-expense-${fin.id}-admin-false`}
+                                    >
+                                      {processingAction === `approve-expense-${fin.id}-admin-false` ? <Spinner size="sm" color="currentColor" /> : '✗'}
+                                    </button>
                                   </div>
                                 )}
                                 {fin.adminApproved === undefined && user?.role !== Role.ADMIN && (
@@ -4652,107 +5118,58 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
         {activeTab === 'team' && (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6 p-4 md:p-8">
             <div className="bg-white p-4 md:p-8 rounded-xl border border-gray-200">
-               <h3 className="font-bold text-lg md:text-base text-gray-800 mb-4">Project Stakeholders</h3>
-               <div className="space-y-4">
-                  {/* Primary Client */}
-                  <div className="flex items-center justify-between border-b border-gray-50 pb-2">
-                     <div className="flex items-center gap-4">
-                        <div>
-                            <p className="text-base md:text-sm font-bold text-gray-900">{getAssigneeName(project.clientId)}</p>
-                            <p className="text-sm text-gray-500">Primary Client</p>
-                        </div>
-                     </div>
-                     {user.role === Role.ADMIN && (
-                        <div className="flex items-center gap-1">
-                            <button 
-                                onClick={() => {
-                                    const client = users.find(u => u.id === project.clientId);
-                                    if (client) handleSendPaymentReminder(client);
-                                }}
+               <h3 className="font-bold text-lg md:text-base text-gray-800 mb-4">Project Clients</h3>
+               <div className="space-y-2">
+                  {(() => {
+                    // Combine primary clientId and additional clientIds, removing duplicates
+                    const clientIds = Array.from(new Set([project.clientId, ...(project.clientIds || [])].filter(Boolean)));
+                    
+                    if (clientIds.length === 0) {
+                      return <p className="text-gray-500 text-sm">No clients assigned</p>;
+                    }
+                    
+                    return clientIds.map((clientId) => {
+                      const client = users.find(u => u.id === clientId);
+                      if (!client) return null;
+                      
+                      return (
+                        <div key={clientId} className="flex items-center justify-between border-b border-gray-50 pb-2">
+                          <div className="flex items-center gap-4">
+                            <div>
+                              <p className="text-base md:text-sm font-bold text-gray-900">{client.name}</p>
+                              <p className="text-xs text-gray-500">Client</p>
+                            </div>
+                          </div>
+                          {user.role === Role.ADMIN && (
+                            <div className="flex items-center gap-1">
+                              <button 
+                                onClick={() => handleSendPaymentReminder(client)}
                                 className="text-gray-400 hover:text-green-600 p-2.5 rounded-full hover:bg-green-50 transition-colors"
                                 title="Send Payment Reminder Email"
-                            >
+                              >
                                 <IndianRupee className="w-5 h-5" />
-                            </button>
-                            <button
-                              onClick={() => {
-                                const projectLink = `${window.location.origin}${window.location.pathname}?projectId=${project.id}`;
-                                navigator.clipboard.writeText(projectLink).then(() => {
-                                  addNotification('Success', 'Project link copied to clipboard', 'success', user?.id, project.id, project.name);
-                                }).catch(() => {
-                                  addNotification('Error', 'Failed to copy link', 'error', user?.id, project.id, project.name);
-                                });
-                              }}
-                              className="text-gray-400 hover:text-blue-600 p-2.5 rounded-full hover:bg-blue-50 transition-colors"
-                              title="Copy project link"
-                            >
-                              <Link2 className="w-5 h-5" />
-                            </button>
+                              </button>
+                              <button
+                                onClick={() => {
+                                  const projectLink = `${window.location.origin}${window.location.pathname}?projectId=${project.id}`;
+                                  navigator.clipboard.writeText(projectLink).then(() => {
+                                    addNotification('Success', 'Project link copied to clipboard', 'success', user?.id, project.id, project.name);
+                                  }).catch(() => {
+                                    addNotification('Error', 'Failed to copy link', 'error', user?.id, project.id, project.name);
+                                  });
+                                }}
+                                className="text-gray-400 hover:text-blue-600 p-2.5 rounded-full hover:bg-blue-50 transition-colors"
+                                title="Copy project link"
+                              >
+                                <Link2 className="w-5 h-5" />
+                              </button>
+                            </div>
+                          )}
                         </div>
-                     )}
-                  </div>
-
-                  {/* Additional Clients */}
-                  {project.clientIds && project.clientIds.length > 0 && (
-                     <div className="pt-2 space-y-3">
-                         <h4 className="text-sm font-bold text-gray-500 uppercase mb-2">Additional Clients</h4>
-                         {project.clientIds.map(clientId => {
-                            const client = users.find(u => u.id === clientId);
-                            if (!client) return null;
-                            return (
-                                <div key={client.id} className="flex items-center gap-3 p-2 md:p-3 hover:bg-gray-50 rounded-lg transition-colors border border-transparent hover:border-gray-100">
-                                    <div className="flex-1">
-                                        <p className="font-bold text-gray-800 text-base md:text-sm">{client.name}</p>
-                                        <p className="text-sm text-gray-500">Client</p>
-                                    </div>
-                                    <div className="flex items-center gap-1">
-                                        {user.role === Role.ADMIN && (
-                                            <>
-                                                <button 
-                                                    onClick={() => handleSendPaymentReminder(client)}
-                                                    className="text-gray-400 hover:text-green-600 p-2 rounded-full hover:bg-green-50 transition-colors"
-                                                    title="Send Payment Reminder Email"
-                                                >
-                                                    <IndianRupee className="w-4 h-4" />
-                                                </button>
-                                                <button
-                                                  onClick={() => {
-                                                    const projectLink = `${window.location.origin}${window.location.pathname}?projectId=${project.id}`;
-                                                    navigator.clipboard.writeText(projectLink).then(() => {
-                                                      addNotification('Success', 'Project link copied to clipboard', 'success', user?.id, project.id, project.name);
-                                                    }).catch(() => {
-                                                      addNotification('Error', 'Failed to copy link', 'error', user?.id, project.id, project.name);
-                                                    });
-                                                  }}
-                                                  className="text-gray-400 hover:text-blue-600 p-2 rounded-full hover:bg-blue-50 transition-colors"
-                                                  title="Copy project link"
-                                                >
-                                                  <Link2 className="w-4 h-4" />
-                                                </button>
-                                            </>
-                                        )}
-                                        {canEditProject && (
-                                            <button 
-                                                onClick={() => {
-                                                    const updated = {
-                                                        ...project,
-                                                        clientIds: (project.clientIds || []).filter(id => id !== clientId)
-                                                    };
-                                                    onUpdateProject(updated);
-                                                    addNotification('Success', `Client ${client.name} removed from project`, 'success', project.clientId, project.id, project.name);
-                                                }}
-                                                className="text-red-400 hover:text-red-600 p-1.5 hover:bg-red-50 rounded transition-colors"
-                                                title="Remove Client"
-                                            >
-                                                <X className="w-4 h-4" />
-                                            </button>
-                                        )}
-                                    </div>
-                                </div>
-                            );
-                         })}
-                     </div>
-                  )}
+                      );
+                    });
+                  })()}
+               </div>
 
                   <div className="flex items-center gap-4 border-b border-gray-50 pb-2">
                      <div>
@@ -4761,52 +5178,55 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                      </div>
                   </div>
                   
-                  {/* Explicitly Added Members */}
-                  {project.teamMembers && project.teamMembers.length > 0 && (
-                     <div className="pt-2 space-y-3">
-                         <h4 className="text-sm font-bold text-gray-500 uppercase mb-2">Team Members</h4>
-                         {project.teamMembers.map(memberId => {
-                            const member = users.find(u => u.id === memberId);
-                            if (!member) return null;
-                            const isDesigner = member.role === Role.DESIGNER;
-                            return (
-                                <div key={member.id} className="flex items-center justify-between gap-3 p-3 hover:bg-gray-50 rounded-lg transition-colors border border-transparent hover:border-gray-100">
-                                    <div className="flex-1">
-                                        <p className="font-bold text-gray-800 text-base md:text-sm">{member.name}</p>
-                                        <p className="text-sm text-gray-500">{member.role}</p>
-                                    </div>
-                                    <div className="flex items-center gap-2">
-                                        {isDesigner && (
-                                            <button 
-                                                onClick={() => setSelectedDesignerForDetails(member)}
-                                                className="text-blue-500 hover:text-blue-700 text-sm font-medium px-2 py-1 hover:bg-blue-50 rounded transition-colors"
-                                                title="View designer details and projects"
-                                            >
-                                                View Details
-                                            </button>
-                                        )}
-                                        {canEditProject && (
-                                            <button 
-                                                onClick={() => {
-                                                    const updated = {
-                                                        ...project,
-                                                        teamMembers: (project.teamMembers || []).filter(id => id !== memberId)
-                                                    };
-                                                    onUpdateProject(updated);
-                                                    addNotification('Success', `${member.name} removed from team`, 'success');
-                                                }}
-                                                className="text-red-400 hover:text-red-600 p-1.5 hover:bg-red-50 rounded transition-colors"
-                                                title="Remove Member"
-                                            >
-                                                <X className="w-4 h-4" />
-                                            </button>
-                                        )}
-                                    </div>
-                                </div>
-                            );
-                         })}
-                     </div>
-                  )}
+                  {/* Designers */}
+                  {(() => {
+                    const allDesigners = project.teamMembers 
+                      ? project.teamMembers
+                          .map(id => users.find(u => u.id === id))
+                          .filter((u): u is User => u !== undefined && u.role === Role.DESIGNER)
+                      : [];
+                    
+                    if (allDesigners.length === 0) return null;
+
+                    return (
+                      <>
+                        <h4 className="text-sm font-bold text-gray-500 uppercase mb-2">Designers</h4>
+                        {allDesigners.map(designer => (
+                          <div key={designer.id} className="flex items-center justify-between gap-3 p-3 hover:bg-gray-50 rounded-lg transition-colors border border-transparent hover:border-gray-100">
+                            <div className="flex-1">
+                              <p className="font-bold text-gray-800 text-base md:text-sm">{designer.name}</p>
+                              <p className="text-sm text-gray-500">{designer.role}</p>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <button 
+                                onClick={() => setSelectedDesignerForDetails(designer)}
+                                className="text-blue-500 hover:text-blue-700 text-sm font-medium px-2 py-1 hover:bg-blue-50 rounded transition-colors"
+                                title="View designer details and projects"
+                              >
+                                View Details
+                              </button>
+                              {canEditProject && (
+                                <button 
+                                  onClick={() => {
+                                    const updated = {
+                                      ...project,
+                                      teamMembers: (project.teamMembers || []).filter(id => id !== designer.id)
+                                    };
+                                    onUpdateProject(updated);
+                                    addNotification('Success', `${designer.name} removed from team`, 'success');
+                                  }}
+                                  className="text-red-400 hover:text-red-600 p-1.5 hover:bg-red-50 rounded transition-colors"
+                                  title="Remove Member"
+                                >
+                                  <X className="w-4 h-4" />
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </>
+                    );
+                  })()}
 
                   {sortedVendorCategories.length > 0 && (
                      <>
@@ -4849,14 +5269,44 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                               }`}
                                               title={isVendor && v.id !== user.id ? "You can only view your own billing report" : "Click to view billing report"}
                                             >
-                                              <div>
+                                              <div className="flex-1">
                                                 <p className="font-bold text-gray-800 text-base md:text-sm">{v.name}</p>
                                                 <p className="text-sm text-gray-500">{v.company || 'Independent'}</p>
                                               </div>
-                                              <div className="ml-auto flex items-center gap-2">
+                                              <div className="flex items-center gap-2">
                                                 <span className="text-xs bg-gray-100 text-gray-600 px-2.5 py-1.5 rounded-full font-medium">
                                                   {project.tasks.filter(t => t.assigneeId === v.id).length} Tasks
                                                 </span>
+                                                {/* Admin can toggle vendor visibility to clients */}
+                                                {isAdmin && (
+                                                  <button
+                                                    onClick={(e) => {
+                                                      e.stopPropagation();
+                                                      const isHidden = (project.hiddenVendors || []).includes(v.id);
+                                                      const updated = {
+                                                        ...project,
+                                                        hiddenVendors: isHidden 
+                                                          ? (project.hiddenVendors || []).filter(id => id !== v.id)
+                                                          : [...(project.hiddenVendors || []), v.id]
+                                                      };
+                                                      onUpdateProject(updated);
+                                                      const action = isHidden ? 'shown' : 'hidden';
+                                                      addNotification('Success', `${v.name} ${action} from clients`, 'success');
+                                                    }}
+                                                    className={`p-1.5 rounded transition-colors ${
+                                                      (project.hiddenVendors || []).includes(v.id)
+                                                        ? 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'
+                                                        : 'text-blue-500 hover:text-blue-700 hover:bg-blue-50'
+                                                    }`}
+                                                    title={(project.hiddenVendors || []).includes(v.id) ? 'Show to clients' : 'Hide from clients'}
+                                                  >
+                                                    {(project.hiddenVendors || []).includes(v.id) ? (
+                                                      <EyeOff className="w-4 h-4" />
+                                                    ) : (
+                                                      <Eye className="w-4 h-4" />
+                                                    )}
+                                                  </button>
+                                                )}
                                                 {!isVendor || v.id === user.id ? (
                                                   <ChevronRight className="w-4 h-4 text-gray-300 group-hover:text-gray-500" />
                                                 ) : null}
@@ -4870,7 +5320,6 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                         </div>
                      </>
                   )}
-               </div>
             </div>
           </div>
         )}
@@ -4954,49 +5403,78 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                   </div>
 
                   <div>
-                      <label className="text-sm font-bold text-gray-500 uppercase">Select {memberModalType === 'client' ? 'Client' : 'Vendor'}</label>
-                      <div className="relative mt-1">
-                          <select 
-                              className="w-full pl-3 pr-10 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-900 bg-white"
-                              value={selectedMemberId}
-                              onChange={(e) => setSelectedMemberId(e.target.value)}
-                              title={`Select a ${memberModalType === 'client' ? 'client' : 'vendor'} to add`}
-                              aria-label={`Select ${memberModalType === 'client' ? 'client' : 'vendor'}`}
-                          >
-                              <option value="">Select a person...</option>
-                              {memberModalType === 'client' 
-                                ? users
+                      <label className="text-sm font-bold text-gray-500 uppercase">Select {memberModalType === 'client' ? 'Clients' : 'Vendors'}</label>
+                      <div className={`border rounded-lg p-3 space-y-2 max-h-48 overflow-y-auto mt-2 border-gray-300`}>
+                          {memberModalType === 'client' 
+                            ? users
+                                .filter(u => 
+                                    u.role === Role.CLIENT &&
+                                    u.id !== project.clientId &&
+                                    !(project.clientIds || []).includes(u.id)
+                                )
+                                .length === 0 ? (
+                                  <p className="text-gray-500 text-sm">No clients available to add</p>
+                                ) : (
+                                  users
                                     .filter(u => 
                                         u.role === Role.CLIENT &&
                                         u.id !== project.clientId &&
                                         !(project.clientIds || []).includes(u.id)
                                     )
                                     .map(u => (
-                                        <option key={u.id} value={u.id}>
-                                            {u.name}
-                                        </option>
+                                        <label key={u.id} className="flex items-center gap-2 cursor-pointer hover:bg-gray-50 p-2 rounded transition-colors">
+                                            <input 
+                                                type="checkbox"
+                                                checked={selectedMemberId.includes(u.id)}
+                                                onChange={(e) => {
+                                                    const current = selectedMemberId.split(',').filter(Boolean);
+                                                    const newIds = e.target.checked 
+                                                        ? [...current, u.id]
+                                                        : current.filter(id => id !== u.id);
+                                                    setSelectedMemberId(newIds.join(','));
+                                                }}
+                                                className="w-4 h-4 rounded border-gray-300 cursor-pointer"
+                                            />
+                                            <span className="text-sm text-gray-700">{u.name}</span>
+                                        </label>
                                     ))
-                                : users
-                                    .filter(u => 
-                                        u.role === Role.VENDOR
-                                    )
+                                )
+                            : users
+                                .filter(u => u.role === Role.VENDOR && !((project.teamMembers || []).includes(u.id)))
+                                .length === 0 ? (
+                                  <p className="text-gray-500 text-sm">No vendors available to add</p>
+                                ) : (
+                                  users
+                                    .filter(u => u.role === Role.VENDOR && !((project.teamMembers || []).includes(u.id)))
                                     .map(u => (
-                                        <option key={u.id} value={u.id}>
-                                            {u.name}
-                                        </option>
+                                        <label key={u.id} className="flex items-center gap-2 cursor-pointer hover:bg-gray-50 p-2 rounded transition-colors">
+                                            <input 
+                                                type="checkbox"
+                                                checked={selectedMemberId.includes(u.id)}
+                                                onChange={(e) => {
+                                                    const current = selectedMemberId.split(',').filter(Boolean);
+                                                    const newIds = e.target.checked 
+                                                        ? [...current, u.id]
+                                                        : current.filter(id => id !== u.id);
+                                                    setSelectedMemberId(newIds.join(','));
+                                                }}
+                                                className="w-4 h-4 rounded border-gray-300 cursor-pointer"
+                                            />
+                                            <span className="text-sm text-gray-700">{u.name}</span>
+                                        </label>
                                     ))
-                              }
-                          </select>
+                                )
+                          }
                       </div>
                       <p className="text-xs text-gray-400 mt-2">
                           {memberModalType === 'client' 
-                            ? 'Select a client to add as additional contact for this project.' 
-                            : 'Select a vendor to add to this project.'}
+                            ? 'Select clients to add as additional contacts for this project.' 
+                            : 'Select vendors to add to this project.'}
                       </p>
                   </div>
                   <div className="flex gap-3 pt-2">
                       <button onClick={() => { setIsMemberModalOpen(false); setSelectedMemberId(''); }} className="flex-1 py-2 text-gray-500 hover:bg-gray-100 rounded">Cancel</button>
-                      <button onClick={handleInviteMember} className="flex-1 py-2 bg-gray-900 text-white rounded font-bold hover:bg-gray-800">Add {memberModalType === 'client' ? 'Client' : 'Vendor'}</button>
+                      <button onClick={handleInviteMember} className="flex-1 py-2 bg-gray-900 text-white rounded font-bold hover:bg-gray-800">Add {memberModalType === 'client' ? 'Clients' : 'Vendors'}</button>
                   </div>
                </div>
            </div>
@@ -5076,16 +5554,12 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                     </div>
                     <div>
                         <label className="text-base md:text-xs font-bold text-gray-500 uppercase">Date</label>
-                        <input 
-                            type="text"
-                            placeholder="DD/MM/YYYY"
+                        <input
+                            type="date"
                             className={`${getInputClass(showTransactionErrors && !newTransaction.date)} mt-1 text-base md:text-xs`}
-                            title="Select transaction date (DD/MM/YYYY)"
-                            value={newTransaction.date ? formatDateToIndian(newTransaction.date) : ''}
-                            onChange={e => {
-                              const isoDate = formatIndianToISO(e.target.value);
-                              setNewTransaction({...newTransaction, date: isoDate || e.target.value})
-                            }}
+                            title="Select transaction date"
+                            value={newTransaction.date || ''}
+                            onChange={e => setNewTransaction({...newTransaction, date: e.target.value})}
                         />
                     </div>
                  </div>
@@ -5895,18 +6369,65 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
          document.body
       )}
 
+      {/* Edit SharedWith Modal (Admin only) */}
+      {isShareEditOpen && editingSharedDoc && createPortal(
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-md max-h-[90vh] flex flex-col animate-fade-in">
+            <div className="p-4 md:p-6 border-b border-gray-100 flex-shrink-0">
+              <h3 className="text-lg font-bold">Edit Shared Users</h3>
+              <p className="text-sm text-gray-500">Modify who can access this document after approval.</p>
+            </div>
+            <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-4">
+              <div>
+                <label className="text-sm font-semibold">Select Users</label>
+                <div className="mt-2 space-y-2 max-h-56 overflow-y-auto border border-gray-200 rounded-lg p-3 bg-gray-50">
+                  {projectTeam.map(member => (
+                    <label key={member.id} className="flex items-center gap-2 cursor-pointer hover:bg-white p-1.5 rounded border border-transparent hover:border-gray-200">
+                      <input
+                        type="checkbox"
+                        checked={tempSharedWith.includes(member.id)}
+                        onChange={e => {
+                          if (e.target.checked) setTempSharedWith(prev => Array.from(new Set([...prev, member.id])));
+                          else setTempSharedWith(prev => prev.filter(id => id !== member.id));
+                        }}
+                      />
+                      <span className="text-sm text-gray-800">{member.name} ({member.role})</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            </div>
+            <div className="p-4 md:p-6 border-t border-gray-100 flex gap-3">
+              <button onClick={() => { setIsShareEditOpen(false); setEditingSharedDoc(null); setTempSharedWith([]); }} className="flex-1 py-2 text-base text-gray-500 hover:bg-gray-100 rounded font-medium">Cancel</button>
+              <button onClick={async () => {
+                try {
+                  await updateDocument(project.id, editingSharedDoc.id, { sharedWith: tempSharedWith });
+                  addNotification('Shared Users Updated', `Shared list updated for ${editingSharedDoc.name}`, 'success', undefined, project.id, project.name);
+                } catch (err) {
+                  console.error('Error updating sharedWith:', err);
+                  addNotification('Update Failed', 'Could not update shared users', 'error');
+                } finally {
+                  setIsShareEditOpen(false);
+                  setEditingSharedDoc(null);
+                  setTempSharedWith([]);
+                }
+              }} className="flex-1 py-2 bg-blue-600 text-white rounded font-bold hover:bg-blue-700">Save</button>
+            </div>
+          </div>
+        </div>, document.body
+      )}
+
 
 
       {/* Task/Gantt Modal (Same as before) */}
       {isTaskModalOpen && editingTask && createPortal(
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+        <div className="fixed inset-0 bg-black/50 z-[9999] flex items-center justify-center p-4">
            {/* ... Task Modal Logic ... */}
            <div className="bg-white rounded-xl shadow-xl w-full max-w-4xl h-[90vh] flex flex-col animate-fade-in overflow-hidden">
               {/* Modal Header */}
               <div className="p-4 border-b border-gray-100 flex justify-between items-center bg-gray-50">
                 <div className="flex items-center gap-2">
                    <h3 className="text-lg font-bold text-gray-900">{editingTask.id ? 'Edit Task Details' : 'Create New Task'}</h3>
-                   {editingTask.id && <span className="text-xs text-gray-500 bg-gray-200 px-2 py-0.5 rounded">ID: {editingTask.id}</span>}
                 </div>
                 <button onClick={() => setIsTaskModalOpen(false)} className="text-gray-400 hover:text-gray-600" title="Close task modal"><X/></button>
               </div>
@@ -6030,37 +6551,29 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                        <div className="grid grid-cols-2 gap-4">
                           <div>
                             <label className="text-xs font-bold text-gray-500 uppercase">Start Date <span className="text-red-500">*</span></label>
-                            {canEditProject ? (
-                               <input 
-                                  type="text" 
-                                  placeholder="DD/MM/YYYY"
-                                  className={`${getInputClass(showTaskErrors && !editingTask.startDate, isEditingFrozen)} mt-1`} 
-                                  title="Start date in DD/MM/YYYY format"
-                                  value={formatDateToIndian(editingTask.startDate)} 
-                                  onChange={e => {
-                                    const isoDate = formatIndianToISO(e.target.value);
-                                    setEditingTask({...editingTask, startDate: isoDate || e.target.value})
-                                  }} 
-                                  disabled={isEditingFrozen}
+                             {canEditProject ? (
+                               <input
+                                 type="date"
+                                 className={`${getInputClass(showTaskErrors && !editingTask.startDate, isEditingFrozen)} mt-1`}
+                                 title="Select start date"
+                                 value={editingTask.startDate || ''}
+                                 onChange={e => setEditingTask({...editingTask, startDate: e.target.value})}
+                                 disabled={isEditingFrozen}
                                />
-                            ) : <p className="text-sm mt-1 text-gray-800">{formatDateToIndian(editingTask.startDate)}</p>}
+                             ) : <p className="text-sm mt-1 text-gray-800">{formatDateToIndian(editingTask.startDate)}</p>}
                           </div>
                           <div>
                             <label className="text-xs font-bold text-gray-500 uppercase">Due Date <span className="text-red-500">*</span></label>
-                            {canEditProject ? (
-                               <input 
-                                  type="text" 
-                                  placeholder="DD/MM/YYYY"
-                                  className={`${getInputClass(showTaskErrors && !editingTask.dueDate, isEditingFrozen)} mt-1`} 
-                                  title="Due date in DD/MM/YYYY format"
-                                  value={formatDateToIndian(editingTask.dueDate)} 
-                                  onChange={e => {
-                                    const isoDate = formatIndianToISO(e.target.value);
-                                    setEditingTask({...editingTask, dueDate: isoDate || e.target.value})
-                                  }} 
-                                  disabled={isEditingFrozen}
+                             {canEditProject ? (
+                               <input
+                                 type="date"
+                                 className={`${getInputClass(showTaskErrors && !editingTask.dueDate, isEditingFrozen)} mt-1`}
+                                 title="Select due date"
+                                 value={editingTask.dueDate || ''}
+                                 onChange={e => setEditingTask({...editingTask, dueDate: e.target.value})}
+                                 disabled={isEditingFrozen}
                                />
-                            ) : <p className="text-sm mt-1 text-gray-800">{formatDateToIndian(editingTask.dueDate)}</p>}
+                             ) : <p className="text-sm mt-1 text-gray-800">{formatDateToIndian(editingTask.dueDate)}</p>}
                           </div>
                        </div>
 
@@ -6254,8 +6767,8 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                     {editingTask.approvals?.start?.client?.status === 'pending' ? (
                                       isClient && !isEditingFrozen ? (
                                         <div className="flex gap-1 pointer-events-auto">
-                                          <button onClick={() => handleApproval('start', 'approve')} className="p-1 hover:bg-green-100 text-green-600 rounded" title="Approve start"><ThumbsUp className="w-3 h-3"/></button>
-                                          <button onClick={() => handleApproval('start', 'reject')} className="p-1 hover:bg-red-100 text-red-600 rounded" title="Reject start"><ThumbsDown className="w-3 h-3"/></button>
+                                          <button onClick={() => handleApproval('start', 'approve')} disabled={processingApproval === 'start-approve-client'} className="p-1 hover:bg-green-100 text-green-600 rounded disabled:opacity-50 disabled:cursor-not-allowed" title="Approve start">{processingApproval === 'start-approve-client' ? <Spinner size="sm" color="currentColor" /> : <ThumbsUp className="w-3 h-3"/>}</button>
+                                          <button onClick={() => handleApproval('start', 'reject')} disabled={processingApproval === 'start-reject-client'} className="p-1 hover:bg-red-100 text-red-600 rounded disabled:opacity-50 disabled:cursor-not-allowed" title="Reject start">{processingApproval === 'start-reject-client' ? <Spinner size="sm" color="currentColor" /> : <ThumbsDown className="w-3 h-3"/>}</button>
                                         </div>
                                       ) : <span className="text-xs text-gray-400 italic">Pending</span>
                                     ) : (
@@ -6264,7 +6777,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                             {editingTask.approvals?.start?.client?.status}
                                          </span>
                                          {isAdmin && !isEditingFrozen && !(editingTask.approvals?.start?.client?.status === 'approved' && editingTask.approvals?.start?.admin?.status === 'approved') && (
-                                           <button onClick={() => handleApproval('start', 'revoke', 'client')} className="p-1 hover:bg-gray-100 text-gray-600 rounded text-[10px] font-bold" title="Revoke approval">✕</button>
+                                           <button onClick={() => handleApproval('start', 'revoke', 'client')} disabled={processingApproval === 'start-revoke-client'} className="p-1 hover:bg-gray-100 text-gray-600 rounded text-[10px] font-bold disabled:opacity-50 disabled:cursor-not-allowed" title="Revoke approval">✕</button>
                                          )}
                                        </div>
                                     )}
@@ -6275,8 +6788,8 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                     {editingTask.approvals?.start?.admin?.status === 'pending' ? (
                                       isAdmin && !isEditingFrozen ? (
                                         <div className="flex gap-1 pointer-events-auto">
-                                          <button onClick={() => handleApproval('start', 'approve')} className="p-1 hover:bg-green-100 text-green-600 rounded" title="Approve start"><ThumbsUp className="w-3 h-3"/></button>
-                                          <button onClick={() => handleApproval('start', 'reject')} className="p-1 hover:bg-red-100 text-red-600 rounded" title="Reject start"><ThumbsDown className="w-3 h-3"/></button>
+                                          <button onClick={() => handleApproval('start', 'approve')} disabled={processingApproval === 'start-approve-admin'} className="p-1 hover:bg-green-100 text-green-600 rounded disabled:opacity-50 disabled:cursor-not-allowed" title="Approve start">{processingApproval === 'start-approve-admin' ? <Spinner size="sm" color="currentColor" /> : <ThumbsUp className="w-3 h-3"/>}</button>
+                                          <button onClick={() => handleApproval('start', 'reject')} disabled={processingApproval === 'start-reject-admin'} className="p-1 hover:bg-red-100 text-red-600 rounded disabled:opacity-50 disabled:cursor-not-allowed" title="Reject start">{processingApproval === 'start-reject-admin' ? <Spinner size="sm" color="currentColor" /> : <ThumbsDown className="w-3 h-3"/>}</button>
                                         </div>
                                       ) : <span className="text-xs text-gray-400 italic">Pending</span>
                                     ) : (
@@ -6285,7 +6798,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                             {editingTask.approvals?.start?.admin?.status}
                                          </span>
                                          {isAdmin && !isEditingFrozen && !(editingTask.approvals?.start?.client?.status === 'approved' && editingTask.approvals?.start?.admin?.status === 'approved') && (
-                                           <button onClick={() => handleApproval('start', 'revoke', 'admin')} className="p-1 hover:bg-gray-100 text-gray-600 rounded text-[10px] font-bold" title="Revoke approval">✕</button>
+                                           <button onClick={() => handleApproval('start', 'revoke', 'admin')} disabled={processingApproval === 'start-revoke-admin'} className="p-1 hover:bg-gray-100 text-gray-600 rounded text-[10px] font-bold disabled:opacity-50 disabled:cursor-not-allowed" title="Revoke approval">✕</button>
                                          )}
                                        </div>
                                     )}
@@ -6302,8 +6815,8 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                     {editingTask.approvals?.completion?.client?.status === 'pending' ? (
                                       isClient && !isEditingFrozen ? (
                                         <div className="flex gap-1 pointer-events-auto">
-                                          <button onClick={() => handleApproval('completion', 'approve')} className="p-1 hover:bg-green-100 text-green-600 rounded" title="Approve completion"><ThumbsUp className="w-3 h-3"/></button>
-                                          <button onClick={() => handleApproval('completion', 'reject')} className="p-1 hover:bg-red-100 text-red-600 rounded" title="Reject completion"><ThumbsDown className="w-3 h-3"/></button>
+                                          <button onClick={() => handleApproval('completion', 'approve')} disabled={processingApproval === 'completion-approve-client'} className="p-1 hover:bg-green-100 text-green-600 rounded disabled:opacity-50 disabled:cursor-not-allowed" title="Approve completion">{processingApproval === 'completion-approve-client' ? <Spinner size="sm" color="currentColor" /> : <ThumbsUp className="w-3 h-3"/>}</button>
+                                          <button onClick={() => handleApproval('completion', 'reject')} disabled={processingApproval === 'completion-reject-client'} className="p-1 hover:bg-red-100 text-red-600 rounded disabled:opacity-50 disabled:cursor-not-allowed" title="Reject completion">{processingApproval === 'completion-reject-client' ? <Spinner size="sm" color="currentColor" /> : <ThumbsDown className="w-3 h-3"/>}</button>
                                         </div>
                                       ) : <span className="text-xs text-gray-400 italic">Pending</span>
                                     ) : (
@@ -6312,7 +6825,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                             {editingTask.approvals?.completion?.client?.status}
                                          </span>
                                          {isAdmin && !isEditingFrozen && !(editingTask.approvals?.completion?.client?.status === 'approved' && editingTask.approvals?.completion?.admin?.status === 'approved') && (
-                                           <button onClick={() => handleApproval('completion', 'revoke', 'client')} className="p-1 hover:bg-gray-100 text-gray-600 rounded text-[10px] font-bold" title="Revoke approval">✕</button>
+                                           <button onClick={() => handleApproval('completion', 'revoke', 'client')} disabled={processingApproval === 'completion-revoke-client'} className="p-1 hover:bg-gray-100 text-gray-600 rounded text-[10px] font-bold disabled:opacity-50 disabled:cursor-not-allowed" title="Revoke approval">✕</button>
                                          )}
                                        </div>
                                     )}
@@ -6322,8 +6835,8 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                     {editingTask.approvals?.completion?.admin?.status === 'pending' ? (
                                       isAdmin && !isEditingFrozen ? (
                                         <div className="flex gap-1 pointer-events-auto">
-                                          <button onClick={() => handleApproval('completion', 'approve')} className="p-1 hover:bg-green-100 text-green-600 rounded" title="Approve completion"><ThumbsUp className="w-3 h-3"/></button>
-                                          <button onClick={() => handleApproval('completion', 'reject')} className="p-1 hover:bg-red-100 text-red-600 rounded" title="Reject completion"><ThumbsDown className="w-3 h-3"/></button>
+                                          <button onClick={() => handleApproval('completion', 'approve')} disabled={processingApproval === 'completion-approve-admin'} className="p-1 hover:bg-green-100 text-green-600 rounded disabled:opacity-50 disabled:cursor-not-allowed" title="Approve completion">{processingApproval === 'completion-approve-admin' ? <Spinner size="sm" color="currentColor" /> : <ThumbsUp className="w-3 h-3"/>}</button>
+                                          <button onClick={() => handleApproval('completion', 'reject')} disabled={processingApproval === 'completion-reject-admin'} className="p-1 hover:bg-red-100 text-red-600 rounded disabled:opacity-50 disabled:cursor-not-allowed" title="Reject completion">{processingApproval === 'completion-reject-admin' ? <Spinner size="sm" color="currentColor" /> : <ThumbsDown className="w-3 h-3"/>}</button>
                                         </div>
                                       ) : <span className="text-xs text-gray-400 italic">Pending</span>
                                     ) : (
@@ -6332,7 +6845,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                             {editingTask.approvals?.completion?.admin?.status}
                                          </span>
                                          {isAdmin && !isEditingFrozen && !(editingTask.approvals?.completion?.client?.status === 'approved' && editingTask.approvals?.completion?.admin?.status === 'approved') && (
-                                           <button onClick={() => handleApproval('completion', 'revoke', 'admin')} className="p-1 hover:bg-gray-100 text-gray-600 rounded text-[10px] font-bold" title="Revoke approval">✕</button>
+                                           <button onClick={() => handleApproval('completion', 'revoke', 'admin')} disabled={processingApproval === 'completion-revoke-admin'} className="p-1 hover:bg-gray-100 text-gray-600 rounded text-[10px] font-bold disabled:opacity-50 disabled:cursor-not-allowed" title="Revoke approval">✕</button>
                                          )}
                                        </div>
                                     )}
@@ -6431,8 +6944,17 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                   <button onClick={() => setIsTaskModalOpen(false)} className="px-4 py-2 text-sm font-medium text-gray-600 hover:bg-gray-50 rounded-lg" title="Cancel">Cancel</button>
                   {/* Only Show Save if NOT frozen or if ADMIN */}
                   {(!isEditingFrozen || isAdmin) && (
-                      <button onClick={handleSaveTask} className="px-6 py-2 text-sm font-bold bg-gray-900 text-white rounded-lg hover:bg-gray-800 shadow-sm" title="Save task">
-                          {editingTask.id ? 'Save Changes' : 'Create Task'}
+                      <button onClick={handleSaveTask} disabled={isSavingTask} className="px-6 py-2 text-sm font-bold bg-gray-900 text-white rounded-lg hover:bg-gray-800 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2" title="Save task">
+                          {isSavingTask ? (
+                            <>
+                              <Spinner size="sm" color="currentColor" />
+                              {editingTask.id ? 'Saving...' : 'Creating...'}
+                            </>
+                          ) : (
+                            <>
+                              {editingTask.id ? 'Save Changes' : 'Create Task'}
+                            </>
+                          )}
                       </button>
                   )}
                 </div>
@@ -6869,14 +7391,20 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                                     <div className="flex gap-0.5">
                                                       <button 
                                                         onClick={() => handleApprovePayment(fin.id, 'client', 'approved')}
-                                                        className="text-white bg-green-600 hover:bg-green-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer"
+                                                        className="text-white bg-green-600 hover:bg-green-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                                         title="Confirm payment"
-                                                      >✓</button>
+                                                        disabled={processingAction === `approve-payment-${fin.id}-client-approved`}
+                                                      >
+                                                        {processingAction === `approve-payment-${fin.id}-client-approved` ? <Spinner size="sm" color="currentColor" /> : '✓'}
+                                                      </button>
                                                       <button 
                                                         onClick={() => handleApprovePayment(fin.id, 'client', 'rejected')}
-                                                        className="text-white bg-red-600 hover:bg-red-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer"
+                                                        className="text-white bg-red-600 hover:bg-red-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                                         title="Dispute payment"
-                                                      >✗</button>
+                                                        disabled={processingAction === `approve-payment-${fin.id}-client-rejected`}
+                                                      >
+                                                        {processingAction === `approve-payment-${fin.id}-client-rejected` ? <Spinner size="sm" color="currentColor" /> : '✗'}
+                                                      </button>
                                                     </div>
                                                   )}
                                                   {(fin.clientApprovalForPayment === 'pending' || fin.clientApprovalForPayment === undefined || fin.clientApprovalForPayment === null) && !fin.clientApproved && user?.role !== Role.CLIENT && (
@@ -6899,14 +7427,20 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                                     <div className="flex gap-0.5">
                                                       <button 
                                                         onClick={() => handleApprovePayment(fin.id, 'admin', 'approved')}
-                                                        className="text-white bg-green-600 hover:bg-green-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer"
+                                                        className="text-white bg-green-600 hover:bg-green-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                                         title="Approve payment"
-                                                      >✓</button>
+                                                        disabled={processingAction === `approve-payment-${fin.id}-admin-approved`}
+                                                      >
+                                                        {processingAction === `approve-payment-${fin.id}-admin-approved` ? <Spinner size="sm" color="currentColor" /> : '✓'}
+                                                      </button>
                                                       <button 
                                                         onClick={() => handleApprovePayment(fin.id, 'admin', 'rejected')}
-                                                        className="text-white bg-red-600 hover:bg-red-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer"
+                                                        className="text-white bg-red-600 hover:bg-red-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                                         title="Reject payment"
-                                                      >✗</button>
+                                                        disabled={processingAction === `approve-payment-${fin.id}-admin-rejected`}
+                                                      >
+                                                        {processingAction === `approve-payment-${fin.id}-admin-rejected` ? <Spinner size="sm" color="currentColor" /> : '✗'}
+                                                      </button>
                                                     </div>
                                                   )}
                                                   {(fin.adminApprovalForPayment === 'pending' || fin.adminApprovalForPayment === undefined || fin.adminApprovalForPayment === null) && !fin.adminApproved && user?.role !== Role.ADMIN && (
@@ -6931,14 +7465,20 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                                     <div className="flex gap-0.5">
                                                       <button 
                                                         onClick={() => handleApproveExpense(fin.id, 'client', true)}
-                                                        className="text-white bg-green-600 hover:bg-green-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer"
+                                                        className="text-white bg-green-600 hover:bg-green-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                                         title="Approve expense"
-                                                      >✓</button>
+                                                        disabled={processingAction === `approve-expense-${fin.id}-client-true`}
+                                                      >
+                                                        {processingAction === `approve-expense-${fin.id}-client-true` ? <Spinner size="sm" color="currentColor" /> : '✓'}
+                                                      </button>
                                                       <button 
                                                         onClick={() => handleApproveExpense(fin.id, 'client', false)}
-                                                        className="text-white bg-red-600 hover:bg-red-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer"
+                                                        className="text-white bg-red-600 hover:bg-red-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                                         title="Reject expense"
-                                                      >✗</button>
+                                                        disabled={processingAction === `approve-expense-${fin.id}-client-false`}
+                                                      >
+                                                        {processingAction === `approve-expense-${fin.id}-client-false` ? <Spinner size="sm" color="currentColor" /> : '✗'}
+                                                      </button>
                                                     </div>
                                                   )}
                                                   {(fin.clientApproved === undefined || fin.clientApproved === null) && user?.role !== Role.CLIENT && (
@@ -6961,14 +7501,20 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                                     <div className="flex gap-0.5">
                                                       <button 
                                                         onClick={() => handleApproveExpense(fin.id, 'admin', true)}
-                                                        className="text-white bg-green-600 hover:bg-green-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer"
+                                                        className="text-white bg-green-600 hover:bg-green-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                                         title="Approve expense"
-                                                      >✓</button>
+                                                        disabled={processingAction === `approve-expense-${fin.id}-admin-true`}
+                                                      >
+                                                        {processingAction === `approve-expense-${fin.id}-admin-true` ? <Spinner size="sm" color="currentColor" /> : '✓'}
+                                                      </button>
                                                       <button 
                                                         onClick={() => handleApproveExpense(fin.id, 'admin', false)}
-                                                        className="text-white bg-red-600 hover:bg-red-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer"
+                                                        className="text-white bg-red-600 hover:bg-red-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                                         title="Reject expense"
-                                                      >✗</button>
+                                                        disabled={processingAction === `approve-expense-${fin.id}-admin-false`}
+                                                      >
+                                                        {processingAction === `approve-expense-${fin.id}-admin-false` ? <Spinner size="sm" color="currentColor" /> : '✗'}
+                                                      </button>
                                                     </div>
                                                   )}
                                                   {(fin.adminApproved === undefined || fin.adminApproved === null) && user?.role !== Role.ADMIN && (
@@ -7225,7 +7771,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                 return (
                   <div className="grid grid-cols-3 gap-4 text-center">
                     <div>
-                      <p className="text-xs text-gray-500 uppercase font-semibold">Total Tasks</p>
+                      <p className="text-xs text-gray-500 uppercase font-semibold">Total Project Tasks</p>
                       <p className="text-2xl font-bold text-gray-900 mt-1">{totalCount}</p>
                     </div>
                     <div>
@@ -7494,15 +8040,17 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                 className="p-2 bg-white rounded-full text-green-600 hover:bg-green-50" 
                                 title="Approve"
                                 onClick={() => handleApproveDocument(doc)}
+                                disabled={processingAction === `approve-doc-${doc.id}`}
                               >
-                                 <Check className="w-4 h-4" />
+                                 {processingAction === `approve-doc-${doc.id}` ? <Spinner size="md" color="currentColor" /> : <Check className="w-4 h-4" />}
                               </button>
                               <button 
                                 className="p-2 bg-white rounded-full text-red-600 hover:bg-red-50" 
                                 title="Reject"
                                 onClick={() => handleRejectDocument(doc)}
+                                disabled={processingAction === `reject-doc-${doc.id}`}
                               >
-                                 <X className="w-4 h-4" />
+                                 {processingAction === `reject-doc-${doc.id}` ? <Spinner size="md" color="currentColor" /> : <X className="w-4 h-4" />}
                               </button>
                             </div>
                           )}

@@ -1,4 +1,4 @@
-import { Role, Project, User } from '../types';
+import { Role, Project, User, Task, Meeting } from '../../types';
 
 export interface AccessControl {
   canViewProject: boolean;
@@ -18,15 +18,15 @@ export const getProjectAccess = (
   project: Project
 ): AccessControl => {
   const isAdmin = user.role === Role.ADMIN;
-  const isLeadDesigner = user.role === Role.DESIGNER && project.leadDesignerId === user.id;
-  const isClient = user.role === Role.CLIENT && project.clientId === user.id;
-  const isVendor = user.role === Role.VENDOR;
-  const isTeamMember = project.teamMembers?.includes(user.id) || false;
-  const hasTask = project.tasks.some(t => t.assigneeId === user.id);
+  const isLeadDesigner = user.role === Role.DESIGNER && (project.leadDesignerId === user.id || (project.teamMembers || []).includes(user.id));
+  const isClient = user.role === Role.CLIENT && (project.clientId === user.id || (project.clientIds || []).includes(user.id));
+  const isVendor = user.role === Role.VENDOR && ((project.vendorIds || []).includes(user.id) || (project.teamMembers || []).includes(user.id));
+  const isTeamMember = (project.teamMembers || []).includes(user.id) || false;
+  const hasTask = project.tasks ? project.tasks.some((t: Task) => t.assigneeId === user.id) : false;
 
   return {
     // View: Admin, Lead Designer, Client, Vendors with tasks, Team members
-    canViewProject: isAdmin || isLeadDesigner || isClient || (isVendor && hasTask) || isTeamMember,
+    canViewProject: isAdmin || isLeadDesigner || isClient || (isVendor && (hasTask || (project.vendorIds || []).includes(user.id))) || isTeamMember,
     
     // Edit: Admin and Lead Designer only
     canEditProject: isAdmin || isLeadDesigner,
@@ -35,10 +35,10 @@ export const getProjectAccess = (
     canDeleteProject: isAdmin,
     
     // Tasks: Admin, Lead Designer, Vendors with tasks
-    canManageTasks: isAdmin || isLeadDesigner || (isVendor && hasTask),
+    canManageTasks: isAdmin || isLeadDesigner || (isVendor && (hasTask || (project.vendorIds || []).includes(user.id))),
     
     // Meetings: Admin, Lead Designer, Client, Team members
-    canManageMeetings: isAdmin || isLeadDesigner || isClient || isTeamMember,
+    canManageMeetings: isAdmin || isLeadDesigner || isClient || isTeamMember || (isVendor && (project.vendorIds || []).includes(user.id)),
     
     // View Financials: Admin, Lead Designer, Client (not Vendors)
     canViewFinancials: !isVendor && (isAdmin || isLeadDesigner || isClient),
@@ -83,8 +83,8 @@ export const getMeetingAccess = (user: User, meetingAttendees: string[]) => {
 
 export const getFinancialAccess = (user: User, project: Project) => {
   const isAdmin = user.role === Role.ADMIN;
-  const isLeadDesigner = user.role === Role.DESIGNER && project.leadDesignerId === user.id;
-  const isClient = user.role === Role.CLIENT && project.clientId === user.id;
+  const isLeadDesigner = user.role === Role.DESIGNER && (project.leadDesignerId === user.id || (project.teamMembers || []).includes(user.id));
+  const isClient = user.role === Role.CLIENT && (project.clientId === user.id || (project.clientIds || []).includes(user.id));
 
   return {
     canView: isAdmin || isLeadDesigner || isClient,
@@ -102,8 +102,8 @@ export const getDocumentAccess = (
   project: Project
 ) => {
   const isAdmin = user.role === Role.ADMIN;
-  const isLeadDesigner = user.role === Role.DESIGNER && project.leadDesignerId === user.id;
-  const isClient = user.role === Role.CLIENT && project.clientId === user.id;
+  const isLeadDesigner = user.role === Role.DESIGNER && (project.leadDesignerId === user.id || (project.teamMembers || []).includes(user.id));
+  const isClient = user.role === Role.CLIENT && (project.clientId === user.id || (project.clientIds || []).includes(user.id));
   const hasAccess = sharedWithRoles.includes(user.role);
 
   return {
@@ -115,10 +115,10 @@ export const getDocumentAccess = (
   };
 };
 
-export const getVisibleTasksForUser = (tasks: any[], user: User, project: Project) => {
+export const getVisibleTasksForUser = (tasks: Task[], user: User, project: Project) => {
   const isAdmin = user.role === Role.ADMIN;
-  const isLeadDesigner = user.role === Role.DESIGNER && project.leadDesignerId === user.id;
-  const isClient = user.role === Role.CLIENT && project.clientId === user.id;
+  const isLeadDesigner = user.role === Role.DESIGNER && (project.leadDesignerId === user.id || (project.teamMembers || []).includes(user.id));
+  const isClient = user.role === Role.CLIENT && (project.clientId === user.id || (project.clientIds || []).includes(user.id));
   const isVendor = user.role === Role.VENDOR;
 
   return tasks.filter(task => {
@@ -138,7 +138,7 @@ export const getVisibleTasksForUser = (tasks: any[], user: User, project: Projec
   });
 };
 
-export const getVisibleMeetingsForUser = (meetings: any[], user: User, isTeamMember: boolean) => {
+export const getVisibleMeetingsForUser = (meetings: Meeting[], user: User, isTeamMember: boolean) => {
   const isAdmin = user.role === Role.ADMIN;
   const isVendor = user.role === Role.VENDOR;
 

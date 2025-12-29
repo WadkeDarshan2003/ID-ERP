@@ -24,3 +24,52 @@
     }
   }
 }
+
+/* Spinner loader for buttons */
+.spinner {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* Hero and agency transition helpers - tweak as needed */
+.hero-background {
+  position: absolute;
+  inset: 0;
+  z-index: 0; /* sit behind content */
+  transition: opacity 360ms ease, transform 360ms ease;
+  pointer-events: none;
+}
+
+.hero-wrapper {
+  position: relative; /* create stacking context for hero background */
+  overflow: visible;
+}
+
+.agency-section {
+  position: relative;
+  z-index: 10; /* ensure agency content sits above hero background */
+  transform: translateY(12px);
+  opacity: 0;
+  transition: transform 360ms ease, opacity 360ms ease;
+}
+
+.agency-section.start-transition {
+  transform: translateY(0);
+  opacity: 1;
+}
+
+/* If the hero is meant to scroll away, ensure it's not fixed */
+.hero-fixed {
+  position: static !important;
+}
+

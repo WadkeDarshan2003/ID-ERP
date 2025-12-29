@@ -19,7 +19,7 @@ interface PeopleListProps {
   roleFilter: Role | 'All';
   onAddUser: (user: User) => void;
   projects?: Project[];
-  onSelectProject?: (project: Project) => void;
+  onSelectProject?: (project: Project, opts?: { initialTab?: 'discovery' | 'plan' | 'financials' | 'team' | 'timeline' | 'documents' | 'meetings' }) => void;
   onSelectTask?: (task: any, project: Project) => void;
 }
 
@@ -252,7 +252,8 @@ const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, p
         specialty: newUser.specialty || undefined,
         phone: newUser.phone || undefined,
         password: generatedPassword,
-        authMethod: (authMethod) as 'email' | 'phone'
+        authMethod: (authMethod) as 'email' | 'phone',
+        tenantId: currentUser?.tenantId
       }, currentUser?.email, adminCredentials?.password);
 
       // Create local user object with Firebase UID
@@ -462,19 +463,34 @@ const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, p
                 View Details <ChevronRight className="w-3 h-3" />
               </button>
             ) : (
-              <button 
-                onClick={() => handleEditUser(user)}
-                className="text-base md:text-sm font-medium text-gray-500 hover:text-gray-900"
-              >
-                View Profile
-              </button>
+              // If current user is a Designer, do not allow editing client details
+              (currentUser?.role === Role.DESIGNER && user.role === Role.CLIENT) ? (
+                <button className="text-base md:text-sm font-medium text-gray-400 cursor-not-allowed" title="Designers cannot edit client profiles">View Profile</button>
+              ) : (
+                <button 
+                  onClick={() => handleEditUser(user)}
+                  className="text-base md:text-sm font-medium text-gray-500 hover:text-gray-900"
+                >
+                  View Profile
+                </button>
+              )
             )}
-            <button 
+            {currentUser?.role === Role.DESIGNER ? (
+              <button
+                className="text-base md:text-sm font-medium text-gray-400 cursor-not-allowed"
+                title="Designers cannot assign users to projects"
+                disabled
+              >
+                Assign to Project
+              </button>
+            ) : (
+              <button 
                 onClick={() => handleAssignToProject(user)}
                 className="text-base md:text-sm font-medium text-blue-600 hover:text-blue-800"
-            >
+              >
                 Assign to Project
-            </button>
+              </button>
+            )}
         </div>
     </div>
   );
@@ -486,19 +502,21 @@ const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, p
           {roleFilter === 'All' ? 'Directory' : `${roleFilter}s`}
         </h2>
         <div className="flex items-center gap-3">
-            <button 
-            onClick={() => {
-              setNewUser({ 
-                role: roleFilter === 'All' ? Role.CLIENT : roleFilter,
-                phone: '+91 '
-              });
-              setIsModalOpen(true);
-            }}
-            className="bg-gray-900 text-white px-4 py-2.5 md:px-4 md:py-2 rounded-lg text-base md:text-sm font-medium hover:bg-gray-800 transition-colors flex items-center gap-2"
-            >
-            <Plus className="w-4 h-4 md:w-4 md:h-4" />
-            Add {roleFilter === 'All' ? 'Person' : roleFilter}
-            </button>
+            {!(currentUser?.role === Role.DESIGNER && roleFilter === Role.CLIENT) && (
+              <button 
+                onClick={() => {
+                  setNewUser({ 
+                    role: roleFilter === 'All' ? Role.CLIENT : roleFilter,
+                    phone: '+91 '
+                  });
+                  setIsModalOpen(true);
+                }}
+                className="bg-gray-900 text-white px-4 py-2.5 md:px-4 md:py-2 rounded-lg text-base md:text-sm font-medium hover:bg-gray-800 transition-colors flex items-center gap-2"
+              >
+                <Plus className="w-4 h-4 md:w-4 md:h-4" />
+                Add {roleFilter === 'All' ? 'Person' : roleFilter}
+              </button>
+            )}
         </div>
       </div>
 
@@ -597,7 +615,9 @@ const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, p
                       }}
                     >
                       <option value="">Select Role</option>
-                      <option value={Role.CLIENT}>Client</option>
+                      {currentUser?.role !== Role.DESIGNER && (
+                        <option value={Role.CLIENT}>Client</option>
+                      )}
                       <option value={Role.DESIGNER}>Designer</option>
                       <option value={Role.VENDOR}>Vendor</option>
                       {currentUser?.role === Role.ADMIN && (
