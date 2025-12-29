@@ -114,6 +114,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
   const [planView, setPlanView] = useState<'list' | 'gantt' | 'kanban'>('list');
   const [isTaskModalOpen, setIsTaskModalOpen] = useState(!!initialTask);
   const [editingTask, setEditingTask] = useState<Partial<Task> | null>(initialTask || null);
+  const [isProjectHeaderLoaded, setIsProjectHeaderLoaded] = useState(true);
 
   // Handle closing task modal and returning to dashboard if needed
   const prevIsTaskModalOpen = useRef(isTaskModalOpen);
@@ -150,6 +151,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
   const [selectedDocument, setSelectedDocument] = useState<ProjectDocument | null>(null);
   const [isDocDetailOpen, setIsDocDetailOpen] = useState(false);
   const [documentCommentText, setDocumentCommentText] = useState('');
+  const [isSendingDocumentComment, setIsSendingDocumentComment] = useState(false);
   // Admin: edit sharedWith for existing documents
   const [isShareEditOpen, setIsShareEditOpen] = useState(false);
   const [editingSharedDoc, setEditingSharedDoc] = useState<ProjectDocument | null>(null);
@@ -187,6 +189,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
   // Meeting Comments State
   const [meetingComments, setMeetingComments] = useState<Record<string, Comment[]>>({});
   const [newMeetingComment, setNewMeetingComment] = useState<Record<string, string>>({});
+  const [sendingMeetingComment, setSendingMeetingComment] = useState<Record<string, boolean>>({});
 
   // Delete Confirmation State
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
@@ -661,7 +664,11 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       return;
     }
 
+    // Prevent duplicate sends for the same meeting
+    if (sendingMeetingComment[meetingId]) return;
+
     try {
+      setSendingMeetingComment(prev => ({ ...prev, [meetingId]: true }));
       // Find user name from users array or use current user
       let userName = user.name || 'Unknown User';
       const foundUser = users.find(u => u.id === user.id);
@@ -688,6 +695,8 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
     } catch (error: any) {
       console.error('Error adding meeting comment:', error);
       addNotification('Error', 'Failed to add comment', 'error');
+    } finally {
+      setSendingMeetingComment(prev => ({ ...prev, [meetingId]: false }));
     }
   };
 
@@ -1308,7 +1317,10 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
   const handleAddDocumentComment = async () => {
     if (!documentCommentText.trim() || !selectedDocument) return;
 
+    if (isSendingDocumentComment) return; // prevent duplicate sends
+
     try {
+      setIsSendingDocumentComment(true);
       const comment = {
         userId: user.id,
         userName: user.name || 'Unknown User', // Store name for display resilience
@@ -1371,6 +1383,8 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
     } catch (error: any) {
       console.error('Document comment error:', error);
       addNotification("Error", "Unable to add comment. Please try again.", "error");
+    } finally {
+      setIsSendingDocumentComment(false);
     }
   };
 
@@ -3113,124 +3127,134 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
     <div className="h-full flex flex-col animate-fade-in relative">
       {/* Project Details Header - Mobile Optimized */}
       <div className="bg-white border-b border-gray-200 px-4 md:px-6 py-3 md:py-2 flex flex-col md:flex-row items-start md:items-center justify-between sticky top-0 z-10 shadow-sm gap-3 md:gap-0">
-        <div className="flex items-start gap-3 md:gap-4 w-full md:w-auto flex-1">
-          <button onClick={onBack} className="text-gray-500 hover:text-gray-800 transition-colors flex-shrink-0 mt-1" title="Go back to project list">
-            <ChevronRight className="w-5 h-5 rotate-180" />
-          </button>
-          <div className="flex-1 min-w-0">
-            <div className="flex items-start justify-between gap-2">
-              <h1 className="text-xl md:text-2xl font-bold text-gray-900 truncate">{project.name}</h1>
+        {!isProjectHeaderLoaded && (
+          <div className="w-full space-y-3">
+            <div className="h-6 bg-gray-200 rounded w-1/3 animate-pulse"></div>
+            <div className="h-4 bg-gray-100 rounded w-1/2 animate-pulse"></div>
+          </div>
+        )}
+        {isProjectHeaderLoaded && (
+          <>
+            <div className="flex items-start gap-3 md:gap-4 w-full md:w-auto flex-1">
+              <button onClick={onBack} className="text-gray-500 hover:text-gray-800 transition-colors flex-shrink-0 mt-1" title="Go back to project list">
+                <ChevronRight className="w-5 h-5 rotate-180" />
+              </button>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-start justify-between gap-2">
+                  <h1 className="text-xl md:text-2xl font-bold text-gray-900 truncate">{project.name}</h1>
+                  {isAdmin && (
+                    <button 
+                      onClick={openDeleteProjectConfirm}
+                      className="md:hidden flex items-center gap-2 px-2 py-1.5 bg-red-100 text-red-700 rounded-lg hover:bg-red-200 transition-colors text-xs font-medium whitespace-nowrap flex-shrink-0"
+                      title="Delete Project"
+                    >
+                      <Trash2 className="w-5 h-5" />
+                    </button>
+                  )}
+                </div>
+                <div className="flex flex-wrap items-center gap-3 md:gap-4 text-sm md:text-xs text-gray-500 mt-4 md:mt-3">
+                  {isAdmin && (
+                    <button
+                      onClick={handleToggleHold}
+                      className={`text-sm md:text-xs font-bold flex items-center gap-1 px-2 py-0.5 rounded-md border transition-colors whitespace-nowrap ${
+                        project.status === ProjectStatus.ON_HOLD 
+                          ? 'text-green-600 bg-green-50 border-green-100 hover:bg-green-100' 
+                          : 'text-orange-600 bg-orange-50 border-orange-100 hover:bg-orange-100'
+                      }`}
+                      title={project.status === ProjectStatus.ON_HOLD ? "Resume Project" : "Put Project On Hold"}
+                    >
+                      {project.status === ProjectStatus.ON_HOLD ? <PlayCircle className="w-3 h-3" /> : <PauseCircle className="w-3 h-3" />}
+                      {project.status === ProjectStatus.ON_HOLD ? "Resume" : "Hold"}
+                    </button>
+                  )}
+                </div>
+                <div className="flex flex-wrap items-center gap-3 md:gap-4 text-base md:text-sm text-gray-600 mt-3 md:mt-3">
+                  <span className="flex items-center gap-1 whitespace-nowrap"><Calendar className="w-4 h-4 flex-shrink-0" /> Due: {formatDateToIndian(project.deadline)}</span>
+                  {!isVendor && (
+                    <span className="flex items-center gap-1 whitespace-nowrap"><IndianRupee className="w-4 h-4 flex-shrink-0" /> Budget: ₹{project.budget.toLocaleString()}</span>
+                  )}
+                </div>
+              </div>
+            </div>
+            <div className="flex gap-2 md:gap-3 w-full md:w-auto flex-shrink-0">
               {isAdmin && (
                 <button 
                   onClick={openDeleteProjectConfirm}
-                  className="md:hidden flex items-center gap-2 px-2 py-1.5 bg-red-100 text-red-700 rounded-lg hover:bg-red-200 transition-colors text-xs font-medium whitespace-nowrap flex-shrink-0"
+                  className="hidden md:flex items-center gap-2 px-3 md:px-4 py-2 bg-red-100 text-red-700 rounded-lg hover:bg-red-200 transition-colors text-sm md:text-xs font-medium whitespace-nowrap"
                   title="Delete Project"
                 >
-                  <Trash2 className="w-5 h-5" />
+                  <Trash2 className="w-5 h-5 flex-shrink-0" />
+                  <span className="hidden md:inline">Delete</span>
                 </button>
               )}
-            </div>
-            <div className="flex flex-wrap items-center gap-3 md:gap-4 text-sm md:text-xs text-gray-500 mt-4 md:mt-3">
-              {isAdmin && (
-                <button
-                  onClick={handleToggleHold}
-                  className={`text-sm md:text-xs font-bold flex items-center gap-1 px-2 py-0.5 rounded-md border transition-colors whitespace-nowrap ${
-                    project.status === ProjectStatus.ON_HOLD 
-                      ? 'text-green-600 bg-green-50 border-green-100 hover:bg-green-100' 
-                      : 'text-orange-600 bg-orange-50 border-orange-100 hover:bg-orange-100'
-                  }`}
-                  title={project.status === ProjectStatus.ON_HOLD ? "Resume Project" : "Put Project On Hold"}
-                >
-                  {project.status === ProjectStatus.ON_HOLD ? <PlayCircle className="w-3 h-3" /> : <PauseCircle className="w-3 h-3" />}
-                  {project.status === ProjectStatus.ON_HOLD ? "Resume" : "Hold"}
-                </button>
-              )}
-            </div>
-            <div className="flex flex-wrap items-center gap-3 md:gap-4 text-base md:text-sm text-gray-600 mt-3 md:mt-3">
-              <span className="flex items-center gap-1 whitespace-nowrap"><Calendar className="w-4 h-4 flex-shrink-0" /> Due: {formatDateToIndian(project.deadline)}</span>
-              {!isVendor && (
-                <span className="flex items-center gap-1 whitespace-nowrap"><IndianRupee className="w-4 h-4 flex-shrink-0" /> Budget: ₹{project.budget.toLocaleString()}</span>
-              )}
-            </div>
-          </div>
-        </div>
-        <div className="flex gap-2 md:gap-3 w-full md:w-auto flex-shrink-0">
-          {isAdmin && (
-            <button 
-              onClick={openDeleteProjectConfirm}
-              className="hidden md:flex items-center gap-2 px-3 md:px-4 py-2 bg-red-100 text-red-700 rounded-lg hover:bg-red-200 transition-colors text-sm md:text-xs font-medium whitespace-nowrap"
-              title="Delete Project"
-            >
-              <Trash2 className="w-5 h-5 flex-shrink-0" />
-              <span className="hidden md:inline">Delete</span>
-            </button>
-          )}
-          {canEditProject && activeTab !== 'timeline' && (
-            <>
-              {/* Desktop Button */}
-              <button 
-                onClick={() => {
-                  if(activeTab === 'plan') { 
-                    const today = new Date().toISOString().split('T')[0];
-                    setEditingTask({ 
-                      startDate: today,
-                      dueDate: today
-                    }); 
-                    setIsTaskModalOpen(true); 
-                    setShowTaskErrors(false); 
-                  }
-                  if(activeTab === 'documents') { setIsDocModalOpen(true); setSelectedFiles([]); }
-                  if(activeTab === 'financials') { openTransactionModal(); }
-                  if(activeTab === 'team') { setIsMemberModalOpen(true); setSelectedMemberId(''); }
-                  if(activeTab === 'discovery') { setIsMeetingModalOpen(true); }
-                }}
-                className="hidden md:flex items-center gap-2 px-3 md:px-4 py-2 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors text-sm md:text-xs font-medium whitespace-nowrap flex-1 md:flex-none justify-center md:justify-start"
-              >
-                <Plus className="w-4 h-4 flex-shrink-0" />
-                <span>
-                  {activeTab === 'plan' ? 'Add Task' : 
-                   activeTab === 'documents' ? 'Add Document' : 
-                   activeTab === 'financials' ? 'Add Transaction' :
-                   activeTab === 'team' ? 'Add Member' :
-                   activeTab === 'discovery' ? 'Add Meeting' : 'Add Item'}
-                </span>
-              </button>
+              {canEditProject && activeTab !== 'timeline' && (
+                <>
+                  {/* Desktop Button */}
+                  <button 
+                    onClick={() => {
+                      if(activeTab === 'plan') { 
+                        const today = new Date().toISOString().split('T')[0];
+                        setEditingTask({ 
+                          startDate: today,
+                          dueDate: today
+                        }); 
+                        setIsTaskModalOpen(true); 
+                        setShowTaskErrors(false); 
+                      }
+                      if(activeTab === 'documents') { setIsDocModalOpen(true); setSelectedFiles([]); }
+                      if(activeTab === 'financials') { openTransactionModal(); }
+                      if(activeTab === 'team') { setIsMemberModalOpen(true); setSelectedMemberId(''); }
+                      if(activeTab === 'discovery') { setIsMeetingModalOpen(true); }
+                    }}
+                    className="hidden md:flex items-center gap-2 px-3 md:px-4 py-2 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors text-sm md:text-xs font-medium whitespace-nowrap flex-1 md:flex-none justify-center md:justify-start"
+                  >
+                    <Plus className="w-4 h-4 flex-shrink-0" />
+                    <span>
+                      {activeTab === 'plan' ? 'Add Task' : 
+                       activeTab === 'documents' ? 'Add Document' : 
+                       activeTab === 'financials' ? 'Add Transaction' :
+                       activeTab === 'team' ? 'Add Member' :
+                       activeTab === 'discovery' ? 'Add Meeting' : 'Add Item'}
+                    </span>
+                  </button>
 
-              {/* Mobile Floating Action Button */}
-              <button 
-                onClick={() => {
-                  if(activeTab === 'plan') { 
-                    const today = new Date().toISOString().split('T')[0];
-                    setEditingTask({ 
-                      startDate: today,
-                      dueDate: today
-                    }); 
-                    setIsTaskModalOpen(true); 
-                    setShowTaskErrors(false); 
-                  }
-                  if(activeTab === 'documents') { setIsDocModalOpen(true); setSelectedFiles([]); }
-                  if(activeTab === 'financials') { openTransactionModal(); }
-                  if(activeTab === 'team') { setIsMemberModalOpen(true); setSelectedMemberId(''); }
-                  if(activeTab === 'discovery') { setIsMeetingModalOpen(true); }
-                }}
-                className="md:hidden fixed bottom-6 right-6 z-40 w-14 h-14 bg-gray-900 text-white rounded-full shadow-xl flex items-center justify-center hover:bg-gray-800 transition-transform active:scale-95"
-                aria-label="Add Item"
-              >
-                <Plus className="w-6 h-6" />
-              </button>
-            </>
-          )}
-          {/* Allow non-admins to upload docs too if active tab is docs */}
-          {!canEditProject && activeTab === 'documents' && canUploadDocs && (
-             <button 
-              onClick={() => { setIsDocModalOpen(true); setSelectedFiles([]); }}
-              className="flex items-center gap-2 px-3 md:px-4 py-2 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors text-sm md:text-xs font-medium whitespace-nowrap flex-1 md:flex-none justify-center md:justify-start"
-            >
-              <Upload className="w-4 h-4 flex-shrink-0" /> 
-              <span className="hidden md:inline">Upload</span>
-            </button>
-          )}
-        </div>
+                  {/* Mobile Floating Action Button */}
+                  <button 
+                    onClick={() => {
+                      if(activeTab === 'plan') { 
+                        const today = new Date().toISOString().split('T')[0];
+                        setEditingTask({ 
+                          startDate: today,
+                          dueDate: today
+                        }); 
+                        setIsTaskModalOpen(true); 
+                        setShowTaskErrors(false); 
+                      }
+                      if(activeTab === 'documents') { setIsDocModalOpen(true); setSelectedFiles([]); }
+                      if(activeTab === 'financials') { openTransactionModal(); }
+                      if(activeTab === 'team') { setIsMemberModalOpen(true); setSelectedMemberId(''); }
+                      if(activeTab === 'discovery') { setIsMeetingModalOpen(true); }
+                    }}
+                    className="md:hidden fixed bottom-6 right-6 z-40 w-14 h-14 bg-gray-900 text-white rounded-full shadow-xl flex items-center justify-center hover:bg-gray-800 transition-transform active:scale-95"
+                    aria-label="Add Item"
+                  >
+                    <Plus className="w-6 h-6" />
+                  </button>
+                </>
+              )}
+              {/* Allow non-admins to upload docs too if active tab is docs */}
+              {!canEditProject && activeTab === 'documents' && canUploadDocs && (
+                 <button 
+                  onClick={() => { setIsDocModalOpen(true); setSelectedFiles([]); }}
+                  className="flex items-center gap-2 px-3 md:px-4 py-2 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors text-sm md:text-xs font-medium whitespace-nowrap flex-1 md:flex-none justify-center md:justify-start"
+                >
+                  <Upload className="w-4 h-4 flex-shrink-0" /> 
+                  <span className="hidden md:inline">Upload</span>
+                </button>
+              )}
+            </div>
+          </>
+        )}
       </div>
 
       {/* Navigation Tabs - Mobile Optimized */}
@@ -3448,25 +3472,31 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                         <input
                           type="text"
                           placeholder="Add a comment..."
-                          value={newMeetingComment[meeting.id] || ''}
-                          onChange={(e) => setNewMeetingComment(prev => ({
-                            ...prev,
-                            [meeting.id]: e.target.value
-                          }))}
-                          onKeyPress={(e) => {
-                            if (e.key === 'Enter') {
-                              handleAddMeetingComment(meeting.id);
-                            }
-                          }}
+                            value={newMeetingComment[meeting.id] || ''}
+                            onChange={(e) => setNewMeetingComment(prev => ({
+                              ...prev,
+                              [meeting.id]: e.target.value
+                            }))}
+                            onKeyPress={(e) => {
+                              if (e.key === 'Enter' && !sendingMeetingComment[meeting.id]) {
+                                handleAddMeetingComment(meeting.id);
+                              }
+                            }}
+                            disabled={!!sendingMeetingComment[meeting.id]}
                           className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none"
                         />
-                        <button
-                          onClick={() => handleAddMeetingComment(meeting.id)}
-                          className="p-2 text-gray-500 hover:text-purple-600 transition-colors"
-                          title="Post comment"
-                        >
-                          <Send className="w-4 h-4" />
-                        </button>
+                          <button
+                            onClick={() => handleAddMeetingComment(meeting.id)}
+                            className="p-2 text-gray-500 hover:text-purple-600 transition-colors"
+                            title="Post comment"
+                            disabled={!!sendingMeetingComment[meeting.id]}
+                          >
+                            {sendingMeetingComment[meeting.id] ? (
+                              <Spinner size="sm" className="text-gray-700" />
+                            ) : (
+                              <Send className="w-4 h-4" />
+                            )}
+                          </button>
                       </div>
                     </div>
                   </div>
@@ -7047,16 +7077,17 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                      placeholder="Add a comment..."
                      value={documentCommentText}
                      onChange={e => setDocumentCommentText(e.target.value)}
-                     onKeyDown={e => e.key === 'Enter' && handleAddDocumentComment()}
-                     className="flex-1 px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-gray-900"
+                     onKeyDown={e => e.key === 'Enter' && !isSendingDocumentComment && handleAddDocumentComment()}
+                     disabled={isSendingDocumentComment}
+                     className="flex-1 px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-gray-900 disabled:opacity-50"
                    />
                    <button
                      onClick={handleAddDocumentComment}
-                     disabled={!documentCommentText.trim()}
+                     disabled={!documentCommentText.trim() || isSendingDocumentComment}
                      className="px-3 py-2 bg-gray-900 text-white rounded-lg text-sm font-medium hover:bg-gray-800 disabled:opacity-50"
                      title="Send comment"
                    >
-                     <Send className="w-4 h-4" />
+                     {isSendingDocumentComment ? <Spinner size="sm" className="text-white" /> : <Send className="w-4 h-4" />}
                    </button>
                  </div>
               </div>
@@ -7723,7 +7754,15 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                         {(() => {
                           const designerTasks = project.tasks.filter(t => t.assigneeId === selectedDesignerForDetails.id);
                           const completedCount = designerTasks.filter(t => t.status === TaskStatus.DONE).length;
-                          const pendingCount = designerTasks.filter(t => t.status !== TaskStatus.DONE && t.status !== TaskStatus.REVIEW).length;
+                          const pendingCount = designerTasks.filter(t => {
+                            const adminApproved = t?.approvals?.completion?.admin?.status === 'approved';
+                            const clientStatus = t?.approvals?.completion?.client?.status;
+                            const clientPending = !clientStatus || clientStatus === 'pending';
+                            const isCompleted = t.status === TaskStatus.DONE;
+                            // Only exclude if task is completed and admin-approved but waiting for client
+                            if (isCompleted && adminApproved && clientPending) return false;
+                            return t.status !== TaskStatus.DONE && t.status !== TaskStatus.REVIEW;
+                          }).length;
                           const progressPercentage = designerTasks.length > 0 
                             ? Math.round((completedCount / designerTasks.length) * 100)
                             : 0;

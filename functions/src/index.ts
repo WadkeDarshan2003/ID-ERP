@@ -86,6 +86,7 @@ export const sendEmail = functions.https.onRequest(async (req, res) => {
     // Send email
     const mailOptions = {
       from: `Kydo Solutions <${process.env.EMAIL_USER}>`,
+      replyTo: `Kydo Solutions <${process.env.EMAIL_USER}>`,
       to: to,
       subject: subject,
       html: htmlContent,

@@ -158,9 +158,35 @@ const Dashboard: React.FC<DashboardProps> = ({ projects, users, onSelectProject,
     return Math.max(commentTs || 0, fallbackTs || 0, projectTs || 0);
   };
 
+  // Helper to hide completed tasks that are admin-approved (they're done)
+  const shouldHideCompletedApprovedTask = (t: Task) => {
+    try {
+      const adminApproved = t?.approvals?.completion?.admin?.status === 'approved';
+      const isCompleted = t.status === TaskStatus.DONE;
+      const isInReview = t.status === TaskStatus.REVIEW;
+      return adminApproved && (isCompleted || isInReview);
+    } catch (err) {
+      return false;
+    }
+  };
+
   // Helper function to get documents - prioritize real-time
   const getProjectDocuments = (projectId: string): ProjectDocument[] => {
     return realTimeDocuments.get(projectId) || projects.find(p => p.id === projectId)?.documents || [];
+  };
+
+  // Helper to determine if a task should be hidden from dashboard lists
+  const shouldHideTaskDueToClientApproval = (t: Task) => {
+    try {
+      // Only hide tasks that are already completed and then admin-approved but still waiting client approval
+      const adminApproved = t?.approvals?.completion?.admin?.status === 'approved';
+      const clientStatus = t?.approvals?.completion?.client?.status;
+      const clientPending = !clientStatus || clientStatus === 'pending';
+      const isCompleted = t.status === TaskStatus.DONE;
+      return isCompleted && adminApproved && clientPending;
+    } catch (err) {
+      return false;
+    }
   };
 
   // Helper function to get financials - prioritize real-time
@@ -361,7 +387,7 @@ const Dashboard: React.FC<DashboardProps> = ({ projects, users, onSelectProject,
                   .map(project => {
                     const progress = calculateProjectProgress(getProjectTasks(project.id));
                     const projectTasks = getProjectTasks(project.id);
-                    const pendingTasks = projectTasks.filter(t => t.status !== TaskStatus.DONE);
+                    const pendingTasks = projectTasks.filter(t => t.status !== TaskStatus.DONE && !shouldHideCompletedApprovedTask(t));
                     const isExpanded = expandedActiveProjectTasks[project.id];
                     
                     return (
@@ -467,25 +493,27 @@ const Dashboard: React.FC<DashboardProps> = ({ projects, users, onSelectProject,
                 />
                 <span className="text-sm font-bold text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full">
                   {user.role === Role.DESIGNER
-                    ? assignedTasks.filter(i => i.task.status !== TaskStatus.DONE).length
-                    : filteredProjects.reduce((acc, p) => acc + getProjectTasks(p.id).filter(t => t.status !== TaskStatus.DONE).length, 0)}
+                    ? assignedTasks.filter(i => i.task.status !== TaskStatus.DONE && !shouldHideCompletedApprovedTask(i.task)).length
+                    : filteredProjects.reduce((acc, p) => acc + getProjectTasks(p.id).filter(t => t.status !== TaskStatus.DONE && !shouldHideCompletedApprovedTask(t)).length, 0)}
                 </span>
               </div>
             </div>
             <div className="flex-1 overflow-y-auto p-2 space-y-2 custom-scrollbar">
               {(
                 user.role === Role.DESIGNER
-                  ? assignedTasks.filter(i => i.task.status !== TaskStatus.DONE).length === 0
-                  : filteredProjects.every(p => getProjectTasks(p.id).filter(t => t.status !== TaskStatus.DONE).length === 0)
+                  ? assignedTasks.filter(i => i.task.status !== TaskStatus.DONE && !shouldHideCompletedApprovedTask(i.task)).length === 0
+                  : filteredProjects.every(p => getProjectTasks(p.id).filter(t => t.status !== TaskStatus.DONE && !shouldHideCompletedApprovedTask(t)).length === 0)
               ) ? (
                 <div className="text-center py-10 text-gray-400 text-sm">All tasks completed! 🎉</div>
               ) : (
                 (
                   user.role === Role.DESIGNER
-                    ? assignedTasks.map(({ task, project }) => ({ ...task, projectName: project.name, project }))
+                    ? assignedTasks
+                        .filter(i => i.task.status !== TaskStatus.DONE && !shouldHideCompletedApprovedTask(i.task))
+                        .map(({ task, project }) => ({ ...task, projectName: project.name, project }))
                     : filteredProjects.flatMap(project => 
                         getProjectTasks(project.id)
-                          .filter(t => t.status !== TaskStatus.DONE)
+                          .filter(t => t.status !== TaskStatus.DONE && !shouldHideCompletedApprovedTask(t))
                           .map(task => ({ ...task, projectName: project.name, project }))
                       )
                 )

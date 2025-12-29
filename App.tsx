@@ -44,6 +44,7 @@ const ProjectList = ({
   onDeleteProject: (project: Project) => void,
   realTimeTasks: Map<string, Task[]>
 }) => {
+  const [imageLoading, setImageLoading] = useState<Record<string, boolean>>({});
   const getSafeTimestamp = (date: any) => {
     if (!date) return 0;
     if (typeof date === 'string') return new Date(date).getTime();
@@ -101,8 +102,17 @@ const ProjectList = ({
                 onClick={() => onSelect(project)}
                 className="group bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden cursor-pointer hover:shadow-lg hover:-translate-y-1 transition-all duration-300"
               >
-                <div className="h-40 overflow-hidden relative">
-                  <img src={project.thumbnail} alt={project.name} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" />
+                <div className="h-40 overflow-hidden relative bg-gray-100">
+                  {imageLoading[project.id] && (
+                    <div className="absolute inset-0 bg-gradient-to-r from-gray-100 via-gray-50 to-gray-100 animate-pulse" />
+                  )}
+                  <img 
+                    src={project.thumbnail} 
+                    alt={project.name} 
+                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                    onLoad={() => setImageLoading(prev => ({ ...prev, [project.id]: false }))}
+                    onLoadStart={() => setImageLoading(prev => ({ ...prev, [project.id]: true }))}
+                  />
                   {/* Edit/Delete moved to card footer for left-aligned placement */}
                   <div className="absolute top-3 right-3 flex gap-2 items-center">
                     <div className={`backdrop-blur-md px-3 py-1 rounded text-sm font-bold md:px-2 md:text-xs md:font-bold shadow-sm border border-white/20 ${getTypeColor(project.type)}`}>
