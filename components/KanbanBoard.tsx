@@ -82,7 +82,7 @@ const KanbanBoard: React.FC<KanbanBoardProps> = ({ tasks, users, onUpdateTaskSta
   const getAvatarComponent = (userId: string) => {
     const userObj = users.find(u => u.id === userId);
     if (userObj) {
-      return <AvatarCircle avatar={userObj.avatar} name={userObj.name} size="sm" />;
+      return <AvatarCircle avatar={userObj.avatar} name={userObj.name} size="sm" role={String(userObj.role).toLowerCase()} />;
     }
     return <AvatarCircle avatar="" name="Unassigned" size="sm" />;
   };

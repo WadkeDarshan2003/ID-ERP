@@ -222,6 +222,7 @@ const MeetingForm: React.FC<MeetingFormProps> = ({
                         name={member.name}
                         avatar={member.avatar}
                         size="sm"
+                        role={String(member.role).toLowerCase()}
                       />
                       <div className="min-w-0 flex-1">
                         <div className="text-base md:text-sm font-medium text-gray-800 truncate">
@@ -253,6 +254,7 @@ const MeetingForm: React.FC<MeetingFormProps> = ({
                               name={attendee.name}
                               avatar={attendee.avatar}
                               size="sm"
+                              role={String(attendee.role).toLowerCase()}
                             />
                             <div>
                             <div className="text-base md:text-sm font-medium text-gray-800">{attendee.name}</div>

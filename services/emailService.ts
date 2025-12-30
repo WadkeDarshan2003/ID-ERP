@@ -122,7 +122,7 @@ export const sendPaymentReminder = async (
   const htmlContent = `
     <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 600px; margin: 0 auto; background-color: #f9fafb; padding: 20px;">
       <div style="background: linear-gradient(135deg, #ca8a04 0%, #b45309 100%); padding: 30px; border-radius: 8px 8px 0 0; text-align: center;">
-        <h2 style="color: #fff; margin: 0; font-size: 24px;">💳 Payment Reminder</h2>
+        <h2 style="color: #fff; margin: 0; font-size: 24px;"> Payment Reminder</h2>
       </div>
       
       <div style="background-color: white; padding: 30px; border-radius: 0 0 8px 8px;">

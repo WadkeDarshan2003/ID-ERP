@@ -171,4 +171,4 @@ VITE_BACKEND_URL=https://your-backend.herokuapp.com
 
 ---
 
-**All emails are now sent via Nodemailer + Gmail with full HTML control!** 🎉
+**All emails are now sent via Nodemailer + Gmail with full HTML control!** 

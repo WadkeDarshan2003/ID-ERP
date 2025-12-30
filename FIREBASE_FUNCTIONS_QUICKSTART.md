@@ -86,4 +86,4 @@ The frontend will auto-detect: `https://us-central1-btw-erp.cloudfunctions.net/s
 
 ---
 
-**That's it! Your email system is now serverless.** 🎉
+**That's it! Your email system is now serverless.** 

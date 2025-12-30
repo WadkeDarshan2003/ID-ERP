@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Smartphone, Trash2, LogOut, Clock } from 'lucide-react';
+import { Smartphone, Trash2, LogOut, Clock, Info } from 'lucide-react';
 import { DeviceInfo, getRememberedDevices, forgetDevice, getCurrentDeviceId } from '../utils/deviceUtils';
 
 const RememberedDevices: React.FC = () => {
@@ -127,7 +127,7 @@ const RememberedDevices: React.FC = () => {
       )}
 
       <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm text-amber-900">
-        <p className="font-semibold mb-1">ℹ️ About Device Memory</p>
+        <p className="font-semibold mb-1"><Info className="w-4 h-4 inline-block mr-2" /> About Device Memory</p>
         <ul className="list-disc list-inside space-y-1 text-xs">
           <li>Devices are remembered for 30 days of inactivity</li>
           <li>Each login extends the 30-day period</li>

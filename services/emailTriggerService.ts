@@ -258,7 +258,7 @@ export const sendMeetingNotificationEmail = async (
   meetingAction: 'created' | 'updated' = 'created'
 ): Promise<void> => {
   if (!attendees || attendees.length === 0) {
-    console.warn(`⚠️ No attendees for meeting ${meeting.title}`);
+    console.warn(` No attendees for meeting ${meeting.title}`);
     return;
   }
 
@@ -273,7 +273,7 @@ export const sendMeetingNotificationEmail = async (
   const htmlContent = `
     <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; color: #333;">
       <div style="background-color: ${bgColor}; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
-        <h2 style="color: ${actionColor}; margin: 0;">📅 ${actionText}</h2>
+        <h2 style="color: ${actionColor}; margin: 0;"> ${actionText}</h2>
       </div>
       
       <p>Hi <strong>Team</strong>,</p>
@@ -312,7 +312,7 @@ export const sendMeetingNotificationEmail = async (
 
   for (const attendee of attendees) {
     if (!attendee.email) {
-      console.warn(`⚠️ No email for attendee ${attendee.name}`);
+      console.warn(` No email for attendee ${attendee.name}`);
       continue;
     }
 
@@ -327,10 +327,10 @@ export const sendMeetingNotificationEmail = async (
       if (result.success) {
         if (process.env.NODE_ENV !== 'production') console.log(`✅ Meeting notification email sent to ${attendee.name}`);
       } else {
-        console.error(`❌ Failed to send meeting notification email to ${attendee.name}:`, result.error);
+        console.error(` Failed to send meeting notification email to ${attendee.name}:`, result.error);
       }
     } catch (error) {
-      console.error(`❌ Error sending meeting notification email to ${attendee.name}:`, error);
+      console.error(` Error sending meeting notification email to ${attendee.name}:`, error);
     }
   }
 };
@@ -346,7 +346,7 @@ export const sendTaskAssignmentNotificationEmail = async (
   taskAction: 'created' | 'updated' = 'created'
 ): Promise<void> => {
   if (!assignee.email) {
-    console.warn(`⚠️ No email for assignee ${assignee.name}`);
+    console.warn(` No email for assignee ${assignee.name}`);
     return;
   }
 
@@ -361,7 +361,7 @@ export const sendTaskAssignmentNotificationEmail = async (
   const htmlContent = `
     <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; color: #333;">
       <div style="background-color: ${bgColor}; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
-        <h2 style="color: ${actionColor}; margin: 0;">📋 ${actionText}</h2>
+        <h2 style="color: ${actionColor}; margin: 0;"> ${actionText}</h2>
       </div>
       
       <p>Hi <strong>${assignee.name}</strong>,</p>
@@ -403,10 +403,10 @@ export const sendTaskAssignmentNotificationEmail = async (
     if (result.success) {
       if (process.env.NODE_ENV !== 'production') console.log(`✅ Task assignment notification email sent to ${assignee.name}`);
     } else {
-      console.error(`❌ Failed to send task assignment notification email:`, result.error);
+      console.error(` Failed to send task assignment notification email:`, result.error);
     }
   } catch (error) {
-    console.error(`❌ Error sending task assignment notification email:`, error);
+    console.error(` Error sending task assignment notification email:`, error);
   }
 };
 
@@ -420,7 +420,7 @@ export const sendTaskStartApprovalNotificationEmail = async (
   projectId: string
 ): Promise<void> => {
   if (!recipients || recipients.length === 0) {
-    console.warn(`⚠️ No recipients for task start approval notification`);
+    console.warn(` No recipients for task start approval notification`);
     return;
   }
 
@@ -472,7 +472,7 @@ export const sendTaskStartApprovalNotificationEmail = async (
 
   for (const recipient of recipients) {
     if (!recipient.email) {
-      console.warn(`⚠️ No email for recipient ${recipient.name}`);
+      console.warn(`No email for recipient ${recipient.name}`);
       continue;
     }
 
@@ -487,10 +487,10 @@ export const sendTaskStartApprovalNotificationEmail = async (
       if (result.success) {
         if (process.env.NODE_ENV !== 'production') console.log(`✅ Task start approval notification sent to ${recipient.name}`);
       } else {
-        console.error(`❌ Failed to send task start approval notification to ${recipient.name}:`, result.error);
+        console.error(` Failed to send task start approval notification to ${recipient.name}:`, result.error);
       }
     } catch (error) {
-      console.error(`❌ Error sending task start approval notification to ${recipient.name}:`, error);
+      console.error(` Error sending task start approval notification to ${recipient.name}:`, error);
     }
   }
 };
@@ -505,7 +505,7 @@ export const sendTaskCompletionApprovalNotificationEmail = async (
   projectId: string
 ): Promise<void> => {
   if (!recipients || recipients.length === 0) {
-    console.warn(`⚠️ No recipients for task completion approval notification`);
+    console.warn(` No recipients for task completion approval notification`);
     return;
   }
 
@@ -516,7 +516,7 @@ export const sendTaskCompletionApprovalNotificationEmail = async (
   const htmlContent = `
     <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; color: #333;">
       <div style="background-color: #dbeafe; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
-        <h2 style="color: #0284c7; margin: 0;">✅ Task Completion Approval Pending</h2>
+        <h2 style="color: #0284c7; margin: 0;"> Task Completion Approval Pending</h2>
       </div>
       
       <p>Hi Team,</p>
@@ -555,7 +555,7 @@ export const sendTaskCompletionApprovalNotificationEmail = async (
 
   for (const recipient of recipients) {
     if (!recipient.email) {
-      console.warn(`⚠️ No email for recipient ${recipient.name}`);
+      console.warn(` No email for recipient ${recipient.name}`);
       continue;
     }
 
@@ -568,12 +568,12 @@ export const sendTaskCompletionApprovalNotificationEmail = async (
       });
 
       if (result.success) {
-        if (process.env.NODE_ENV !== 'production') console.log(`✅ Task completion approval notification sent to ${recipient.name}`);
+        if (process.env.NODE_ENV !== 'production') console.log(` Task completion approval notification sent to ${recipient.name}`);
       } else {
-        console.error(`❌ Failed to send task completion approval notification to ${recipient.name}:`, result.error);
+        console.error(` Failed to send task completion approval notification to ${recipient.name}:`, result.error);
       }
     } catch (error) {
-      console.error(`❌ Error sending task completion approval notification to ${recipient.name}:`, error);
+      console.error(` Error sending task completion approval notification to ${recipient.name}:`, error);
     }
   }
 };
@@ -590,7 +590,7 @@ export const sendTaskCommentNotificationEmail = async (
   projectId: string
 ): Promise<void> => {
   if (!recipients || recipients.length === 0) {
-    console.warn(`⚠️ No recipients for task comment notification`);
+    console.warn(` No recipients for task comment notification`);
     return;
   }
 
@@ -640,7 +640,7 @@ export const sendTaskCommentNotificationEmail = async (
     if (recipient.id === comment.userId) continue;
 
     if (!recipient.email) {
-      console.warn(`⚠️ No email for recipient ${recipient.name}`);
+      console.warn(` No email for recipient ${recipient.name}`);
       continue;
     }
 
@@ -653,12 +653,12 @@ export const sendTaskCommentNotificationEmail = async (
       });
 
       if (result.success) {
-        if (process.env.NODE_ENV !== 'production') console.log(`✅ Task comment notification sent to ${recipient.name}`);
+        if (process.env.NODE_ENV !== 'production') console.log(` Task comment notification sent to ${recipient.name}`);
       } else {
-        console.error(`❌ Failed to send task comment notification to ${recipient.name}:`, result.error);
+        console.error(` Failed to send task comment notification to ${recipient.name}:`, result.error);
       }
     } catch (error) {
-      console.error(`❌ Error sending task comment notification to ${recipient.name}:`, error);
+      console.error(` Error sending task comment notification to ${recipient.name}:`, error);
     }
   }
 };
@@ -675,7 +675,7 @@ export const sendDocumentCommentNotificationEmail = async (
   projectId: string
 ): Promise<void> => {
   if (!recipients || recipients.length === 0) {
-    console.warn(`⚠️ No recipients for document comment notification`);
+    console.warn(` No recipients for document comment notification`);
     return;
   }
 
@@ -686,7 +686,7 @@ export const sendDocumentCommentNotificationEmail = async (
   const htmlContent = `
     <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; color: #333;">
       <div style="background-color: #dbeafe; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
-        <h2 style="color: #0284c7; margin: 0;">💬 New Comment on Document</h2>
+        <h2 style="color: #0284c7; margin: 0;"> New Comment on Document</h2>
       </div>
       
       <p>Hi Team,</p>
@@ -725,7 +725,7 @@ export const sendDocumentCommentNotificationEmail = async (
     if (recipient.id === comment.userId) continue;
 
     if (!recipient.email) {
-      console.warn(`⚠️ No email for recipient ${recipient.name}`);
+      console.warn(` No email for recipient ${recipient.name}`);
       continue;
     }
 
@@ -738,12 +738,12 @@ export const sendDocumentCommentNotificationEmail = async (
       });
 
       if (result.success) {
-        if (process.env.NODE_ENV !== 'production') console.log(`✅ Document comment notification sent to ${recipient.name}`);
+        if (process.env.NODE_ENV !== 'production') console.log(` Document comment notification sent to ${recipient.name}`);
       } else {
-        console.error(`❌ Failed to send document comment notification to ${recipient.name}:`, result.error);
+        console.error(` Failed to send document comment notification to ${recipient.name}:`, result.error);
       }
     } catch (error) {
-      console.error(`❌ Error sending document comment notification to ${recipient.name}:`, error);
+      console.error(` Error sending document comment notification to ${recipient.name}:`, error);
     }
   }
 };
@@ -760,7 +760,7 @@ export const sendDocumentAdminApprovalNotificationEmail = async (
   action: 'approved' | 'rejected' = 'approved'
 ): Promise<void> => {
   if (!recipients || recipients.length === 0) {
-    console.warn(`⚠️ No recipients for document admin approval notification`);
+    console.warn(` No recipients for document admin approval notification`);
     return;
   }
 
@@ -808,7 +808,7 @@ export const sendDocumentAdminApprovalNotificationEmail = async (
 
   for (const recipient of recipients) {
     if (!recipient.email) {
-      console.warn(`⚠️ No email for recipient ${recipient.name}`);
+      console.warn(` No email for recipient ${recipient.name}`);
       continue;
     }
 
@@ -821,7 +821,7 @@ export const sendDocumentAdminApprovalNotificationEmail = async (
       });
 
       if (result.success) {
-        if (process.env.NODE_ENV !== 'production') console.log(`✅ Document admin approval notification sent to ${recipient.name}`);
+        if (process.env.NODE_ENV !== 'production') console.log(` Document admin approval notification sent to ${recipient.name}`);
       } else {
         console.error(`❌ Failed to send document admin approval notification to ${recipient.name}:`, result.error);
       }
@@ -843,7 +843,7 @@ export const sendDocumentClientApprovalNotificationEmail = async (
   action: 'approved' | 'rejected' = 'approved'
 ): Promise<void> => {
   if (!recipients || recipients.length === 0) {
-    console.warn(`⚠️ No recipients for document client approval notification`);
+    console.warn(` No recipients for document client approval notification`);
     return;
   }
 

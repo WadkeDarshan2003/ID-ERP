@@ -157,6 +157,14 @@ const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, p
     });
   }, [groupedVendors]);
 
+  // Helper function to format phone numbers
+  const formatPhoneNumber = (phone: string) => {
+    if (phone.startsWith('+91')) {
+      return '+91 ' + phone.slice(3);
+    }
+    return phone;
+  };
+
   const handleEditUser = (user: User) => {
     setEditingUser(user);
     const isPhoneAuth = user.email && user.email.endsWith('@kydo-phone-auth.local');
@@ -293,7 +301,7 @@ const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, p
           password: generatedPassword,
           authMethod: 'phone'
         };
-        if (process.env.NODE_ENV !== 'production') console.log('🎉 Setting welcome modal for:', welcomeUser);
+        if (process.env.NODE_ENV !== 'production') console.log(' Setting welcome modal for:', welcomeUser);
         setWelcomeModalUser(welcomeUser);
       }
 
@@ -387,8 +395,8 @@ const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, p
     <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden hover:shadow-md transition-shadow h-full flex flex-col">
         <div className="p-6 flex-1">
             <div className="flex items-start justify-between gap-3">
-              <div className="flex items-center gap-2 flex-1">
-                <AvatarCircle avatar={user.avatar} name={user.name} size="md" />
+              <div className="flex items-center gap-1 flex-1">
+                <AvatarCircle avatar={user.avatar} name={user.name} size="md" role={String(user.role).toLowerCase()} />
                 <div>
                   <h3 className="text-base md:text-sm font-bold text-gray-900">{user.name}</h3>
                   {user.company && (
@@ -430,15 +438,15 @@ const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, p
 
             <div className="mt-4 space-y-2 border-t border-gray-100 pt-4">
             {user.email && !user.email.endsWith('@kydo-phone-auth.local') && (
-              <a href={`mailto:${user.email}`} className="flex items-center gap-3 text-base md:text-sm text-gray-600 hover:text-blue-600 group transition-colors">
+              <a href={`mailto:${user.email}`} className="flex items-center gap-2 text-base md:text-sm text-gray-600 hover:text-blue-600 group transition-colors">
                 <Mail className="w-4 h-4 text-gray-400 group-hover:text-blue-600" />
                 <span className="truncate">{user.email}</span>
               </a>
             )}
             {user.phone && (
-              <a href={`tel:${user.phone}`} className="flex items-center gap-3 text-base md:text-sm text-gray-600 hover:text-blue-600 group transition-colors">
+              <a href={`tel:${user.phone}`} className="flex items-center gap-2 text-base md:text-sm text-gray-600 hover:text-blue-600 group transition-colors">
               <Phone className="w-4 h-4 text-gray-400 group-hover:text-blue-600" />
-              <span className="text-base md:text-sm">{user.phone}</span>
+              <span className="text-base md:text-sm">{formatPhoneNumber(user.phone)}</span>
               </a>
             )}
 
@@ -738,7 +746,7 @@ const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, p
             {/* Header */}
             <div className="p-6 border-b border-gray-100 bg-gray-50 sticky top-0 flex justify-between items-center">
               <div className="flex items-center gap-4">
-                <AvatarCircle avatar={selectedVendor.avatar} name={selectedVendor.name} size="md" />
+                <AvatarCircle avatar={selectedVendor.avatar} name={selectedVendor.name} size="md" role={String(selectedVendor.role).toLowerCase()} />
                 <div>
                   <h3 className="text-xl sm:text-lg font-bold text-gray-900">{selectedVendor.name}</h3>
                   <p className="text-sm sm:text-xs text-gray-500">{selectedVendor.specialty} • {selectedVendor.company}</p>
@@ -1013,7 +1021,7 @@ const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, p
             {/* Header */}
             <div className="p-6 border-b border-gray-100 bg-gray-50 sticky top-0 flex justify-between items-center">
               <div className="flex items-center gap-4">
-                <AvatarCircle avatar={selectedDesigner.avatar} name={selectedDesigner.name} size="md" />
+                <AvatarCircle avatar={selectedDesigner.avatar} name={selectedDesigner.name} size="md" role={String(selectedDesigner.role).toLowerCase()} />
                 <div>
                   <h3 className="text-2xl sm:text-xl font-bold text-gray-900">{selectedDesigner.name}</h3>
                   <p className="text-base sm:text-sm text-gray-500">{selectedDesigner.specialty || 'Designer'}</p>
@@ -1269,7 +1277,7 @@ const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, p
             {/* Header */}
             <div className="p-6 border-b border-gray-100 bg-gray-50 sticky top-0 flex justify-between items-center">
               <div className="flex items-center gap-4">
-                <AvatarCircle avatar={selectedVendorForAccounts.avatar} name={selectedVendorForAccounts.name} size="md" />
+                <AvatarCircle avatar={selectedVendorForAccounts.avatar} name={selectedVendorForAccounts.name} size="md" role={String(selectedVendorForAccounts.role).toLowerCase()} />
                 <div>
                   <h3 className="text-lg font-bold text-gray-900">{selectedVendorForAccounts.name}</h3>
                   <p className="text-xs text-gray-500">{selectedVendorForAccounts.specialty} • {selectedVendorForAccounts.company}</p>

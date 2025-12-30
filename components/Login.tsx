@@ -11,6 +11,7 @@ import { getUser, claimPhoneUserProfile } from '../services/firebaseService';
 import { setupPhoneAuthentication, verifyPhoneOTP } from '../services/authService';
 import { getFirebaseErrorMessage } from '../utils/firebaseErrorMessages';
 import { createDeviceInfo, saveDeviceToLocal } from '../utils/deviceUtils';
+import CreateAdmin from './CreateAdmin';
 
 interface LoginProps {
   users?: User[];
@@ -31,6 +32,19 @@ const Login: React.FC<LoginProps> = ({ users = [] }) => {
   const [otpSent, setOtpSent] = useState(false);
   const [confirmationResult, setConfirmationResult] = useState<any>(null);
   const [rememberDevice, setRememberDevice] = useState(true);
+
+  const openParam = typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('open') : null;
+
+  // If the URL explicitly requests admin creation, show that page (public creation for first admin)
+  if (openParam === 'admins') {
+    return (
+      <div className="min-h-screen bg-gray-100 flex items-center justify-center p-4">
+        <div className="w-full max-w-3xl p-6">
+          <CreateAdmin />
+        </div>
+      </div>
+    );
+  }
 
   const handleFirebaseLogin = async (e: React.FormEvent) => {
     e.preventDefault();

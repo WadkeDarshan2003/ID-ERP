@@ -83,8 +83,7 @@ Success notification shown
 2. **Copy API Key & Email**
 3. **Create .env.local file**
 4. **Test by clicking bell icon**
-5. **Done!** 🎉
-
+5. **Done!** 
 ## Support Files
 
 - `BREVO_EMAIL_SETUP.md` - Detailed setup guide

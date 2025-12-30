@@ -3,6 +3,7 @@ import {
   LayoutDashboard, FolderKanban, Users, ShoppingBag, 
   Palette, LogOut, Bell, Menu, X, Tag, Edit, Trash2, Settings, Shield
 } from 'lucide-react';
+import { IoPersonOutline } from 'react-icons/io5';
 import { MOCK_PROJECTS, MOCK_USERS } from './constants';
 import { Project, Role, User, ProjectStatus, ProjectType, ProjectCategory, Task } from './types';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
@@ -15,7 +16,7 @@ import { formatDateToIndian } from './utils/taskUtils';
 
 // Components
 import Dashboard from './components/Dashboard';
-import { ProjectDetail } from './components/ProjectDetail';
+import ProjectDetail from './components/ProjectDetail';
 import PeopleList from './components/PeopleList';
 import Login from './components/Login';
 import NotificationPanel from './components/NotificationPanel';
@@ -473,7 +474,7 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
         setIsTaskOnlyView(false);
         setIsSidebarOpen(false);
       }}
-      className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors mb-1 ${isSidebarCollapsed ? 'justify-center' : ''}
+      className={`w-full flex items-center gap-1 px-4 py-3 rounded-lg transition-colors mb-1 ${isSidebarCollapsed ? 'justify-center' : ''}
         ${currentView === view && !selectedProject 
           ? 'bg-gray-900 text-white shadow-lg' 
           : 'text-gray-500 hover:bg-gray-100 hover:text-gray-900'}`}
@@ -555,8 +556,8 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
             {(canSeeClients || canSeeDesigners || canSeeVendors) && (
               <div className="mb-6">
                 {!isSidebarCollapsed && <p className="px-4 text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">People</p>}
-                {canSeeClients && <SidebarItem view="clients" icon={Users} label="Clients" />}
-                {canSeeDesigners && <SidebarItem view="designers" icon={Palette} label="Team" />}
+                {canSeeClients && <SidebarItem view="clients" icon={IoPersonOutline} label="Clients" />}
+                {canSeeDesigners && <SidebarItem view="designers" icon={Users} label="Team" />}
                 {canSeeVendors && <SidebarItem view="vendors" icon={ShoppingBag} label="Vendors" />}
                 {user.role === Role.ADMIN && <SidebarItem view="admins" icon={Shield} label="Admins" />}
               </div>
@@ -628,7 +629,7 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
                 <p className="text-sm font-semibold text-gray-900">{user.name}</p>
                 <p className="text-xs text-gray-500 capitalize">{user.role}</p>
               </div>
-              <AvatarCircle avatar={user.avatar} name={user.name} size="sm" />
+              <AvatarCircle avatar={user.avatar} name={user.name} size="sm" role={String(user.role).toLowerCase()} />
             </div>
           </div>
         </header>

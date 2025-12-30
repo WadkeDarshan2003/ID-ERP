@@ -504,7 +504,7 @@ const Dashboard: React.FC<DashboardProps> = ({ projects, users, onSelectProject,
                   ? assignedTasks.filter(i => i.task.status !== TaskStatus.DONE && !shouldHideCompletedApprovedTask(i.task)).length === 0
                   : filteredProjects.every(p => getProjectTasks(p.id).filter(t => t.status !== TaskStatus.DONE && !shouldHideCompletedApprovedTask(t)).length === 0)
               ) ? (
-                <div className="text-center py-10 text-gray-400 text-sm">All tasks completed! 🎉</div>
+                <div className="text-center py-10 text-gray-400 text-sm">All tasks completed! </div>
               ) : (
                 (
                   user.role === Role.DESIGNER
@@ -703,7 +703,7 @@ const Dashboard: React.FC<DashboardProps> = ({ projects, users, onSelectProject,
                   ))}
                   {assignedTasks.filter(t => t.task.status !== TaskStatus.DONE).length === 0 && (
                     <tr>
-                      <td colSpan={4} className="text-center py-8 text-gray-400 text-sm">All caught up! 🎉</td>
+                      <td colSpan={4} className="text-center py-8 text-gray-400 text-sm">All caught up! </td>
                     </tr>
                   )}
                 </tbody>

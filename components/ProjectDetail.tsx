@@ -12,7 +12,7 @@ import { syncAllVendorsEarnings } from '../services/firebaseService';
 import { doc, updateDoc } from 'firebase/firestore';
 import { db } from '../services/firebaseConfig';
 import { uploadFile } from '../services/storageService';
-import { AvatarCircle, getInitials, getInitialsBgColor } from '../utils/avatarUtils';
+import { AvatarCircle, getInitials } from '../utils/avatarUtils';
 import { calculateTaskProgress, deriveStatus, formatRelativeTime, formatDateToIndian, formatIndianToISO } from '../utils/taskUtils';
 import KanbanBoard from './KanbanBoard';
 import MeetingForm from './MeetingForm';
@@ -22,7 +22,7 @@ import {
   ChevronRight, Lock, Clock, FileText,
   Layout, ListChecks, ArrowRight, User as UserIcon, X,
   MessageSquare, ThumbsUp, ThumbsDown, Send, Shield, History, Layers, Link2, AlertCircle, Tag, Upload, Ban, PauseCircle, PlayCircle,
-  File as FileIcon, Eye, EyeOff, Download, Pencil, Mail, Filter, IndianRupee, Bell, MessageCircle, Users, MessageCircle as CommentIcon, Trash2, Edit3, Check
+  File as FileIcon, Eye, EyeOff, Download, Pencil, Mail, Filter, IndianRupee, Bell, MessageCircle, Users, MessageCircle as CommentIcon, Trash2, Edit3, Check, Wallet
 } from 'lucide-react';
 import { useNotifications } from '../contexts/NotificationContext';
 import { useLoading } from '../contexts/LoadingContext';
@@ -560,7 +560,10 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       }
     }
     
-    return <AvatarCircle avatar={userAvatar} name={userName} size={size} />;
+    // pass role when available so avatar colors match user role
+    const foundUser = users.find(u => u.id === userId) || (userId === user.id ? user : undefined);
+    const roleProp = foundUser?.role ? String(foundUser.role).toLowerCase() : undefined;
+    return <AvatarCircle avatar={userAvatar} name={userName} size={size} role={roleProp} />;
   };
 
   // --- Helper: Project Team (for Meetings/Visibility) ---
@@ -3169,9 +3172,9 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                   )}
                 </div>
                 <div className="flex flex-wrap items-center gap-3 md:gap-4 text-base md:text-sm text-gray-600 mt-3 md:mt-3">
-                  <span className="flex items-center gap-1 whitespace-nowrap"><Calendar className="w-4 h-4 flex-shrink-0" /> Due: {formatDateToIndian(project.deadline)}</span>
+                  <span className="flex items-center gap-1 whitespace-nowrap"><Clock className="w-4 h-4 flex-shrink-0" /> Due: {formatDateToIndian(project.deadline)}</span>
                   {!isVendor && (
-                    <span className="flex items-center gap-1 whitespace-nowrap"><IndianRupee className="w-4 h-4 flex-shrink-0" /> Budget: ₹{project.budget.toLocaleString()}</span>
+                    <span className="flex items-center gap-1 whitespace-nowrap"><Wallet className="w-4 h-4 flex-shrink-0" /> Budget: ₹{project.budget.toLocaleString()}</span>
                   )}
                 </div>
               </div>
@@ -3258,7 +3261,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       </div>
 
       {/* Navigation Tabs - Mobile Optimized */}
-      <div ref={tabsContainerRef} className="border-b border-gray-200 bg-gray-50 overflow-x-auto md:overflow-hidden [&::-webkit-scrollbar]:h-2 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-gray-300 [&::-webkit-scrollbar-thumb]:rounded [&:hover::-webkit-scrollbar-thumb]:bg-gray-400 hover:[scrollbar-color:rgb(107_114_128)_transparent]" style={{scrollbarWidth: 'thin', scrollbarColor: 'transparent transparent'}}>
+      <div ref={tabsContainerRef} className="bg-gray-50 overflow-x-auto md:overflow-hidden [&::-webkit-scrollbar]:h-2 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-gray-300 [&::-webkit-scrollbar-thumb]:rounded [&:hover::-webkit-scrollbar-thumb]:bg-gray-400 hover:[scrollbar-color:rgb(107_114_128)_transparent]" style={{scrollbarWidth: 'thin', scrollbarColor: 'transparent transparent'}}>
         <div className="flex gap-1 md:gap-6 px-4 md:px-6 min-w-max md:min-w-0 md:w-full md:justify-center">
           {[
             { id: 'discovery', label: 'Meetings', icon: FileText, hidden: isVendor },
@@ -3266,7 +3269,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
             { id: 'documents', label: 'Documents', icon: FileIcon },
             { id: 'financials', label: 'Financials', icon: IndianRupee, hidden: !canViewFinancials },
             { id: 'timeline', label: 'Timeline', icon: History, hidden: isVendor },
-            { id: 'team', label: 'Team', icon: UserIcon }
+            { id: 'team', label: 'Team', icon: Users }
           ].map((tab) => {
              if (tab.hidden) return null;
              return (
@@ -3274,14 +3277,14 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                 key={tab.id}
                 data-tab-id={tab.id}
                 onClick={() => setActiveTab(tab.id as any)}
-                className={`flex items-center gap-2 md:gap-2 py-3 md:py-4 px-3 md:px-5 text-base md:text-sm font-medium border-b-2 transition-all whitespace-nowrap flex-shrink-0 md:flex-shrink ${
-                  activeTab === tab.id 
-                    ? 'border-gray-900 text-gray-900' 
-                    : 'border-transparent text-gray-500 hover:text-gray-700'
+                className={`flex items-center gap-1 md:gap-1 pt-1 pb-0.5 md:pt-2 md:pb-1 px-3 md:px-5 text-base md:text-sm font-medium transition-all whitespace-nowrap flex-shrink-0 md:flex-shrink ${
+                  activeTab === tab.id ? 'text-gray-900' : 'text-gray-500 hover:text-gray-700'
                 }`}
               >
-                <tab.icon className="w-4 h-4 md:w-4 md:h-4 flex-shrink-0" />
-                {tab.label}
+                <span className={`inline-flex items-center gap-1 pb-1 ${activeTab === tab.id ? 'border-b-2 border-gray-900' : ''}`}>
+                  <tab.icon className="w-4 h-4 md:w-4 md:h-4 flex-shrink-0" />
+                  {tab.label}
+                </span>
               </button>
              );
           })}
@@ -3290,7 +3293,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
 
       {/* Content Area */}
       <div 
-        className="flex-1 overflow-y-auto bg-gray-50"
+        className="flex-1 overflow-y-auto bg-gray-50 border-t border-gray-200"
       >
         
         {/* PHASE 1: MEETINGS */}
@@ -3781,8 +3784,8 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                         return (
                         <div key={task.id} className={`bg-white p-4 md:p-6 rounded-xl border border-gray-200 shadow-sm hover:shadow-md transition-all ${blocked || frozen ? 'opacity-75 bg-gray-50' : ''}`}>
                             <div className="flex justify-between items-start mb-3">
-                              <span className={`px-2 py-0.5 rounded text-sm font-bold uppercase
-                                ${task.priority === 'high' ? 'bg-red-100 text-red-600' : 'bg-blue-100 text-blue-600'}`}>
+                              <span className={`px-1.5 py-0.5 rounded text-xs font-medium uppercase
+                                ${task.priority === 'high' ? 'bg-red-100 text-red-600' : task.priority === 'medium' ? 'bg-yellow-100 text-yellow-600' : 'bg-green-100 text-green-600'}`}>
                                 {task.priority}
                               </span>
                               <div className="flex items-center gap-1">
@@ -3931,14 +3934,18 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                             <div className="space-y-2 mb-4 max-h-[80px] overflow-y-auto pr-2">
                               {task.subtasks.map(st => (
                                 <div key={st.id} className="flex items-center gap-2 text-sm text-gray-600 transition-opacity" style={{opacity: (blocked || frozen || (!canEditProject && !isMyTask)) ? 0.5 : 1}}>
-                                  <div 
+                                  <button
+                                    type="button"
                                     onClick={() => (canEditProject || isMyTask) && toggleSubtask(task.id, st.id)}
-                                    className={`w-4 h-4 rounded border flex items-center justify-center transition-all
-                                    ${st.isCompleted ? 'bg-green-500 border-green-500' : 'border-gray-300'}
-                                    ${(blocked || frozen || (!canEditProject && !isMyTask)) ? 'cursor-not-allowed opacity-75 bg-gray-100' : 'cursor-pointer hover:border-gray-400'}`}
+                                    disabled={blocked || frozen || (!canEditProject && !isMyTask)}
+                                    className={`flex-shrink-0 w-4 h-4 rounded-full border flex items-center justify-center transition-all duration-200 ${
+                                      st.isCompleted
+                                        ? 'bg-green-500 border-green-500 hover:bg-green-600 hover:border-green-600'
+                                        : 'border-gray-400 hover:border-green-400 hover:bg-green-50'
+                                    } disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:border-gray-300`}
                                   >
-                                    {st.isCompleted && <CheckCircle className="w-3 h-3 text-white" />}
-                                  </div>
+                                    {st.isCompleted && <Check className="w-2.5 h-2.5 text-white" />}
+                                  </button>
                                   <span className={st.isCompleted ? 'line-through text-gray-400' : ''}>{st.title}</span>
                                 </div>
                               ))}
@@ -6717,19 +6724,24 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                          <div className="space-y-2 flex-1 overflow-y-auto pr-2">
                             {editingTask.subtasks?.map((st, idx) => (
                               <div key={st.id} className="flex items-center gap-2 p-2 rounded transition-opacity" style={{opacity: ((!canEditProject && user.id !== editingTask.assigneeId) || isTaskBlocked(editingTask) || isEditingFrozen) ? 0.5 : 1}}>
-                                 <input 
-                                   type="checkbox" 
-                                   checked={st.isCompleted} 
-                                   title="Toggle subtask completion"
-                                   aria-label="Toggle subtask completion"
-                                   disabled={(!canEditProject && user.id !== editingTask.assigneeId) || isTaskBlocked(editingTask) || isEditingFrozen}
-                                   onChange={() => {
+                                 <button
+                                   type="button"
+                                   onClick={() => {
                                       const newSubs = [...(editingTask.subtasks || [])];
                                       newSubs[idx].isCompleted = !newSubs[idx].isCompleted;
                                       setEditingTask({...editingTask, subtasks: newSubs});
                                    }}
-                                   className="disabled:opacity-50 disabled:cursor-not-allowed"
-                                 />
+                                   disabled={(!canEditProject && user.id !== editingTask.assigneeId) || isTaskBlocked(editingTask) || isEditingFrozen}
+                                   title="Toggle subtask completion"
+                                   aria-label="Toggle subtask completion"
+                                   className={`flex-shrink-0 w-4 h-4 rounded-full border flex items-center justify-center transition-all duration-200 ${
+                                     st.isCompleted
+                                       ? 'bg-green-500 border-green-500 hover:bg-green-600 hover:border-green-600'
+                                       : 'border-gray-400 hover:border-green-400 hover:bg-green-50'
+                                   } disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:border-gray-300`}
+                                 >
+                                   {st.isCompleted && <Check className="w-3 h-3 text-white" />}
+                                 </button>
                                  {canEditProject ? (
                                    <input 
                                       type="text" 
@@ -8296,4 +8308,3 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
 };
 
 export default ProjectDetail;
-export { ProjectDetail };

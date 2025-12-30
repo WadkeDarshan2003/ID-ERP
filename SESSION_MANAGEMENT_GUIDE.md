@@ -788,7 +788,6 @@ Remembered Devices (2)
   Last login: 1 week ago
   Added: 2 weeks ago
   [Forget] button
-
 ℹ️ About Device Memory
 - Devices remembered for 30 days of inactivity
 - Each login extends the period
