@@ -4161,7 +4161,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                     <div key={doc.id} className="group relative bg-white border border-gray-200 rounded-xl overflow-hidden hover:shadow-lg transition-shadow">
                        {/* Overlay Actions */}
                        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center gap-2 z-10 pointer-events-none group-hover:pointer-events-auto">
-                          <div className="flex items-center justify-center gap-2">
+                          <div className="grid grid-cols-3 gap-2">
                             <button 
                               className="p-2 bg-white rounded-full text-gray-900 hover:bg-gray-100" 
                               title="Comments"

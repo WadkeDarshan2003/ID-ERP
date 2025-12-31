@@ -1,0 +1,21 @@
+admin approval to show the vendor to client (Done)
+
+mobile optimization for sliding (Done)
+
+notification and only specific tab opening (Done)
+
+approvals for normal document (Done)
+
+approvals and paid (Done)
+
+automated remainders based on timing (Done)
+
+WhatsApp Api
+
+vendor scope ! if he is already in the system fetch and direct add so fetch id instead of duplicate acc creation 
+
+session to remember (Done)
+
+every mail should have link to that particular page, tab it is related to (Done)
+
+
