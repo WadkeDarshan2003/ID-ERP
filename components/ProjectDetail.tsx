@@ -144,7 +144,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
 
   // Documents State
   const [isDocModalOpen, setIsDocModalOpen] = useState(false);
-  const [newDoc, setNewDoc] = useState<{name: string, sharedWith: string[], attachToTaskId?: string}>({ name: '', sharedWith: [] });
+  const [newDoc, setNewDoc] = useState<{name: string, type: 'image' | 'pdf' | 'other', sharedWith: string[], attachToTaskId?: string}>({ name: '', type: 'other', sharedWith: [] });
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [showDocErrors, setShowDocErrors] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -689,7 +689,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       await addCommentToMeeting(project.id, meetingId, comment);
       
       // Send notification to all tenant admins and meeting attendees
-      const meeting = meetings.find(m => m.id === meetingId);
+      const meeting = realTimeMeetings.find((m: Meeting) => m.id === meetingId);
       if (meeting) {
         const recipients: User[] = [];
         
@@ -1130,7 +1130,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
         notifyProjectTeam('Files Added', `${user.name} uploaded ${createdDocIds.length} document(s) to "${project.name}"`, user.id, 'documents');
         
         setIsDocModalOpen(false);
-        setNewDoc({ name: '', sharedWith: [] });
+        setNewDoc({ name: '', type: 'other', sharedWith: [] });
         setSelectedFiles([]);
         setShowDocErrors(false);
         addNotification("Success", `${createdDocIds.length} document(s) uploaded successfully to "${project.name}"`, "success", undefined, project.id, project.name);
