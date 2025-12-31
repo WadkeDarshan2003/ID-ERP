@@ -6719,9 +6719,24 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                        </div>
 
                        {/* Subtasks */}
-                       <div className="pt-4 border-t border-gray-100 flex flex-col h-64">
-                         <label className="text-xs font-bold text-gray-700 uppercase mb-2 block">Checklist</label>
-                         <div className="space-y-2 flex-1 overflow-y-auto pr-2">
+                       <div className="pt-4 border-t border-gray-100 flex flex-col h-auto max-h-[400px] lg:h-64">
+                         <div className="flex justify-between items-center mb-2">
+                           <label className="text-xs font-bold text-gray-700 uppercase block">Checklist</label>
+                           {canEditProject && !isEditingFrozen && (!editingTask.subtasks || editingTask.subtasks.length === 0) && (
+                             <button 
+                               onClick={() => {
+                                  const newSub: SubTask = { id: Math.random().toString(), title: 'New Item', isCompleted: false };
+                                  setEditingTask({ ...editingTask, subtasks: [...(editingTask.subtasks || []), newSub] });
+                                  setTimeout(() => {
+                                    const container = document.getElementById('checklist-container');
+                                    if (container) container.scrollTop = container.scrollHeight;
+                                  }, 100);
+                               }}
+                               className="text-xs text-blue-600 hover:text-blue-700 flex items-center gap-1"
+                             ><Plus className="w-3 h-3"/> Add</button>
+                           )}
+                         </div>
+                         <div className="space-y-2 flex-1 overflow-y-auto pr-2 custom-scrollbar" id="checklist-container">
                             {editingTask.subtasks?.map((st, idx) => (
                               <div key={st.id} className="flex items-center gap-2 p-2 rounded transition-opacity" style={{opacity: ((!canEditProject && user.id !== editingTask.assigneeId) || isTaskBlocked(editingTask) || isEditingFrozen) ? 0.5 : 1}}>
                                  <button
@@ -6773,16 +6788,23 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                               </div>
                             ))}
                             {(!editingTask.subtasks || editingTask.subtasks.length === 0) && <p className="text-xs text-gray-400 italic">No checklist items</p>}
+                            
+                            {canEditProject && !isEditingFrozen && editingTask.subtasks && editingTask.subtasks.length > 0 && (
+                             <button 
+                               id="add-checklist-btn"
+                               onClick={(e) => {
+                                  const newSub: SubTask = { id: Math.random().toString(), title: 'New Item', isCompleted: false };
+                                  setEditingTask({ ...editingTask, subtasks: [...(editingTask.subtasks || []), newSub] });
+                                  // Auto-scroll to bottom after render
+                                  setTimeout(() => {
+                                    const container = document.getElementById('checklist-container');
+                                    if (container) container.scrollTop = container.scrollHeight;
+                                  }, 100);
+                               }}
+                               className="text-xs text-blue-600 hover:text-blue-700 flex items-center gap-1 mt-2 pt-2"
+                             ><Plus className="w-3 h-3"/> Add Item</button>
+                           )}
                          </div>
-                         {canEditProject && !isEditingFrozen && (
-                           <button 
-                             onClick={() => {
-                                const newSub: SubTask = { id: Math.random().toString(), title: 'New Item', isCompleted: false };
-                                setEditingTask({ ...editingTask, subtasks: [...(editingTask.subtasks || []), newSub] });
-                             }}
-                             className="text-xs text-blue-600 hover:text-blue-700 flex items-center gap-1 mt-2 pt-2 border-t border-gray-100"
-                           ><Plus className="w-3 h-3"/> Add</button>
-                         )}
                        </div>
                     </div>
                  </div>

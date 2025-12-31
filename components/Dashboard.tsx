@@ -474,7 +474,7 @@ const Dashboard: React.FC<DashboardProps> = ({ projects, users, onSelectProject,
           </div>
 
           {/* Column 2: All Tasks */}
-          <div className="bg-white rounded-xl border border-gray-100 shadow-sm flex flex-col h-[600px]">
+          <div className="bg-white rounded-xl border border-gray-100 shadow-sm flex flex-col h-auto max-h-[500px] lg:h-[600px] lg:max-h-none">
             <div className="p-4 border-b border-gray-100 bg-gray-50/50 flex justify-between items-center">
               <h3 className="font-bold text-gray-800 flex items-center gap-2">
                 <List className="w-4 h-4 text-amber-500" />
@@ -566,7 +566,7 @@ const Dashboard: React.FC<DashboardProps> = ({ projects, users, onSelectProject,
           </div>
 
           {/* Column 3: All Pending Approvals */}
-          <div className="bg-white rounded-xl border border-gray-100 shadow-sm flex flex-col h-[600px]">
+          <div className="bg-white rounded-xl border border-gray-100 shadow-sm flex flex-col h-auto max-h-[500px] lg:h-[600px] lg:max-h-none">
             <div className="p-4 border-b border-gray-100 bg-gray-50/50 flex justify-between items-center">
               <h3 className="font-bold text-gray-800 flex items-center gap-2">
                 <CheckCircle2 className="w-4 h-4 text-rose-500" />

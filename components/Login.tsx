@@ -37,13 +37,7 @@ const Login: React.FC<LoginProps> = ({ users = [] }) => {
 
   // If the URL explicitly requests admin creation, show that page (public creation for first admin)
   if (openParam === 'admins') {
-    return (
-      <div className="min-h-screen bg-gray-100 flex items-center justify-center p-4">
-        <div className="w-full max-w-3xl p-6">
-          <CreateAdmin />
-        </div>
-      </div>
-    );
+    return <CreateAdmin />;
   }
 
   const handleFirebaseLogin = async (e: React.FormEvent) => {
@@ -228,18 +222,25 @@ const Login: React.FC<LoginProps> = ({ users = [] }) => {
       {loading && <Loader message="Signing in..." />}
       <div className="bg-white rounded-2xl shadow-xl max-w-4xl w-full overflow-hidden flex flex-col md:flex-row">
         {/* Left Side - Brand */}
-        <div className="md:w-1/2 bg-gray-900 p-12 text-white flex flex-col justify-between">
-          <div>
-            <img src="/kydoicon.png" alt="Kydo Solutions Logo" className="h-12 w-12 mb-6 rounded-xl bg-white p-1" />
+        <div className="md:w-1/2 bg-gray-900 p-12 text-white flex flex-col justify-between relative overflow-hidden">
+          {/* Decorative circles */}
+          <div className="absolute top-0 left-0 w-64 h-64 bg-white opacity-5 rounded-full -translate-x-1/2 -translate-y-1/2"></div>
+          <div className="absolute bottom-0 right-0 w-96 h-96 bg-white opacity-5 rounded-full translate-x-1/3 translate-y-1/3"></div>
+
+          <div className="relative z-10">
+            <img src="/kydoicon.png" alt="Kydo Solutions Logo" className="h-12 w-12 mb-6 rounded-lg" />
             <h1 className="text-4xl font-bold mb-4">Kydo Solutions</h1>
             <p className="text-gray-400 text-lg leading-relaxed">
               Manage your interior design projects, clients, and vendors in one seamless platform.
             </p>
           </div>
-          <div className="mt-12">
-            <div className="flex items-center gap-2 text-sm text-gray-500">
-              <Lock className="w-4 h-4" />
-              <span>Secure Role-Based Access</span>
+          <div className="mt-12 relative z-10">
+            <div className="flex items-center gap-4 p-4 bg-white/5 rounded-xl backdrop-blur-sm border border-white/10">
+              <Lock className="w-8 h-8 text-gray-300" />
+              <div>
+                <h3 className="font-semibold">Secure Access</h3>
+                <p className="text-sm text-gray-400">Role-Based Access Control</p>
+              </div>
             </div>
           </div>
         </div>
