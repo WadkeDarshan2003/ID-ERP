@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Task, TaskStatus, User, Role } from '../types';
-import { Calendar, Lock, CheckCircle, Clock, Ban, PauseCircle } from 'lucide-react';
+import { Calendar, Lock, CheckCircle, Clock, Ban, PauseCircle, ArrowRight, PlayCircle } from 'lucide-react';
 import { useNotifications } from '../contexts/NotificationContext';
 import { useAuth } from '../contexts/AuthContext';
 import { AvatarCircle } from '../utils/avatarUtils';
@@ -13,6 +13,7 @@ interface KanbanBoardProps {
   onUpdateTaskStatus: (taskId: string, newStatus: TaskStatus) => void;
   onUpdateTaskPriority?: (taskId: string, newPriority: 'low' | 'medium' | 'high') => void;
   onEditTask: (task: Task) => void;
+  onCompleteTask: (task: Task) => void;
 }
 
 // Columns are now Task Statuses
@@ -24,7 +25,7 @@ const COLUMNS: { id: TaskStatus; label: string; color: string }[] = [
   { id: TaskStatus.DONE, label: 'Completed', color: 'border-t-4 border-green-500' },
 ];
 
-const KanbanBoard: React.FC<KanbanBoardProps> = ({ tasks, users, onUpdateTaskStatus, onUpdateTaskPriority, onEditTask }) => {
+const KanbanBoard: React.FC<KanbanBoardProps> = ({ tasks, users, onUpdateTaskStatus, onUpdateTaskPriority, onEditTask, onCompleteTask }) => {
   const { user } = useAuth();
   const { addNotification } = useNotifications();
   const [draggedTaskId, setDraggedTaskId] = useState<string | null>(null);
@@ -196,15 +197,29 @@ const KanbanBoard: React.FC<KanbanBoardProps> = ({ tasks, users, onUpdateTaskSta
                         </h4>
                         
                         {/* Quick Action Button */}
-                        {isMyTask && !blocked && !frozen && task.status !== TaskStatus.DONE && user?.role !== Role.CLIENT && (
-                           <button 
-                             onClick={(e) => handleQuickAction(e, task)}
-                             className="text-gray-300 hover:text-blue-500 transition-colors p-0.5 flex-shrink-0"
-                             title={task.status === TaskStatus.IN_PROGRESS ? "Send for Review" : "Start Task"}
-                           >
-                             {task.status === TaskStatus.REVIEW ? <Clock className="w-4 h-4 text-purple-400"/> : <CheckCircle className="w-4 h-4" />}
-                           </button>
+                        {((isMyTask || user?.role === Role.ADMIN) && !blocked && !frozen && task.status !== TaskStatus.DONE && user?.role !== Role.CLIENT) && (
+                           <div className="flex items-center">
+                             <button 
+                               onClick={(e) => {
+                                 e.stopPropagation();
+                                 onCompleteTask(task);
+                               }}
+                               className="text-gray-300 hover:text-green-500 transition-colors p-0.5 flex-shrink-0 mr-1"
+                               title="Mark as Done"
+                             >
+                               <CheckCircle className="w-4 h-4 text-green-500" />
+                             </button>
+                             
+                             <button 
+                               onClick={(e) => handleQuickAction(e, task)}
+                               className="text-gray-300 hover:text-blue-500 transition-colors p-0.5 flex-shrink-0"
+                               title="Advance Status"
+                             >
+                               <ArrowRight className="w-4 h-4" />
+                             </button>
+                           </div>
                         )}
+                        {/* Standard Action for non-WIP tasks - REMOVED as we now show Mark as Done for all */}
                     </div>
 
                     {/* Progress Bar */}

@@ -11,6 +11,7 @@ import {
   sendDocumentSharedEmail,
   sendEmail,
 } from './emailService';
+import { sendPushNotification } from './pushNotificationService';
 
 /**
  * Send email when task is assigned/created
@@ -37,6 +38,13 @@ export const sendTaskCreationEmail = async (
 
     if (result.success) {
       if (process.env.NODE_ENV !== 'production') console.log(`✅ Task creation email sent to ${assignee.name}`);
+      
+      // Send push notification
+      await sendPushNotification(
+        assignee.id,
+        'New Task Assigned',
+        `You have been assigned a new task: ${task.title} in project ${projectName}`
+      );
     } else {
       console.error(`❌ Failed to send task creation email:`, result.error);
     }
@@ -83,6 +91,13 @@ export const checkAndSendDueDateReminders = async (
           if (result.success) {
             if (process.env.NODE_ENV !== 'production') console.log(`✅ 24-hour reminder sent to ${assignee.name} for task "${task.title}"`);
             sentReminders.add(reminderId);
+            
+            // Send push notification
+            await sendPushNotification(
+              assignee.id,
+              'Task Due Reminder',
+              `Task "${task.title}" is due tomorrow in project ${projectName}`
+            );
           } else {
             console.error(`❌ Failed to send 24-hour reminder:`, result.error);
           }
@@ -142,6 +157,13 @@ export const sendProjectWelcomeEmail = async (
 
     if (result.success) {
       if (process.env.NODE_ENV !== 'production') console.log(`✅ Welcome email sent to ${user.name}`);
+      
+      // Send push notification
+      await sendPushNotification(
+        user.id,
+        'Added to Project',
+        `You have been added to project: ${projectName} by ${addedBy.name}`
+      );
     } else {
       console.error(`❌ Failed to send welcome email:`, result.error);
     }
@@ -180,6 +202,14 @@ export const sendDocumentApprovalEmail = async (
 
     if (result.success) {
       if (process.env.NODE_ENV !== 'production') console.log(`✅ Document approval email sent to ${recipient.name}`);
+      
+      // Send push notification
+      await sendPushNotification(
+        recipient.id,
+        'Document Approved',
+        `Document "${document.name}" in project ${projectName} has been approved by ${approverName}`,
+        deepLink
+      );
     } else {
       console.error(`❌ Failed to send document approval email:`, result.error);
     }
@@ -239,6 +269,13 @@ export const sendTaskApprovalEmail = async (
 
     if (result.success) {
       if (process.env.NODE_ENV !== 'production') console.log(`✅ Task approval email sent to ${recipient.name}`);
+
+      // Send push notification
+      await sendPushNotification(
+        recipient.id,
+        'Task Approved',
+        `Task "${taskTitle}" in project ${projectName} has been approved by ${approverName}`
+      );
     } else {
       console.error(`❌ Failed to send task approval email:`, result.error);
     }
@@ -246,7 +283,7 @@ export const sendTaskApprovalEmail = async (
     console.error(`❌ Error sending task approval email:`, error);
   }
 };
-
+    
 /**
  * Send email when meeting is created or updated
  */
@@ -326,6 +363,14 @@ export const sendMeetingNotificationEmail = async (
 
       if (result.success) {
         if (process.env.NODE_ENV !== 'production') console.log(`✅ Meeting notification email sent to ${attendee.name}`);
+        
+        // Send push notification
+        await sendPushNotification(
+          attendee.id,
+          actionText,
+          `${meetingAction === 'created' ? 'New meeting scheduled' : 'Meeting updated'}: ${meeting.title} in project ${projectName}`,
+          meetingLink
+        );
       } else {
         console.error(` Failed to send meeting notification email to ${attendee.name}:`, result.error);
       }
@@ -402,6 +447,14 @@ export const sendTaskAssignmentNotificationEmail = async (
 
     if (result.success) {
       if (process.env.NODE_ENV !== 'production') console.log(`✅ Task assignment notification email sent to ${assignee.name}`);
+      
+      // Send push notification
+      await sendPushNotification(
+        assignee.id,
+        actionText,
+        `${taskAction === 'created' ? 'New task assigned' : 'Task updated'}: ${task.title} in project ${projectName}`,
+        taskLink
+      );
     } else {
       console.error(` Failed to send task assignment notification email:`, result.error);
     }
@@ -486,6 +539,14 @@ export const sendTaskStartApprovalNotificationEmail = async (
 
       if (result.success) {
         if (process.env.NODE_ENV !== 'production') console.log(`✅ Task start approval notification sent to ${recipient.name}`);
+        
+        // Send push notification
+        await sendPushNotification(
+          recipient.id,
+          'Task Start Approval Pending',
+          `Task "${task.title}" in project ${projectName} requires start approval`,
+          taskLink
+        );
       } else {
         console.error(` Failed to send task start approval notification to ${recipient.name}:`, result.error);
       }
@@ -569,6 +630,14 @@ export const sendTaskCompletionApprovalNotificationEmail = async (
 
       if (result.success) {
         if (process.env.NODE_ENV !== 'production') console.log(` Task completion approval notification sent to ${recipient.name}`);
+        
+        // Send push notification
+        await sendPushNotification(
+          recipient.id,
+          'Task Completion Approval Pending',
+          `Task "${task.title}" in project ${projectName} requires completion approval`,
+          taskLink
+        );
       } else {
         console.error(` Failed to send task completion approval notification to ${recipient.name}:`, result.error);
       }
@@ -654,6 +723,14 @@ export const sendTaskCommentNotificationEmail = async (
 
       if (result.success) {
         if (process.env.NODE_ENV !== 'production') console.log(` Task comment notification sent to ${recipient.name}`);
+        
+        // Send push notification
+        await sendPushNotification(
+          recipient.id,
+          'New Comment on Task',
+          `${commenterName} commented on task "${task.title}" in project ${projectName}: ${comment.text.substring(0, 50)}${comment.text.length > 50 ? '...' : ''}`,
+          taskLink
+        );
       } else {
         console.error(` Failed to send task comment notification to ${recipient.name}:`, result.error);
       }
@@ -739,6 +816,14 @@ export const sendDocumentCommentNotificationEmail = async (
 
       if (result.success) {
         if (process.env.NODE_ENV !== 'production') console.log(` Document comment notification sent to ${recipient.name}`);
+        
+        // Send push notification
+        await sendPushNotification(
+          recipient.id,
+          'New Comment on Document',
+          `${commenterName} commented on document "${document.name}" in project ${projectName}: ${comment.text.substring(0, 50)}${comment.text.length > 50 ? '...' : ''}`,
+          documentLink
+        );
       } else {
         console.error(` Failed to send document comment notification to ${recipient.name}:`, result.error);
       }
@@ -822,6 +907,14 @@ export const sendDocumentAdminApprovalNotificationEmail = async (
 
       if (result.success) {
         if (process.env.NODE_ENV !== 'production') console.log(` Document admin approval notification sent to ${recipient.name}`);
+        
+        // Send push notification
+        await sendPushNotification(
+          recipient.id,
+          `Document ${statusText} by Admin`,
+          `Document "${document.name}" in project ${projectName} has been ${action} by ${approverName}`,
+          documentLink
+        );
       } else {
         console.error(`❌ Failed to send document admin approval notification to ${recipient.name}:`, result.error);
       }
@@ -905,6 +998,14 @@ export const sendDocumentClientApprovalNotificationEmail = async (
 
       if (result.success) {
         if (process.env.NODE_ENV !== 'production') console.log(`✅ Document client approval notification sent to ${recipient.name}`);
+        
+        // Send push notification
+        await sendPushNotification(
+          recipient.id,
+          `Document ${statusText} by Client`,
+          `Document "${document.name}" in project ${projectName} has been ${action} by ${clientName}`,
+          documentLink
+        );
       } else {
         console.error(`❌ Failed to send document client approval notification to ${recipient.name}:`, result.error);
       }
@@ -1004,11 +1105,81 @@ export const sendFinancialApprovalNotificationEmail = async (
 
       if (result.success) {
         if (process.env.NODE_ENV !== 'production') console.log(`✅ Financial approval notification sent to ${recipient.name}`);
+        
+        // Send push notification
+        await sendPushNotification(
+          recipient.id,
+          `${recordTypeDisplay} ${action === 'approved' ? 'Approved' : 'Rejected'}`,
+          `${recordTypeDisplay} "${record.description}" in project ${projectName} has been ${action} by ${approverName}`,
+          financialLink
+        );
       } else {
         console.error(`❌ Failed to send financial approval notification to ${recipient.name}:`, result.error);
       }
     } catch (error) {
       console.error(`❌ Error sending financial approval notification to ${recipient.name}:`, error);
+    }
+  }
+};
+
+/**
+ * Send email and push notification when someone comments on a meeting
+ */
+export const sendMeetingCommentNotificationEmail = async (
+  meeting: Meeting,
+  comment: Comment,
+  commenterName: string,
+  projectName: string,
+  recipients: User[]
+): Promise<void> => {
+  const meetingLink = `/projects?projectId=${meeting.id}`; // Adjust link as needed
+  
+  for (const recipient of recipients) {
+    if (!recipient.email) {
+      console.warn(`⚠️ No email for recipient ${recipient.name}`);
+      continue;
+    }
+
+    try {
+      const htmlContent = `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <h2 style="color: #1f2937;">New Comment on Meeting</h2>
+          <p>Hi ${recipient.name},</p>
+          <p><strong>${commenterName}</strong> commented on a meeting in project <strong>${projectName}</strong>:</p>
+          
+          <div style="background-color: #f3f4f6; padding: 15px; border-radius: 8px; margin: 20px 0;">
+            <p style="margin: 0; color: #4b5563;"><strong>Meeting:</strong> ${meeting.title}</p>
+            <p style="margin: 10px 0 0 0; color: #6b7280;">"${comment.text}"</p>
+          </div>
+          
+          <p style="margin-top: 20px;">
+            <a href="${meetingLink}" style="background-color: #2563eb; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block;">View Meeting</a>
+          </p>
+        </div>
+      `;
+
+      const result = await sendEmail({
+        to: recipient.email,
+        recipientName: recipient.name,
+        subject: `New Comment on Meeting: ${meeting.title} - ${projectName}`,
+        htmlContent,
+      });
+
+      if (result.success) {
+        if (process.env.NODE_ENV !== 'production') console.log(`✅ Meeting comment notification sent to ${recipient.name}`);
+        
+        // Send push notification
+        await sendPushNotification(
+          recipient.id,
+          `New Comment on Meeting - ${projectName}`,
+          `${commenterName} commented on "${meeting.title}": ${comment.text.substring(0, 100)}${comment.text.length > 100 ? '...' : ''}`,
+          meetingLink
+        );
+      } else {
+        console.error(`❌ Failed to send meeting comment notification to ${recipient.name}:`, result.error);
+      }
+    } catch (error) {
+      console.error(`❌ Error sending meeting comment notification to ${recipient.name}:`, error);
     }
   }
 };

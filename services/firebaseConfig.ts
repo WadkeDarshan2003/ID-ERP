@@ -3,6 +3,7 @@ import { getAuth } from "firebase/auth";
 import { getFirestore, enableIndexedDbPersistence } from "firebase/firestore";
 import { getStorage } from "firebase/storage";
 import { getAnalytics } from "firebase/analytics";
+import { getMessaging } from "firebase/messaging";
 
 // Firebase configuration
 export const firebaseConfig = {
@@ -23,6 +24,15 @@ export const auth = getAuth(app);
 export const db = getFirestore(app);
 export const storage = getStorage(app);
 export const analytics = getAnalytics(app);
+
+let messagingInstance;
+try {
+  messagingInstance = getMessaging(app);
+} catch (error) {
+  console.warn("Firebase Messaging not supported:", error);
+  messagingInstance = null;
+}
+export const messaging = messagingInstance;
 
 // Enable offline persistence for Firestore
 try {

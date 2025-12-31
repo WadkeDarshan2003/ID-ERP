@@ -162,7 +162,7 @@ const PendingItemsModal: React.FC<PendingItemsModalProps> = ({
               <p className="text-sm font-semibold text-gray-900 truncate">{item.name}</p>
               <p className="text-xs text-gray-500 mt-1">{item.projectName}</p>
               <p className={`text-xs font-medium mt-1 px-2 py-0.5 rounded inline-block ${isClientPending ? 'bg-indigo-50 text-indigo-600' : 'bg-amber-50 text-amber-600'}`}>
-                {isClientPending ? 'Waiting for Client Approval' : 'Waiting for Admin Approval'}
+                {isClientPending ? 'Client Approval Pending' : 'Waiting for Admin Approval'}
               </p>
             </div>
           </div>
@@ -180,10 +180,14 @@ const PendingItemsModal: React.FC<PendingItemsModalProps> = ({
       const clientStart = item.approvals?.start?.client?.status;
       const clientCompletion = item.approvals?.completion?.client?.status;
       
-      if (adminStart !== 'approved') return "Start Approval Pending (Admin)";
-      if (adminCompletion !== 'approved') return "Completion Approval Pending (Admin)";
-      if (adminStart === 'approved' && clientStart !== 'approved') return "Start Approval Pending (Client)";
-      if (adminCompletion === 'approved' && clientCompletion !== 'approved') return "Completion Approval Pending (Client)";
+      // Check if any admin approval is pending
+      const adminPending = adminStart !== 'approved' || adminCompletion !== 'approved';
+      // Check if any client approval is pending (only after admin approvals)
+      const clientPending = adminStart === 'approved' && clientStart !== 'approved' || 
+                           adminCompletion === 'approved' && clientCompletion !== 'approved';
+      
+      if (adminPending) return "Admin Approval Pending";
+      if (clientPending) return "Client Approval Pending";
       
       return null;
     };

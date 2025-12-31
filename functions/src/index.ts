@@ -3,7 +3,12 @@
  */
 
 import * as functions from "firebase-functions";
+import admin from "firebase-admin";
 import nodemailer from "nodemailer";
+
+admin.initializeApp();
+const db = admin.firestore();
+const messaging = admin.messaging();
 
 // Create Nodemailer transporter
 const transporter = nodemailer.createTransport({
@@ -107,6 +112,103 @@ export const sendEmail = functions.https.onRequest(async (req, res) => {
       success: false,
       error: error.message || "Failed to send email",
     });
+  }
+});
+
+/**
+ * Cloud Function to send push notifications
+ * Endpoint: https://sendpushnotification-jl3d2uhdra-uc.a.run.app/
+ */
+export const sendPushNotification = functions.https.onRequest(async (req, res) => {
+  // Apply CORS first
+  enableCORS(req, res);
+
+  if (req.method === "OPTIONS") {
+    res.status(204).send("");
+    return;
+  }
+
+  const { recipientId, title, body, url, icon } = req.body;
+
+  if (!recipientId || !title || !body) {
+    res.status(400).json({ error: "Missing required fields: recipientId, title, body" });
+    return;
+  }
+
+  try {
+    // Get user's FCM tokens from Firestore
+    const userDoc = await db.collection("users").doc(recipientId).get();
+    
+    if (!userDoc.exists) {
+      console.log(`User ${recipientId} not found`);
+      res.status(404).json({ error: "User not found" });
+      return;
+    }
+
+    const userData = userDoc.data();
+    const tokens = userData?.fcmTokens || [];
+
+    if (tokens.length === 0) {
+      console.log(`No FCM tokens for user ${recipientId}`);
+      res.status(200).json({ success: true, message: "No tokens found for user" });
+      return;
+    }
+
+    // Prepare message payload - send to each token individually
+    const messages = tokens.map((token: string) => ({
+      token: token,
+      notification: {
+        title: title,
+        body: body,
+      },
+      webpush: {
+        notification: {
+          title: title,
+          body: body,
+          icon: icon || '/icons/icon-192x192.png',
+        },
+        fcmOptions: {
+          link: url || '/'
+        }
+      },
+      data: {
+        url: url || '/',
+      }
+    }));
+
+    // Send to all tokens using sendEach (FCM HTTP v1 API)
+    const response = await messaging.sendEach(messages);
+    
+    // Clean up invalid tokens
+    if (response.failureCount > 0) {
+      const failedTokens: string[] = [];
+      response.responses.forEach((resp, idx) => {
+        if (!resp.success) {
+          failedTokens.push(tokens[idx]);
+        }
+      });
+      
+      if (failedTokens.length > 0) {
+        await db.collection("users").doc(recipientId).update({
+          fcmTokens: admin.firestore.FieldValue.arrayRemove(...failedTokens)
+        });
+        console.log(`Removed ${failedTokens.length} invalid tokens`);
+      }
+    }
+
+    if (process.env.NODE_ENV !== 'production') console.log(`✅ Push notification sent to ${recipientId}: ${response.successCount} success, ${response.failureCount} failed`);
+    
+    res.status(200).json({ 
+      success: true, 
+      results: {
+        successCount: response.successCount,
+        failureCount: response.failureCount
+      }
+    });
+
+  } catch (error) {
+    console.error("❌ Error sending push notification:", error);
+    res.status(500).json({ error: error instanceof Error ? error.message : "Unknown error" });
   }
 });
 

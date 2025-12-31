@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Project, User, ProjectStatus, Role, Task, TaskStatus, ProjectDocument, FinancialRecord } from '../types';
 import { DollarSign, Briefcase, Clock, List, Calendar, RefreshCw, ChevronRight, CheckCircle2, AlertCircle, FileText, ArrowUp, ArrowDown, ArrowUpDown, ChevronDown } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
-import { subscribeToProjectTasks, subscribeToProjectDocuments } from '../services/projectDetailsService';
+import { subscribeToProjectTasks, subscribeToProjectDocuments, updateTask } from '../services/projectDetailsService';
 import { subscribeToProjectFinancialRecords } from '../services/financialService';
 import { calculateTaskProgress, calculateProjectProgress, formatDateToIndian } from '../utils/taskUtils';
 import { checkAndSendDueDateReminders } from '../services/emailTriggerService';
@@ -64,6 +64,28 @@ const Dashboard: React.FC<DashboardProps> = ({ projects, users, onSelectProject,
   if (!user) return null;
 
 
+
+  const handleTaskCompletion = async (task: Task, project: Project) => {
+    // 1. Mark all subtasks as completed
+    const updatedSubtasks = task.subtasks?.map(st => ({ ...st, isCompleted: true })) || [];
+    
+    // 2. Determine new status: If not in REVIEW, go to REVIEW. If in REVIEW, go to DONE.
+    let newStatus = task.status;
+    if (task.status === TaskStatus.REVIEW) {
+        newStatus = TaskStatus.DONE;
+    } else {
+        newStatus = TaskStatus.REVIEW;
+    }
+
+    try {
+        await updateTask(project.id, task.id, {
+            subtasks: updatedSubtasks,
+            status: newStatus
+        });
+    } catch (error) {
+        console.error('Error completing task:', error);
+    }
+  };
 
   // Subscribe to all project tasks, documents, and financials
   useEffect(() => {
@@ -439,12 +461,14 @@ const Dashboard: React.FC<DashboardProps> = ({ projects, users, onSelectProject,
                           {isExpanded && (
                             <div className="px-3 py-2 space-y-1 bg-gray-50/50">
                               {pendingTasks.slice(0, 5).map(task => (
-                                <button
+                                <div
                                   key={task.id}
-                                  onClick={() => onSelectTask?.(task, project)}
-                                  className="w-full text-left px-2 py-1.5 rounded text-xs hover:bg-white transition-colors"
+                                  className="w-full flex items-center justify-between px-2 py-1.5 rounded text-xs hover:bg-white transition-colors group/task"
                                 >
-                                  <div className="flex items-start gap-2">
+                                  <button 
+                                    onClick={() => onSelectTask?.(task, project)}
+                                    className="flex-1 text-left flex items-start gap-2 min-w-0"
+                                  >
                                     <div className={`w-2 h-2 rounded-full mt-0.5 flex-shrink-0 ${
                                       task.status === TaskStatus.DONE ? 'bg-green-500' :
                                       task.status === TaskStatus.IN_PROGRESS ? 'bg-blue-500' :
@@ -456,8 +480,22 @@ const Dashboard: React.FC<DashboardProps> = ({ projects, users, onSelectProject,
                                         <p className="text-gray-400 text-xs mt-0.5">{formatDateToIndian(task.dueDate)}</p>
                                       )}
                                     </div>
-                                  </div>
-                                </button>
+                                  </button>
+                                  
+                                  {/* Quick Complete Button */}
+                                  {task.status !== TaskStatus.DONE && (
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleTaskCompletion(task, project);
+                                      }}
+                                      className="ml-2 p-1 text-gray-300 hover:text-green-500 opacity-0 group-hover/task:opacity-100 transition-all"
+                                      title="Mark as Done"
+                                    >
+                                      <CheckCircle2 className="w-4 h-4" />
+                                    </button>
+                                  )}
+                                </div>
                               ))}
                               {pendingTasks.length > 5 && (
                                 <p className="text-xs text-gray-400 text-center py-1">+{pendingTasks.length - 5} more tasks</p>
@@ -533,29 +571,30 @@ const Dashboard: React.FC<DashboardProps> = ({ projects, users, onSelectProject,
                   return (
                     <div 
                       key={task.id}
-                      onClick={() => onSelectTask?.(task, task.project)}
-                      className="p-3 rounded-lg border border-gray-50 hover:border-amber-200 hover:bg-amber-50/30 transition-all cursor-pointer group"
+                      className="p-3 rounded-lg border border-gray-50 hover:border-amber-200 hover:bg-amber-50/30 transition-all cursor-pointer group relative"
                     >
-                      <div className="flex justify-between items-start gap-2">
-                        <div className="flex-1 min-w-0">
-                          <p className="text-sm font-bold text-gray-900 truncate group-hover:text-amber-600">{task.title}</p>
-                          <div className="flex items-center gap-2 mt-0.5">
-                            <p className="text-xs text-gray-500 truncate">{task.projectName}</p>
-                            <span className="text-xs text-gray-300">•</span>
-                            <p className="text-xs text-blue-500 font-medium truncate">{assignee?.name || 'Unassigned'}</p>
+                      <div onClick={() => onSelectTask?.(task, task.project)}>
+                        <div className="flex justify-between items-start gap-2">
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-bold text-gray-900 truncate group-hover:text-amber-600">{task.title}</p>
+                            <div className="flex items-center gap-2 mt-0.5">
+                              <p className="text-xs text-gray-500 truncate">{task.projectName}</p>
+                              <span className="text-xs text-gray-300">•</span>
+                              <p className="text-xs text-blue-500 font-medium truncate">{assignee?.name || 'Unassigned'}</p>
+                            </div>
                           </div>
+                          <span className={`text-xs font-bold px-1.5 py-0.5 rounded shrink-0 ${
+                            task.status === TaskStatus.IN_PROGRESS ? 'bg-blue-100 text-blue-700' : 'bg-amber-100 text-amber-700'
+                          }`}>
+                            {task.status}
+                          </span>
                         </div>
-                        <span className={`text-xs font-bold px-1.5 py-0.5 rounded shrink-0 ${
-                          task.status === TaskStatus.IN_PROGRESS ? 'bg-blue-100 text-blue-700' : 'bg-amber-100 text-amber-700'
-                        }`}>
-                          {task.status}
-                        </span>
-                      </div>
-                      <div className="mt-2 flex justify-between items-center">
-                        <span className="text-xs text-gray-400 font-medium">Due: {formatDateToIndian(task.dueDate)}</span>
-                        <div className="flex items-center gap-1">
-                          <div className="w-1.5 h-1.5 rounded-full bg-amber-400" />
-                          <span className="text-xs font-bold text-gray-500">{calculateTaskProgress(task)}%</span>
+                        <div className="mt-2 flex justify-between items-center">
+                          <span className="text-xs text-gray-400 font-medium">Due: {formatDateToIndian(task.dueDate)}</span>
+                          <div className="flex items-center gap-1">
+                            <div className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                            <span className="text-xs font-bold text-gray-500">{calculateTaskProgress(task)}%</span>
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -680,22 +719,21 @@ const Dashboard: React.FC<DashboardProps> = ({ projects, users, onSelectProject,
                     .map(({ task, project }) => (
                     <tr 
                       key={task.id} 
-                      onClick={() => onSelectTask?.(task, project)}
-                      className="hover:bg-gray-50 transition-colors cursor-pointer"
+                      className="hover:bg-gray-50 transition-colors cursor-pointer group"
                     >
-                      <td className="px-4 py-3 font-medium text-gray-900">{task.title}</td>
-                      <td className="px-4 py-3 text-gray-600 text-sm">{project.name}</td>
-                      <td className="px-4 py-3 text-gray-500 text-sm">
+                      <td className="px-4 py-3 font-medium text-gray-900" onClick={() => onSelectTask?.(task, project)}>{task.title}</td>
+                      <td className="px-4 py-3 text-gray-600 text-sm" onClick={() => onSelectTask?.(task, project)}>{project.name}</td>
+                      <td className="px-4 py-3 text-gray-500 text-sm" onClick={() => onSelectTask?.(task, project)}>
                         {formatDateToIndian(task.dueDate)}
                       </td>
-                      <td className="px-4 py-3">
+                      <td className="px-4 py-3 flex items-center justify-between">
                         <span className={`px-2.5 py-1 rounded-md text-sm font-semibold uppercase transition-colors
                           ${task.status === TaskStatus.IN_PROGRESS 
                             ? 'bg-blue-100 text-blue-700' 
                             : task.status === TaskStatus.TODO
                             ? 'bg-amber-100 text-amber-700'
                             : 'bg-gray-100 text-gray-600'
-                          }`}>
+                          }`} onClick={() => onSelectTask?.(task, project)}>
                           {task.status}
                         </span>
                       </td>

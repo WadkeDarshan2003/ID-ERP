@@ -11,6 +11,7 @@ import { NotificationProvider, useNotifications } from './contexts/NotificationC
 import { LoadingProvider } from './contexts/LoadingContext';
 import { subscribeToProjects, subscribeToUserProjects, subscribeToUsers, subscribeToDesigners, subscribeToVendors, subscribeToClients, seedDatabase, updateProject, deleteProject, syncAllVendorMetrics } from './services/firebaseService';
 import { subscribeToProjectTasks } from './services/projectDetailsService';
+import { requestNotificationPermission, onMessageListener } from './services/pushNotificationService';
 import { AvatarCircle } from './utils/avatarUtils';
 import { formatDateToIndian } from './utils/taskUtils';
 
@@ -241,6 +242,56 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
   const [editingProject, setEditingProject] = useState<Project | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [realTimeTasks, setRealTimeTasks] = useState<Map<string, Task[]>>(new Map());
+  const [showNotifPermissionBanner, setShowNotifPermissionBanner] = useState(false);
+
+  // Initialize push notifications
+  useEffect(() => {
+    if (user) {
+      // Check current permission status
+      const checkPermission = async () => {
+        if ('Notification' in window) {
+          const permission = Notification.permission;
+          if (permission === 'default') {
+            // Show banner to request permission
+            setShowNotifPermissionBanner(true);
+          } else if (permission === 'granted') {
+            // Request token
+            await requestNotificationPermission(user.id);
+          }
+        }
+      };
+      
+      checkPermission();
+      
+      onMessageListener().then((payload: any) => {
+        // console.log('Received foreground message: ', payload);
+        if (payload?.notification) {
+          addNotification({
+            title: payload.notification.title,
+            message: payload.notification.body,
+            type: 'info'
+          });
+        }
+      }).catch(err => console.log('failed: ', err));
+    }
+  }, [user]);
+
+  const handleEnableNotifications = async () => {
+    if (user) {
+      const token = await requestNotificationPermission(user.id);
+      if (token) {
+        setShowNotifPermissionBanner(false);
+        // Test notification
+        if (Notification.permission === 'granted') {
+          new Notification('Notifications Enabled! 🎉', {
+            body: 'You will now receive push notifications for project updates',
+            icon: '/icons/icon-192x192.png',
+            badge: '/icons/icon-192x192.png'
+          });
+        }
+      }
+    }
+  };
 
   // Subscribe to Firebase real-time updates
   useEffect(() => {
@@ -590,6 +641,32 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
 
       {/* Main Content */}
       <div className="flex-1 flex flex-col h-screen overflow-hidden relative">
+        {/* Notification Permission Banner */}
+        {showNotifPermissionBanner && (
+          <div className="bg-blue-50 border-b border-blue-200 px-4 py-3 flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <Bell className="w-5 h-5 text-blue-600 flex-shrink-0" />
+              <p className="text-sm text-blue-900">
+                Enable push notifications to stay updated on project activities
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleEnableNotifications}
+                className="bg-blue-600 text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors"
+              >
+                Enable
+              </button>
+              <button
+                onClick={() => setShowNotifPermissionBanner(false)}
+                className="text-blue-600 px-2 py-1.5 rounded-lg text-sm font-medium hover:bg-blue-100 transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        )}
+        
         {/* Top Navbar */}
         {/* Added relative and z-20 to ensure dropdowns overlap sticky content in main */}
         <header className="h-16 bg-white border-b border-gray-200 flex items-center justify-between px-4 sm:px-6 relative z-20">

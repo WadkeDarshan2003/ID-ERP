@@ -7,7 +7,7 @@ import { useProjectCrud, useFinancialCrud } from '../hooks/useCrud';
 import { createMeeting, updateMeeting, deleteMeeting, createDocument, addCommentToDocument, deleteDocument, updateDocument, createTask, updateTask, deleteTask, subscribeToProjectMeetings, subscribeToProjectDocuments, subscribeToTimelines, subscribeToProjectTasks, logTimelineEvent, addTeamMember, addCommentToMeeting, deleteCommentFromMeeting, subscribeToMeetingComments } from '../services/projectDetailsService';
 import { subscribeToProjectFinancialRecords, updateProjectFinancialRecord, createProjectFinancialRecord } from '../services/financialService';
 import { sendTaskReminder, sendPaymentReminder } from '../services/emailService';
-import { sendProjectWelcomeEmail, sendDocumentApprovalEmail, sendTaskApprovalEmail, sendMeetingNotificationEmail, sendTaskAssignmentNotificationEmail, sendTaskStartApprovalNotificationEmail, sendTaskCompletionApprovalNotificationEmail, sendTaskCommentNotificationEmail, sendDocumentCommentNotificationEmail, sendDocumentAdminApprovalNotificationEmail, sendDocumentClientApprovalNotificationEmail, sendFinancialApprovalNotificationEmail } from '../services/emailTriggerService';
+import { sendProjectWelcomeEmail, sendDocumentApprovalEmail, sendTaskApprovalEmail, sendMeetingNotificationEmail, sendTaskAssignmentNotificationEmail, sendTaskStartApprovalNotificationEmail, sendTaskCompletionApprovalNotificationEmail, sendTaskCommentNotificationEmail, sendDocumentCommentNotificationEmail, sendDocumentAdminApprovalNotificationEmail, sendDocumentClientApprovalNotificationEmail, sendFinancialApprovalNotificationEmail, sendMeetingCommentNotificationEmail } from '../services/emailTriggerService';
 import { syncAllVendorsEarnings } from '../services/firebaseService';
 import { doc, updateDoc } from 'firebase/firestore';
 import { db } from '../services/firebaseConfig';
@@ -20,7 +20,7 @@ import Spinner from './Spinner';
 import { 
   Calendar, DollarSign, Plus, CheckCircle, 
   ChevronRight, Lock, Clock, FileText,
-  Layout, ListChecks, ArrowRight, User as UserIcon, X,
+  Layout, ListChecks, ArrowRight, User as UserIcon, X, FolderKanban,
   MessageSquare, ThumbsUp, ThumbsDown, Send, Shield, History, Layers, Link2, AlertCircle, Tag, Upload, Ban, PauseCircle, PlayCircle,
   File as FileIcon, Eye, EyeOff, Download, Pencil, Mail, Filter, IndianRupee, Bell, MessageCircle, Users, MessageCircle as CommentIcon, Trash2, Edit3, Check, Wallet
 } from 'lucide-react';
@@ -688,6 +688,21 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       
       await addCommentToMeeting(project.id, meetingId, comment);
       
+      // Send notification to all tenant admins
+      const meeting = meetings.find(m => m.id === meetingId);
+      if (meeting) {
+        const tenantAdmins = users.filter(u => u.role === Role.ADMIN && u.tenantId === user.tenantId && u.id !== user.id);
+        if (tenantAdmins.length > 0) {
+          await sendMeetingCommentNotificationEmail(
+            meeting,
+            { ...comment, id: 'temp' },
+            userName,
+            project.name,
+            tenantAdmins
+          );
+        }
+      }
+      
       // Clear the input
       setNewMeetingComment(prev => ({
         ...prev,
@@ -1344,6 +1359,8 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       const relevantUsers = users.filter(u => {
         // Include admin/lead designer
         if (u.id === project.leadDesignerId) return true;
+        // Include admins from the same tenant only
+        if (u.role === Role.ADMIN && u.tenantId === user.tenantId) return true;
         // Include client
         if (u.id === project.clientId) return true;
         // Include anyone the document is shared with
@@ -2365,6 +2382,37 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       }
   };
 
+  const handleTaskCompletion = async (task: Task) => {
+    if (isTaskFrozen(task.status)) {
+      addNotification("Action Blocked", "Task is frozen.", "error");
+      return;
+    }
+
+    // 1. Mark all subtasks as completed
+    const updatedSubtasks = task.subtasks?.map(st => ({ ...st, isCompleted: true })) || [];
+    
+    // 2. Determine new status: If not in REVIEW, go to REVIEW. If in REVIEW, go to DONE.
+    // Exception: If user is Admin, maybe force DONE? User said "task goes to review".
+    // We will stick to the flow: TODO/IN_PROGRESS -> REVIEW -> DONE.
+    let newStatus = task.status;
+    if (task.status === TaskStatus.REVIEW) {
+        newStatus = TaskStatus.DONE;
+    } else {
+        newStatus = TaskStatus.REVIEW;
+    }
+
+    try {
+        await updateTask(project.id, task.id, {
+            subtasks: updatedSubtasks,
+            status: newStatus
+        });
+        addNotification('Success', `Task marked as ${newStatus}`, 'success');
+    } catch (error) {
+        console.error('Error completing task:', error);
+        addNotification('Error', 'Failed to complete task', 'error');
+    }
+  };
+
   const handleKanbanStatusUpdate = async (taskId: string, newStatus: TaskStatus) => {
     console.log('🚀 handleKanbanStatusUpdate called for task:', taskId, 'new status:', newStatus);
     const task = currentTasks.find(t => t.id === taskId);
@@ -2381,7 +2429,8 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
         return;
     }
 
-    // STRICT: Check Approvals before DONE
+    // STRICT: Check Approvals before DONE - DISABLED per user request for simple "Mark as Done"
+    /*
     if (newStatus === TaskStatus.DONE) {
          console.log('🔍 Checking approvals before marking as DONE');
          const startClient = task.approvals?.start?.client?.status === 'approved';
@@ -2396,6 +2445,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
              return;
          }
     }
+    */
 
     // Check Dependencies for ANY status that implies progress (Anything other than TODO)
     if (newStatus !== TaskStatus.TODO && !isTaskFrozen(newStatus)) {
@@ -2663,6 +2713,8 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
               if (u.id === editingTask.assigneeId) return true;
               // Include project admins
               if (u.id === project.leadDesignerId) return true;
+              // Include admins from the same tenant only
+              if (u.role === Role.ADMIN && u.tenantId === user.tenantId) return true;
               // Include client
               if (u.id === project.clientId) return true;
               return false;
@@ -3540,6 +3592,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                   onUpdateTaskStatus={handleKanbanStatusUpdate}
                   onUpdateTaskPriority={handleKanbanPriorityUpdate}
                   onEditTask={handleOpenTask}
+                  onCompleteTask={handleTaskCompletion}
                 />
               </div>
             )}
@@ -3796,21 +3849,6 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                 ) : (
                                     <>
                                         {blocked && <span title="Blocked by dependency"><Lock className="w-4 h-4 text-red-400" /></span>}
-                                        {/* Quick Complete Checkbox for Assignee - Only if NOT frozen */}
-                                        {console.log(`🔘 Button visibility check for "${task.title}": isMyTask=${isMyTask} && !blocked=${!blocked} && !frozen=${!frozen} = ${isMyTask && !blocked && !frozen}`)}
-                                        {isMyTask && !blocked && !frozen && (
-                                        <button 
-                                            onClick={(e) => handleQuickComplete(e, task)} 
-                                            className={`w-5 h-5 rounded-full border flex items-center justify-center transition-colors
-                                            ${task.status === TaskStatus.DONE ? 'bg-green-500 border-green-500' : 
-                                                task.status === TaskStatus.REVIEW ? 'bg-purple-500 border-purple-500' : 'border-gray-300 hover:border-blue-500'}
-                                            `}
-                                            title="Advance Status"
-                                        >
-                                            {task.status === TaskStatus.DONE && <CheckCircle className="w-3.5 h-3.5 text-white" />}
-                                            {task.status === TaskStatus.REVIEW && <Clock className="w-3.5 h-3.5 text-white" />}
-                                        </button>
-                                        )}
                                         <button onClick={() => handleOpenTask(task)} className="text-xs text-gray-400 hover:text-gray-900 ml-2">View</button>
                                     </>
                                 )}
@@ -3840,95 +3878,43 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
 
                             {/* Status Icons */}
                             <div className="flex gap-2 mb-3 flex-wrap">
-                              {task.status === TaskStatus.REVIEW && (
-                                <>
-                                  {task.approvals?.completion?.client?.status === 'approved' && task.approvals?.completion?.admin?.status === 'approved' && (
-                                    <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded">Approved by Both</span>
-                                  )}
-                                  {task.approvals?.completion?.client?.status === 'approved' && !task.approvals?.completion?.admin?.status && (
-                                    <span className="text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded">Waiting for Admin Approval</span>
-                                  )}
-                                  {task.approvals?.completion?.admin?.status === 'approved' && !task.approvals?.completion?.client?.status && (
-                                    <span className="text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded">Waiting for Client Approval</span>
-                                  )}
-                                  {!task.approvals?.completion?.client?.status && !task.approvals?.completion?.admin?.status && (
-                                    <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded">Under Review</span>
-                                  )}
-                                  {task.approvals?.completion?.client?.status === 'rejected' && (
-                                    <span className="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded">Rejected by Client</span>
-                                  )}
-                                  {task.approvals?.completion?.designer?.status === 'rejected' && (
-                                    <span className="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded">Rejected by Designer</span>
-                                  )}
-                                </>
-                              )}
-                              {task.subtasks.every(st => st.isCompleted) && (
-                                <>
-                                  {task.approvals?.completion?.client?.status === 'approved' && task.approvals?.completion?.admin?.status === 'approved' && (
-                                    <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded">Approved by Both</span>
-                                  )}
-                                  {task.approvals?.completion?.client?.status === 'approved' && task.approvals?.completion?.admin?.status !== 'approved' && (
-                                    <span className="text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded">Waiting for Admin</span>
-                                  )}
-                                  {task.approvals?.completion?.admin?.status === 'approved' && task.approvals?.completion?.client?.status !== 'approved' && (
-                                    <span className="text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded">Waiting for Client</span>
-                                  )}
-                                  {!task.approvals?.completion?.client?.status && !task.approvals?.completion?.admin?.status && (
-                                    <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded">Waiting for Review</span>
-                                  )}
-                                  {task.approvals?.completion?.client?.status === 'rejected' && (
-                                    <span className="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded">Rejected by Client</span>
-                                  )}
-                                  {task.approvals?.completion?.admin?.status === 'rejected' && (
-                                    <span className="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded">Rejected by Admin</span>
-                                  )}
-                                </>
-                              )}
-                              {task.subtasks.length > 0 && !task.subtasks.every(st => st.isCompleted) && task.status === TaskStatus.DONE && (
-                                <>
-                                  {task.approvals?.completion?.client?.status === 'approved' && task.approvals?.completion?.admin?.status === 'approved' && (
-                                    <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded">Approved by Both</span>
-                                  )}
-                                  {task.approvals?.completion?.client?.status === 'approved' && task.approvals?.completion?.admin?.status !== 'approved' && (
-                                    <span className="text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded">Waiting for Admin</span>
-                                  )}
-                                  {task.approvals?.completion?.admin?.status === 'approved' && task.approvals?.completion?.client?.status !== 'approved' && (
-                                    <span className="text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded">Waiting for Client</span>
-                                  )}
-                                  {!task.approvals?.completion?.client?.status && !task.approvals?.completion?.admin?.status && (
-                                    <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded">Waiting for Review</span>
-                                  )}
-                                  {task.approvals?.completion?.client?.status === 'rejected' && (
-                                    <span className="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded">Rejected by Client</span>
-                                  )}
-                                  {task.approvals?.completion?.admin?.status === 'rejected' && (
-                                    <span className="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded">Rejected by Admin</span>
-                                  )}
-                                </>
-                              )}
-                              {task.status === TaskStatus.DONE && !task.subtasks?.length && (
-                                <>
-                                  {task.approvals?.completion?.client?.status === 'approved' && task.approvals?.completion?.admin?.status === 'approved' && (
-                                    <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded">Approved by Both</span>
-                                  )}
-                                  {task.approvals?.completion?.client?.status === 'approved' && task.approvals?.completion?.admin?.status !== 'approved' && (
-                                    <span className="text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded">Waiting for Admin</span>
-                                  )}
-                                  {task.approvals?.completion?.admin?.status === 'approved' && task.approvals?.completion?.client?.status !== 'approved' && (
-                                    <span className="text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded">Waiting for Client</span>
-                                  )}
-                                  {!task.approvals?.completion?.client?.status && !task.approvals?.completion?.admin?.status && (
-                                    <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded">Waiting for Review</span>
-                                  )}
-                                  {task.approvals?.completion?.client?.status === 'rejected' && (
-                                    <span className="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded">Rejected by Client</span>
-                                  )}
-                                  {task.approvals?.completion?.admin?.status === 'rejected' && (
-                                    <span className="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded">Rejected by Admin</span>
-                                  )}
-                                </>
-                              )}
-                              {task.status === TaskStatus.OVERDUE && <span className="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded">Overdue</span>}
+                              {(() => {
+                                // Consolidate all approval statuses to avoid duplicates
+                                const clientApproved = task.approvals?.completion?.client?.status === 'approved';
+                                const adminApproved = task.approvals?.completion?.admin?.status === 'approved';
+                                const clientRejected = task.approvals?.completion?.client?.status === 'rejected';
+                                const adminRejected = task.approvals?.completion?.admin?.status === 'rejected';
+                                const designerRejected = task.approvals?.completion?.designer?.status === 'rejected';
+                                const hasApprovals = task.approvals?.completion?.client || task.approvals?.completion?.admin;
+                                
+                                return (
+                                  <>
+                                    {/* Show approval status only once */}
+                                    {clientApproved && adminApproved && (
+                                      <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded">Approved by Both</span>
+                                    )}
+                                    {clientApproved && !adminApproved && !adminRejected && task.status === TaskStatus.REVIEW && (
+                                      <span className="text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded">Waiting for Admin Approval</span>
+                                    )}
+                                    {adminApproved && !clientApproved && !clientRejected && (
+                                      <span className="text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded">{task.status === TaskStatus.REVIEW ? 'Waiting for Client Approval' : 'Client Approval Pending'}</span>
+                                    )}
+                                    {!clientApproved && !adminApproved && !clientRejected && !adminRejected && task.status === TaskStatus.REVIEW && hasApprovals && (
+                                      <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded">{task.status === TaskStatus.REVIEW ? 'Under Review' : 'Waiting for Review'}</span>
+                                    )}
+                                    {clientRejected && (
+                                      <span className="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded">Rejected by Client</span>
+                                    )}
+                                    {adminRejected && (
+                                      <span className="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded">Rejected by Admin</span>
+                                    )}
+                                    {designerRejected && (
+                                      <span className="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded">Rejected by Designer</span>
+                                    )}
+                                    {task.status === TaskStatus.OVERDUE && <span className="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded">Overdue</span>}
+                                  </>
+                                );
+                              })()}
                             </div>
 
                             <div className="space-y-2 mb-4 max-h-[80px] overflow-y-auto pr-2">
@@ -6464,7 +6450,13 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
               {/* Modal Header */}
               <div className="p-4 border-b border-gray-100 flex justify-between items-center bg-gray-50">
                 <div className="flex items-center gap-2">
-                   <h3 className="text-lg font-bold text-gray-900">{editingTask.id ? 'Edit Task Details' : 'Create New Task'}</h3>
+                   <div>
+                     <h3 className="text-lg font-bold text-gray-900">{editingTask.id ? 'Edit Task Details' : 'Create New Task'}</h3>
+                     <div className="flex items-center gap-1 text-xs text-gray-500 font-medium mt-0.5">
+                        <FolderKanban className="w-3 h-3" />
+                        <span>{project.name}</span>
+                     </div>
+                   </div>
                 </div>
                 <button onClick={() => setIsTaskModalOpen(false)} className="text-gray-400 hover:text-gray-600" title="Close task modal"><X/></button>
               </div>
@@ -6511,24 +6503,34 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                  {/* LEFT: Task Info Form */}
                  <div className={`w-full md:w-1/2 p-6 overflow-y-auto border-r border-gray-100 bg-white ${mobileTaskTab === 'activity' ? 'hidden md:block' : 'block'}`}>
                     <div className="space-y-4">
+                       
                        {/* ADMIN ACTIONS */}
                        {isAdmin && (
                            <div className="bg-gray-900 p-3 rounded-lg pointer-events-auto">
                                <p className="text-xs font-bold text-gray-400 uppercase mb-2 flex items-center gap-1"><Shield className="w-3 h-3"/> Admin Actions</p>
                                <div className="flex gap-2">
+                                   {/* Mark as Done Button (Admin) - Always visible */}
+                                   <button 
+                                       onClick={() => handleTaskCompletion(editingTask as Task)}
+                                       className="flex-1 bg-green-600 hover:bg-green-700 text-white text-xs font-bold py-2 rounded flex items-center justify-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
+                                       disabled={editingTask.status === TaskStatus.DONE}
+                                   >
+                                       <CheckCircle className="w-3 h-3"/> Mark Done
+                                   </button>
+
                                    {editingTask.status === TaskStatus.ON_HOLD ? (
                                        <button 
                                            onClick={() => setEditingTask({...editingTask, status: deriveStatus(editingTask, TaskStatus.IN_PROGRESS)})}
                                            className="flex-1 bg-green-600 hover:bg-green-700 text-white text-xs font-bold py-2 rounded flex items-center justify-center gap-1"
                                        >
-                                           <PlayCircle className="w-3 h-3"/> Resume Task
+                                           <PlayCircle className="w-3 h-3"/> Resume
                                        </button>
                                    ) : (
                                        <button 
                                            onClick={() => setEditingTask({...editingTask, status: TaskStatus.ON_HOLD})}
                                            className="flex-1 bg-yellow-600 hover:bg-yellow-700 text-white text-xs font-bold py-2 rounded flex items-center justify-center gap-1"
                                        >
-                                           <PauseCircle className="w-3 h-3"/> Put On Hold
+                                           <PauseCircle className="w-3 h-3"/> Hold
                                        </button>
                                    )}
 
@@ -6544,10 +6546,26 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                                            onClick={() => setEditingTask({...editingTask, status: TaskStatus.ABORTED})}
                                            className="flex-1 bg-red-600 hover:bg-red-700 text-white text-xs font-bold py-2 rounded flex items-center justify-center gap-1"
                                        >
-                                           <Ban className="w-3 h-3"/> Abort Task
+                                           <Ban className="w-3 h-3"/> Abort
                                        </button>
                                    )}
                                </div>
+                           </div>
+                       )}
+
+                       {/* Mark as Done Action (For Non-Admin Assignees) */}
+                       {editingTask.id && editingTask.status !== TaskStatus.DONE && !isAdmin && user?.id === editingTask.assigneeId && !isEditingFrozen && (
+                           <div className="bg-green-50 border border-green-100 p-3 rounded-lg mb-4 flex items-center justify-between">
+                               <div className="flex items-center gap-2 text-green-800">
+                                   <CheckCircle className="w-5 h-5" />
+                                   <span className="font-bold text-sm">Complete this task?</span>
+                               </div>
+                               <button 
+                                   onClick={() => handleTaskCompletion(editingTask as Task)}
+                                   className="bg-green-600 hover:bg-green-700 text-white text-xs font-bold py-2 px-4 rounded flex items-center gap-1 transition-colors"
+                               >
+                                   Mark as Done
+                               </button>
                            </div>
                        )}
 
@@ -6719,7 +6737,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                        </div>
 
                        {/* Subtasks */}
-                       <div className="pt-4 border-t border-gray-100 flex flex-col h-auto max-h-[400px] lg:h-64">
+                       <div className={`pt-4 border-t border-gray-100 flex flex-col ${editingTask.subtasks && editingTask.subtasks.length > 0 ? 'h-64 max-h-[400px]' : ''}`}>
                          <div className="flex justify-between items-center mb-2">
                            <label className="text-xs font-bold text-gray-700 uppercase block">Checklist</label>
                            {canEditProject && !isEditingFrozen && (!editingTask.subtasks || editingTask.subtasks.length === 0) && (
@@ -6736,7 +6754,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                              ><Plus className="w-3 h-3"/> Add</button>
                            )}
                          </div>
-                         <div className="space-y-2 flex-1 overflow-y-auto pr-2 custom-scrollbar" id="checklist-container">
+                         <div className={`space-y-2 pr-2 custom-scrollbar ${editingTask.subtasks && editingTask.subtasks.length > 0 ? 'flex-1 overflow-y-auto min-h-[200px] border border-gray-200 rounded-lg p-3' : ''}`} id="checklist-container">
                             {editingTask.subtasks?.map((st, idx) => (
                               <div key={st.id} className="flex items-center gap-2 p-2 rounded transition-opacity" style={{opacity: ((!canEditProject && user.id !== editingTask.assigneeId) || isTaskBlocked(editingTask) || isEditingFrozen) ? 0.5 : 1}}>
                                  <button
@@ -7132,8 +7150,8 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
 
       {/* Delete Confirmation Modal */}
       {isDeleteConfirmOpen && deleteConfirmTask && createPortal(
-        <div className="fixed inset-0 bg-black/50 z-[60] flex items-start justify-center pt-20 p-4">
-          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md animate-fade-in border border-gray-200">
+        <div className="fixed inset-0 bg-black/50 z-[10000] flex items-start justify-center pt-20 p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md animate-fade-in border border-gray-200 overflow-hidden">
             {/* Header */}
             <div className="p-6 border-b border-gray-100 bg-red-50">
               <div className="flex items-center gap-3">
@@ -8028,8 +8046,8 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
 
       {/* Task Documents Modal */}
       {isTaskDocModalOpen && editingTask && createPortal(
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-lg shadow-xl w-full max-w-5xl h-[80vh] flex flex-col">
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[10000] p-4">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-5xl h-[80vh] flex flex-col overflow-hidden">
             <div className="flex items-center justify-between p-4 border-b border-gray-200 bg-gradient-to-r from-blue-50 to-indigo-50">
               <div className="flex items-center gap-2">
                 <FileIcon className="w-5 h-5 text-blue-600" />
