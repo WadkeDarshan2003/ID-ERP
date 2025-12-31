@@ -7,7 +7,7 @@ import { useProjectCrud, useFinancialCrud } from '../hooks/useCrud';
 import { createMeeting, updateMeeting, deleteMeeting, createDocument, addCommentToDocument, deleteDocument, updateDocument, createTask, updateTask, deleteTask, subscribeToProjectMeetings, subscribeToProjectDocuments, subscribeToTimelines, subscribeToProjectTasks, logTimelineEvent, addTeamMember, addCommentToMeeting, deleteCommentFromMeeting, subscribeToMeetingComments } from '../services/projectDetailsService';
 import { subscribeToProjectFinancialRecords, updateProjectFinancialRecord, createProjectFinancialRecord } from '../services/financialService';
 import { sendTaskReminder, sendPaymentReminder } from '../services/emailService';
-import { sendProjectWelcomeEmail, sendDocumentApprovalEmail, sendTaskApprovalEmail, sendMeetingNotificationEmail, sendTaskAssignmentNotificationEmail, sendTaskStartApprovalNotificationEmail, sendTaskCompletionApprovalNotificationEmail, sendTaskCommentNotificationEmail, sendDocumentCommentNotificationEmail, sendDocumentAdminApprovalNotificationEmail, sendDocumentClientApprovalNotificationEmail, sendFinancialApprovalNotificationEmail, sendMeetingCommentNotificationEmail } from '../services/emailTriggerService';
+import { sendProjectWelcomeEmail, sendDocumentApprovalEmail, sendTaskApprovalEmail, sendMeetingNotificationEmail, sendTaskAssignmentNotificationEmail, sendTaskStartApprovalNotificationEmail, sendTaskCompletionApprovalNotificationEmail, sendTaskCommentNotificationEmail, sendDocumentCommentNotificationEmail, sendDocumentAdminApprovalNotificationEmail, sendDocumentClientApprovalNotificationEmail, sendFinancialApprovalNotificationEmail, sendMeetingCommentNotificationEmail, sendDocumentUploadNotificationEmail } from '../services/emailTriggerService';
 import { syncAllVendorsEarnings } from '../services/firebaseService';
 import { doc, updateDoc } from 'firebase/firestore';
 import { db } from '../services/firebaseConfig';
@@ -688,17 +688,33 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       
       await addCommentToMeeting(project.id, meetingId, comment);
       
-      // Send notification to all tenant admins
+      // Send notification to all tenant admins and meeting attendees
       const meeting = meetings.find(m => m.id === meetingId);
       if (meeting) {
+        const recipients: User[] = [];
+        
+        // Add tenant admins
         const tenantAdmins = users.filter(u => u.role === Role.ADMIN && u.tenantId === user.tenantId && u.id !== user.id);
-        if (tenantAdmins.length > 0) {
+        recipients.push(...tenantAdmins);
+        
+        // Add meeting attendees
+        if (meeting.attendees && meeting.attendees.length > 0) {
+          const attendeeUsers = users.filter(u => meeting.attendees.includes(u.id) && u.id !== user.id);
+          recipients.push(...attendeeUsers);
+        }
+        
+        // Remove duplicates
+        const uniqueRecipients = recipients.filter((recipient, index, self) => 
+          self.findIndex(r => r.id === recipient.id) === index
+        );
+        
+        if (uniqueRecipients.length > 0) {
           await sendMeetingCommentNotificationEmail(
             meeting,
             { ...comment, id: 'temp' },
             userName,
             project.name,
-            tenantAdmins
+            uniqueRecipients
           );
         }
       }
@@ -1070,6 +1086,47 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
             activityLog: [log, ...(project.activityLog || [])]
         });
         
+        // Send notifications to shared users
+        for (let i = 0; i < createdDocIds.length; i++) {
+          const doc = {
+            id: createdDocIds[i],
+            name: selectedFiles[i]?.name || newDoc.name,
+            type: newDoc.type,
+            url: '',
+            uploadedBy: user.id,
+            uploadDate: new Date().toISOString(),
+            sharedWith: newDoc.sharedWith.length > 0 ? newDoc.sharedWith : [Role.ADMIN, Role.DESIGNER, Role.CLIENT],
+            approvalStatus: 'pending' as const
+          };
+
+          // Get recipients - admins and users in sharedWith
+          const recipients: User[] = [];
+          
+          // Add tenant admins (who uploaded it)
+          const tenantAdmins = users.filter(u => u.role === Role.ADMIN && u.tenantId === user.tenantId);
+          recipients.push(...tenantAdmins);
+          
+          // Add users from sharedWith
+          const sharedUserIds = newDoc.sharedWith.filter(id => id !== Role.ADMIN && id !== Role.DESIGNER && id !== Role.CLIENT);
+          const sharedUsers = users.filter(u => sharedUserIds.includes(u.id));
+          recipients.push(...sharedUsers);
+          
+          // Remove duplicates and the uploader
+          const uniqueRecipients = recipients.filter((recipient, index, self) => 
+            self.findIndex(r => r.id === recipient.id) === index && recipient.id !== user.id
+          );
+          
+          if (uniqueRecipients.length > 0) {
+            await sendDocumentUploadNotificationEmail(
+              doc,
+              user.name,
+              project.name,
+              uniqueRecipients,
+              project.id
+            );
+          }
+        }
+        
         notifyProjectTeam('Files Added', `${user.name} uploaded ${createdDocIds.length} document(s) to "${project.name}"`, user.id, 'documents');
         
         setIsDocModalOpen(false);
@@ -1179,6 +1236,8 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
       (doc.sharedWith || []).forEach(id => recipientIds.add(id));
       // Include client only if the document was shared with them
       if (project.clientId && doc.sharedWith?.includes(project.clientId)) recipientIds.add(project.clientId);
+      // Include all tenant admins
+      users.filter(u => u.role === Role.ADMIN && u.tenantId === user.tenantId).forEach(u => recipientIds.add(u.id));
 
       const relevantUsers = users.filter(u => recipientIds.has(u.id));
 
@@ -1870,6 +1929,8 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
         const relevantUsers = users.filter(u => {
           if (u.id === project.leadDesignerId) return true;
           if (u.id === project.clientId) return true;
+          // Include all tenant admins
+          if (u.role === Role.ADMIN && u.tenantId === user.tenantId) return true;
           return false;
         });
 
@@ -1932,6 +1993,8 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
         const relevantUsers = users.filter(u => {
           if (u.id === project.leadDesignerId) return true;
           if (u.id === project.clientId) return true;
+          // Include all tenant admins
+          if (u.role === Role.ADMIN && u.tenantId === user.tenantId) return true;
           return false;
         });
 
@@ -1981,6 +2044,8 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
         const relevantUsers = users.filter(u => {
           if (u.id === project.leadDesignerId) return true;
           if (u.id === project.clientId) return true;
+          // Include all tenant admins
+          if (u.role === Role.ADMIN && u.tenantId === user.tenantId) return true;
           return false;
         });
 

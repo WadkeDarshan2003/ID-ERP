@@ -219,6 +219,69 @@ export const sendDocumentApprovalEmail = async (
 };
 
 /**
+ * Send email and push notification when a new document is uploaded
+ */
+export const sendDocumentUploadNotificationEmail = async (
+  document: ProjectDocument,
+  uploaderName: string,
+  projectName: string,
+  recipients: User[],
+  projectId?: string
+): Promise<void> => {
+  const appBaseUrl = typeof window !== 'undefined' ? window.location.origin : process.env.REACT_APP_BASE_URL || 'http://localhost:5173';
+  const docLink = projectId ? `${appBaseUrl}?projectId=${projectId}&tab=documents` : undefined;
+  
+  for (const recipient of recipients) {
+    if (!recipient.email) {
+      console.warn(`⚠️ No email for recipient ${recipient.name}`);
+      continue;
+    }
+
+    try {
+      const htmlContent = `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <h2 style="color: #1f2937;">New Document Uploaded</h2>
+          <p>Hi ${recipient.name},</p>
+          <p><strong>${uploaderName}</strong> uploaded a new document in project <strong>${projectName}</strong>:</p>
+          
+          <div style="background-color: #f3f4f6; padding: 15px; border-radius: 8px; margin: 20px 0;">
+            <p style="margin: 0; color: #4b5563;"><strong>Document:</strong> ${document.name}</p>
+            <p style="margin: 10px 0 0 0; color: #6b7280;"><strong>Type:</strong> ${document.type}</p>
+          </div>
+          
+          <p style="margin-top: 20px;">
+            <a href="${docLink}" style="background-color: #2563eb; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block;">View Document</a>
+          </p>
+        </div>
+      `;
+
+      const result = await sendEmail({
+        to: recipient.email,
+        recipientName: recipient.name,
+        subject: `New Document Uploaded: ${document.name} - ${projectName}`,
+        htmlContent,
+      });
+
+      if (result.success) {
+        if (process.env.NODE_ENV !== 'production') console.log(`✅ Document upload notification sent to ${recipient.name}`);
+        
+        // Send push notification
+        await sendPushNotification(
+          recipient.id,
+          `New Document - ${projectName}`,
+          `${uploaderName} uploaded "${document.name}" (${document.type})`,
+          docLink
+        );
+      } else {
+        console.error(`❌ Failed to send document upload notification to ${recipient.name}:`, result.error);
+      }
+    } catch (error) {
+      console.error(`❌ Error sending document upload notification to ${recipient.name}:`, error);
+    }
+  }
+};
+
+/**
  * Send email when task is approved
  */
 export const sendTaskApprovalEmail = async (
@@ -727,8 +790,8 @@ export const sendTaskCommentNotificationEmail = async (
         // Send push notification
         await sendPushNotification(
           recipient.id,
-          'New Comment on Task',
-          `${commenterName} commented on task "${task.title}" in project ${projectName}: ${comment.text.substring(0, 50)}${comment.text.length > 50 ? '...' : ''}`,
+          `New Comment on Task - ${projectName}`,
+          `${commenterName} commented on "${task.title}": ${comment.text.substring(0, 80)}${comment.text.length > 80 ? '...' : ''}`,
           taskLink
         );
       } else {
