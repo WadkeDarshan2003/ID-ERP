@@ -467,6 +467,7 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
   const canSeeClients = user.role === Role.ADMIN || user.role === Role.DESIGNER;
   const canSeeDesigners = user.role === Role.ADMIN;
   const canSeeVendors = user.role === Role.ADMIN || user.role === Role.DESIGNER;
+  const canSeeAdmins = user.role === Role.ADMIN || user.role === Role.VENDOR;
 
   // Handlers
   const handleUpdateProject = (updated: Project) => {
@@ -604,13 +605,13 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
               {canSeeProjects && <SidebarItem view="projects" icon={FolderKanban} label="Projects" />}
             </div>
 
-            {(canSeeClients || canSeeDesigners || canSeeVendors) && (
+            {(canSeeClients || canSeeDesigners || canSeeVendors || canSeeAdmins) && (
               <div className="mb-6">
                 {!isSidebarCollapsed && <p className="px-4 text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">People</p>}
                 {canSeeClients && <SidebarItem view="clients" icon={IoPersonOutline} label="Clients" />}
                 {canSeeDesigners && <SidebarItem view="designers" icon={Users} label="Team" />}
                 {canSeeVendors && <SidebarItem view="vendors" icon={ShoppingBag} label="Vendors" />}
-                {user.role === Role.ADMIN && <SidebarItem view="admins" icon={Shield} label="Admins" />}
+                {canSeeAdmins && <SidebarItem view="admins" icon={Shield} label="Admins" />}
               </div>
             )}
 

@@ -50,19 +50,6 @@ const CreateAdmin: React.FC = () => {
       // Create user (uses secondary app internally)
       const uid = await createUserInFirebase(userToCreate, currentUser?.email, adminCredentials?.password);
 
-      // If created via public page (no currentUser) assign tenantId = uid
-      if (!currentUser) {
-        await updateUserInFirebase({
-          id: uid,
-          name,
-          email: userToCreate.email || '',
-          role: Role.ADMIN,
-          phone: userToCreate.phone || '',
-          company: userToCreate.company || '',
-          tenantId: uid
-        } as any);
-      }
-
       addNotification('Success', `Admin account created. Password: last 6 digits of ${phone}`, 'success');
       // Optionally redirect to login or clear form
       setName(''); setEmail(''); setPhone('');

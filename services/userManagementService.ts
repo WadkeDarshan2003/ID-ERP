@@ -1,9 +1,9 @@
-import { createUserWithEmailAndPassword, signOut, signInWithEmailAndPassword, getAuth } from 'firebase/auth';
+import { createUserWithEmailAndPassword, signOut, signInWithEmailAndPassword, getAuth, initializeAuth, inMemoryPersistence } from 'firebase/auth';
 import { auth, db, firebaseConfig } from './firebaseConfig';
-import { setDoc, doc, updateDoc } from 'firebase/firestore';
+import { setDoc, doc, updateDoc, getFirestore, collection, addDoc } from 'firebase/firestore';
 import { User, Role } from '../types';
 import { sendEmail } from './emailService';
-import { initializeApp, deleteApp } from 'firebase/app';
+import { initializeApp, deleteApp, getApps } from 'firebase/app';
 
 /**
  * Update an existing user's profile in Firestore
@@ -25,6 +25,8 @@ export const updateUserInFirebase = async (user: User): Promise<void> => {
 
     if (user.company) updateData.company = user.company;
     if (user.specialty) updateData.specialty = user.specialty;
+    if (user.tenantId) updateData.tenantId = user.tenantId;
+    if (user.tenantIds) updateData.tenantIds = user.tenantIds;
 
     // Use setDoc with merge: true instead of updateDoc to handle cases where document might be missing
     await setDoc(userRef, updateData, { merge: true });
@@ -53,8 +55,16 @@ export const createUserInFirebase = async (
   adminPassword?: string
 ): Promise<string> => {
   // Initialize a secondary app to create user without logging out the admin
-  const secondaryApp = initializeApp(firebaseConfig, "SecondaryApp");
-  const secondaryAuth = getAuth(secondaryApp);
+  // Check if app already exists to avoid "already exists" error
+  const secondaryApp = getApps().find(app => app.name === "SecondaryApp") || initializeApp(firebaseConfig, "SecondaryApp");
+  
+  // Use inMemoryPersistence for secondary auth to avoid conflicts with main admin session
+  // and to prevent the SDK from trying to look up existing accounts in local storage
+  const secondaryAuth = getApps().find(app => app.name === "SecondaryApp") 
+    ? getAuth(secondaryApp)
+    : initializeAuth(secondaryApp, { persistence: inMemoryPersistence });
+    
+  const secondaryDb = getFirestore(secondaryApp);
 
   try {
     let firebaseUid = '';
@@ -83,6 +93,26 @@ export const createUserInFirebase = async (
     // Normalize phone number: keep only digits for consistent searching
     const normalizedPhone = (user.phone || '').replace(/\D/g, ''); // Keep only digits
     
+    let finalTenantId = user.tenantId;
+
+    // If this is an Admin and no tenantId is provided, create a new tenant document
+    if (user.role === Role.ADMIN && !finalTenantId) {
+      try {
+        const tenantRef = await addDoc(collection(secondaryDb, 'tenants'), {
+          name: user.company || `${user.name}'s Organization`,
+          ownerId: firebaseUid,
+          createdAt: new Date().toISOString(),
+          status: 'active'
+        });
+        finalTenantId = tenantRef.id;
+        if (process.env.NODE_ENV !== 'production') console.log(`🏢 New tenant created with ID: ${finalTenantId}`);
+      } catch (tenantError) {
+        console.error('Error creating tenant document:', tenantError);
+        // Fallback to UID if tenant doc creation fails
+        finalTenantId = firebaseUid;
+      }
+    }
+
     const userProfile: any = {
       id: firebaseUid,
       name: user.name,
@@ -90,23 +120,23 @@ export const createUserInFirebase = async (
       role: user.role,
       phone: normalizedPhone || '',
       password: user.password,
-      authMethod: user.authMethod || 'email'
+      authMethod: user.authMethod || 'email',
+      tenantId: finalTenantId || firebaseUid // Fallback to UID if still null
     };
 
     // Add optional fields only if they exist
     if (user.company) userProfile.company = user.company;
     if (user.specialty) userProfile.specialty = user.specialty;
     if (user.password) userProfile.password = user.password;
-    if (user.tenantId) userProfile.tenantId = user.tenantId;
 
     // Step 3: Save profile to Firestore - BOTH to users collection AND role-specific collection
     // Save to users collection
-    await setDoc(doc(db, 'users', firebaseUid), userProfile);
+    await setDoc(doc(secondaryDb, 'users', firebaseUid), userProfile);
     if (process.env.NODE_ENV !== 'production') console.log(`✅ Saved to 'users' collection: ${user.email || user.phone}`);
 
     // Save to role-specific collection (designers, vendors, clients)
     const roleCollection = user.role.toLowerCase() + 's'; // Designer -> designers, Vendor -> vendors, Client -> clients
-    await setDoc(doc(db, roleCollection, firebaseUid), userProfile);
+    await setDoc(doc(secondaryDb, roleCollection, firebaseUid), userProfile);
     if (process.env.NODE_ENV !== 'production') console.log(`✅ Saved to '${roleCollection}' collection: ${user.email || user.phone}`);
     
     // Step 4: Send welcome email with credentials

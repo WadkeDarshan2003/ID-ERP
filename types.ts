@@ -42,6 +42,7 @@ export interface User {
   phone?: string;
   avatar?: string;
   tenantId?: string;
+  tenantIds?: string[]; // For vendors: array of tenant IDs they can access (multi-tenant support)
   company?: string; // For vendors
   specialty?: string; // For designers/vendors
   authMethod?: 'email' | 'phone'; // Authentication method for vendors (email or phone-based OTP)

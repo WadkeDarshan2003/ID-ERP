@@ -128,9 +128,21 @@ const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, p
   }, [selectedVendor]);
 
   // Determine filtering logic
-  const filteredUsers = roleFilter === 'All' 
-    ? users.filter(u => u.role !== Role.ADMIN) 
-    : users.filter(u => u.role === roleFilter);
+  const filteredUsers = React.useMemo(() => {
+    let filtered = roleFilter === 'All' 
+      ? users.filter(u => u.role !== Role.ADMIN) 
+      : users.filter(u => u.role === roleFilter);
+    
+    // If current user is a vendor viewing admins, filter to admins they can see
+    if (currentUser?.role === Role.VENDOR && roleFilter === Role.ADMIN) {
+      const vendorTenantIds = (currentUser as any).tenantIds || [];
+      filtered = filtered.filter(u => 
+        vendorTenantIds.length === 0 || vendorTenantIds.includes(u.tenantId)
+      );
+    }
+    
+    return filtered;
+  }, [users, roleFilter, currentUser]);
 
   // Group Vendors by Specialty if in Vendor view
   const groupedVendors = React.useMemo(() => {
