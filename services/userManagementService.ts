@@ -4,6 +4,8 @@ import { setDoc, doc, updateDoc, getFirestore, collection, addDoc } from 'fireba
 import { User, Role } from '../types';
 import { sendEmail } from './emailService';
 import { initializeApp, deleteApp, getApps } from 'firebase/app';
+import { uploadLogoToStorage } from './storageService';
+import { getTenantBranding } from './tenantService';
 
 /**
  * Update an existing user's profile in Firestore
@@ -47,12 +49,14 @@ export const updateUserInFirebase = async (user: User): Promise<void> => {
  * @param user - User data including email, password (generated from last 6 digits of phone), role, etc.
  * @param adminEmail - Email of currently logged-in admin
  * @param adminPassword - Password of currently logged-in admin (needed to re-login after creating user)
+ * @param brandingData - Optional branding data for tenant customization
  * @returns Promise with created user ID
  */
 export const createUserInFirebase = async (
   user: User,
   adminEmail?: string,
-  adminPassword?: string
+  adminPassword?: string,
+  brandingData?: { brandName?: string; logoFile?: File }
 ): Promise<string> => {
   // Initialize a secondary app to create user without logging out the admin
   // Check if app already exists to avoid "already exists" error
@@ -98,16 +102,48 @@ export const createUserInFirebase = async (
     // If this is an Admin and no tenantId is provided, create a new tenant document
     if (user.role === Role.ADMIN && !finalTenantId) {
       try {
-        const tenantRef = await addDoc(collection(secondaryDb, 'tenants'), {
+        console.log('🏗️ Creating new tenant document...');
+        console.log('📋 Branding data received:', brandingData);
+        
+        // Handle logo upload if provided
+        let logoUrl = '';
+        if (brandingData?.logoFile) {
+          try {
+            console.log('📤 Uploading logo file:', brandingData.logoFile.name, brandingData.logoFile.size, 'bytes');
+            logoUrl = await uploadLogoToStorage(brandingData.logoFile, firebaseUid);
+            console.log('✅ Logo uploaded successfully:', logoUrl);
+          } catch (logoError) {
+            console.error('❌ Error uploading logo:', logoError);
+            // Continue without logo if upload fails
+            logoUrl = ''; // Ensure it's empty string, not undefined
+          }
+        } else {
+          console.log('ℹ️ No logo file provided');
+        }
+
+        const tenantData: any = {
           name: user.company || `${user.name}'s Organization`,
           ownerId: firebaseUid,
           createdAt: new Date().toISOString(),
           status: 'active'
-        });
+        };
+        
+        // Only add branding fields if they have values
+        if (brandingData?.brandName?.trim()) {
+          tenantData.brandName = brandingData.brandName.trim();
+        }
+        if (logoUrl?.trim()) {
+          tenantData.logoUrl = logoUrl.trim();
+        }
+
+        console.log('📝 Creating tenant document with data:', tenantData);
+
+        const tenantRef = await addDoc(collection(secondaryDb, 'tenants'), tenantData);
         finalTenantId = tenantRef.id;
-        if (process.env.NODE_ENV !== 'production') console.log(`🏢 New tenant created with ID: ${finalTenantId}`);
+        console.log(`🏢 New tenant created with ID: ${finalTenantId}`);
+        console.log(`📍 Tenant document path: tenants/${finalTenantId}`);
       } catch (tenantError) {
-        console.error('Error creating tenant document:', tenantError);
+        console.error('❌ Error creating tenant document:', tenantError);
         // Fallback to UID if tenant doc creation fails
         finalTenantId = firebaseUid;
       }
@@ -140,19 +176,22 @@ export const createUserInFirebase = async (
     if (process.env.NODE_ENV !== 'production') console.log(`✅ Saved to '${roleCollection}' collection: ${user.email || user.phone}`);
     
     // Step 4: Send welcome email with credentials
+    // Get tenant branding for email customization
+    const branding = await getTenantBranding(finalTenantId);
+    
     if (user.authMethod === 'phone') {
       // For phone users, send different email with OTP login instructions
       try {
         const htmlContent = `
           <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 600px; margin: 0 auto; background-color: #f9fafb; padding: 20px;">
             <div style="background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%); padding: 30px; border-radius: 8px 8px 0 0; text-align: center;">
-              <h2 style="color: #fff; margin: 0; font-size: 24px;"> Welcome to Kydo Solutions!</h2>
+              <h2 style="color: #fff; margin: 0; font-size: 24px;"> Welcome to ${branding.brandName}!</h2>
             </div>
             
             <div style="background-color: white; padding: 30px; border-radius: 0 0 8px 8px;">
               <p style="color: #333; font-size: 16px;">Hi <strong>${user.name}</strong>,</p>
               
-              <p style="color: #555; font-size: 14px;">Your account has been created on Kydo Solutions. You can now log in using your phone number with OTP (One-Time Password).</p>
+              <p style="color: #555; font-size: 14px;">Your account has been created on ${branding.brandName}. You can now log in using your phone number with OTP (One-Time Password).</p>
               
               <div style="background-color: #f3f4f6; padding: 20px; border-radius: 6px; margin: 20px 0; border-left: 4px solid #ef4444;">
                 <p style="margin: 0; color: #333; font-size: 14px;"><strong>Your Phone Number:</strong></p>
@@ -160,7 +199,7 @@ export const createUserInFirebase = async (
                 
                 <p style="margin: 0; color: #333; font-size: 14px;"><strong>How to Login:</strong></p>
                 <ol style="margin: 5px 0 0 0; color: #1f2937; font-size: 14px;">
-                  <li>Go to the Kydo Solutions login page</li>
+                  <li>Go to the ${branding.brandName} login page</li>
                   <li>Click the "Phone" tab</li>
                   <li>Enter your phone number: ${user.phone}</li>
                   <li>Click "Send OTP"</li>
@@ -176,7 +215,7 @@ export const createUserInFirebase = async (
               
               <div style="margin-top: 30px; text-align: center;">
                 <a href="https://btw-erp.web.app" style="background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%); color: white; padding: 12px 30px; border-radius: 6px; text-decoration: none; display: inline-block; font-weight: 600;">
-                  Go to Kydo Solutions
+                  Go to ${branding.brandName}
                 </a>
               </div>
               
@@ -190,7 +229,7 @@ export const createUserInFirebase = async (
         await sendEmail({
           to: user.email,
           recipientName: user.name,
-          subject: 'Welcome to Kydo Solutions - Phone-Based Login Instructions',
+          subject: `Welcome to ${branding.brandName} - Phone-Based Login Instructions`,
           htmlContent: htmlContent
         });
         if (process.env.NODE_ENV !== 'production') console.log(`✅ Phone user welcome email sent to ${user.email}`);
@@ -203,13 +242,13 @@ export const createUserInFirebase = async (
         const htmlContent = `
           <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 600px; margin: 0 auto; background-color: #f9fafb; padding: 20px;">
             <div style="background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%); padding: 30px; border-radius: 8px 8px 0 0; text-align: center;">
-              <h2 style="color: #fff; margin: 0; font-size: 24px;"> Welcome to Kydo Solutions!</h2>
+              <h2 style="color: #fff; margin: 0; font-size: 24px;"> Welcome to ${branding.brandName}!</h2>
             </div>
             
             <div style="background-color: white; padding: 30px; border-radius: 0 0 8px 8px;">
               <p style="color: #333; font-size: 16px;">Hi <strong>${user.name}</strong>,</p>
               
-              <p style="color: #555; font-size: 14px;">Your account has been created on Kydo Solutions. Here are your login credentials:</p>
+              <p style="color: #555; font-size: 14px;">Your account has been created on ${branding.brandName}. Here are your login credentials:</p>
               
               <div style="background-color: #f3f4f6; padding: 20px; border-radius: 6px; margin: 20px 0; border-left: 4px solid #ef4444;">
                 <p style="margin: 0; color: #333; font-size: 14px;"><strong>Your ID (Email):</strong></p>
@@ -225,7 +264,7 @@ export const createUserInFirebase = async (
               
               <div style="margin-top: 30px; text-align: center;">
                 <a href="https://btw-erp.web.app" style="background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%); color: white; padding: 12px 30px; border-radius: 6px; text-decoration: none; display: inline-block; font-weight: 600;">
-                  Go to Kydo Solutions
+                  Go to ${branding.brandName}
                 </a>
               </div>
               
@@ -239,7 +278,7 @@ export const createUserInFirebase = async (
         await sendEmail({
           to: user.email,
           recipientName: user.name,
-          subject: 'Welcome to Kydo Solutions - Your Account Credentials',
+          subject: `Welcome to ${branding.brandName} - Your Account Credentials`,
           htmlContent: htmlContent
         });
         if (process.env.NODE_ENV !== 'production') console.log(`✅ Welcome email sent to ${user.email}`);

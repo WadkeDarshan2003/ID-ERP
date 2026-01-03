@@ -25,6 +25,9 @@ import NewProjectModal from './components/NewProjectModal';
 import Loader from './components/Loader';
 import RememberedDevices from './components/RememberedDevices';
 import SessionExpiryWarning from './components/SessionExpiryWarning';
+import BrandingSettings from './components/BrandingSettings';
+import { PageTitleUpdater } from './components/PageTitleUpdater';
+import { useTenantBranding } from './hooks/useTenantBranding';
 
 import { calculateProjectProgress } from './utils/taskUtils';
 
@@ -223,6 +226,7 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
 
   const { user, logout, loading: authLoading } = useAuth();
   const { unreadCount, addNotification } = useNotifications();
+  const { brandName, logoUrl } = useTenantBranding();
   
   const [currentView, setCurrentView] = useState<ViewState>(() => {
     // Default clients to Projects view, others to Dashboard
@@ -240,6 +244,7 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
   const [isNotifOpen, setIsNotifOpen] = useState(false);
   const [isNewProjectModalOpen, setIsNewProjectModalOpen] = useState(false);
   const [editingProject, setEditingProject] = useState<Project | null>(null);
+  const [isBrandingSettingsOpen, setIsBrandingSettingsOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [realTimeTasks, setRealTimeTasks] = useState<Map<string, Task[]>>(new Map());
   const [showNotifPermissionBanner, setShowNotifPermissionBanner] = useState(false);
@@ -556,12 +561,12 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
           <div className="p-6 flex items-center justify-between">
             {!isSidebarCollapsed && (
               <div className="flex items-center gap-2">
-                <img src="/kydoicon.png" alt="Kydo Solutions Logo" className="h-8 w-8 rounded-lg" style={{ background: 'none', filter: 'invert(0)' }} />
-                <span className="text-xl font-bold text-gray-900">Kydo Solutions</span>
+                <img src={logoUrl} alt={`${brandName} Logo`} className="h-8 w-8 rounded-lg" style={{ background: 'none', filter: 'invert(0)' }} />
+                <span className="text-xl font-bold text-gray-900">{brandName}</span>
               </div>
             )}
             {isSidebarCollapsed && (
-              <img src="/kydoicon.png" alt="Kydo Solutions Logo" className="h-8 w-8" style={{ background: 'none', filter: 'invert(0)' }} />
+              <img src={logoUrl} alt={`${brandName} Logo`} className="h-8 w-8" style={{ background: 'none', filter: 'invert(0)' }} />
             )}
             <button className="md:hidden" onClick={() => setIsSidebarOpen(false)} title="Close sidebar">
               <X className="w-5 h-5 text-gray-500" />
@@ -873,6 +878,31 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
                         </div>
                       </div>
 
+                      {/* Branding Settings - Admin Only */}
+                      {user.role === Role.ADMIN && (
+                        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+                          <div className="flex items-center justify-between mb-4">
+                            <div>
+                              <h3 className="text-lg font-bold text-gray-900">Company Branding</h3>
+                              <p className="text-sm text-gray-600">Customize your organization's brand name and logo</p>
+                            </div>
+                            <button
+                              onClick={() => setIsBrandingSettingsOpen(true)}
+                              className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition-colors flex items-center gap-2"
+                            >
+                              <Palette className="w-4 h-4" />
+                              Edit Branding
+                            </button>
+                          </div>
+                          <div className="bg-gray-50 p-4 rounded-lg">
+                            <div className="flex items-center gap-3">
+                              <img src={logoUrl} alt={brandName} className="w-8 h-8 rounded" />
+                              <span className="font-medium text-gray-900">{brandName}</span>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
                       {/* Remembered Devices */}
                       <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
                         <RememberedDevices />
@@ -897,6 +927,16 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
           initialProject={editingProject}
         />
       )}
+      
+      {isBrandingSettingsOpen && (
+        <BrandingSettings 
+          isOpen={isBrandingSettingsOpen}
+          onClose={() => setIsBrandingSettingsOpen(false)}
+        />
+      )}
+      
+      {/* Page title updater for tenant branding */}
+      <PageTitleUpdater />
     </div>
   );
 }

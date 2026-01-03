@@ -5,6 +5,20 @@ export enum Role {
   CLIENT = 'Client'
 }
 
+export interface Tenant {
+  id: string;
+  name: string; // Organization name (defaults to business name)
+  ownerId: string; // Admin who created the tenant
+  createdAt: string;
+  status: 'active' | 'inactive';
+  // Customization fields
+  brandName?: string; // Custom brand name (fallback to "Kydo Solutions")
+  logoUrl?: string; // Custom logo URL (fallback to "/kydoicon.png")
+  // Optional additional branding
+  primaryColor?: string; // For future theme customization
+  secondaryColor?: string;
+}
+
 export enum ProjectStatus {
   DISCOVERY = 'Discovery',
   PLANNING = 'Planning',
