@@ -1675,8 +1675,8 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
            `Transaction Updated: ${updatedRecord.description}`,
            detailedDescription,
            timelineStatus,
-           updatedRecord.date,
-           updatedRecord.date
+           new Date().toISOString(),
+           new Date().toISOString()
          );
 
          updatedFinancials = updatedFinancials.map(f => f.id === editingTransactionId ? updatedRecord : f);
@@ -1763,8 +1763,8 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
            `Financial: ${record.type === 'income' ? 'Income' : 'Expense'} - ${record.description}`,
            detailedDescription,
            timelineStatus,
-           record.date,
-           record.date
+           new Date().toISOString(),
+           new Date().toISOString()
          );
          
          updatedFinancials.push(record);
@@ -2209,8 +2209,8 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
           `Task Updated: ${taskData.title}`,
           detailedDescription,
           taskData.status === TaskStatus.DONE ? 'completed' : 'in-progress',
-          taskData.startDate,
-          taskData.dueDate
+          new Date().toISOString(),
+          new Date().toISOString()
         );
         
         // Notify Assignee if changed
@@ -2237,8 +2237,8 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
           `Task Created: ${taskData.title}`,
           `Assigned to ${newAssigneeName}. Priority: ${taskData.priority}, Due: ${taskData.dueDate}`,
           'planned',
-          taskData.startDate,
-          taskData.dueDate
+          new Date().toISOString(),
+          new Date().toISOString()
         );
         
         // Send email notification to assignee
@@ -2551,8 +2551,8 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
         `Task Status: ${task.title}`,
         detailedDescription,
         timelineStatus,
-        task.startDate,
-        task.dueDate
+        new Date().toISOString(),
+        new Date().toISOString()
       );
       
       // Update task in Firebase

@@ -38,7 +38,25 @@ export const logTimelineEvent = async (
     let validStartDate = startDate || todayFull;
     let validEndDate = endDate || todayFull;
     
-    // Validate startDate format and is a valid date
+    // Helper function to ensure a date string has time component
+    const ensureFullTimestamp = (dateStr: string, defaultTime: string): string => {
+      // If it's already a full ISO timestamp with time, return as-is
+      if (dateStr.includes('T') && dateStr.includes('Z')) {
+        return dateStr;
+      }
+      
+      // If it's just a date (YYYY-MM-DD), append the current time
+      if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+        const dateObj = new Date(defaultTime);
+        const datePart = dateStr;
+        const timePart = defaultTime.split('T')[1]; // Extract time from full timestamp
+        return `${datePart}T${timePart}`;
+      }
+      
+      return dateStr;
+    };
+    
+    // Validate and ensure full timestamp for startDate
     if (validStartDate && !/^\d{4}-\d{2}-\d{2}/.test(validStartDate)) {
       console.warn(`Invalid startDate format: ${validStartDate}, using current timestamp instead`);
       validStartDate = todayFull;
@@ -48,10 +66,13 @@ export const logTimelineEvent = async (
       if (isNaN(startDateObj.getTime())) {
         console.warn(`Invalid startDate value: ${validStartDate}, using current timestamp instead`);
         validStartDate = todayFull;
+      } else {
+        // Ensure it has a time component
+        validStartDate = ensureFullTimestamp(validStartDate, todayFull);
       }
     }
     
-    // Validate endDate format and is a valid date
+    // Validate and ensure full timestamp for endDate
     if (validEndDate && !/^\d{4}-\d{2}-\d{2}/.test(validEndDate)) {
       console.warn(`Invalid endDate format: ${validEndDate}, using current timestamp instead`);
       validEndDate = todayFull;
@@ -61,6 +82,9 @@ export const logTimelineEvent = async (
       if (isNaN(endDateObj.getTime())) {
         console.warn(`Invalid endDate value: ${validEndDate}, using current timestamp instead`);
         validEndDate = todayFull;
+      } else {
+        // Ensure it has a time component
+        validEndDate = ensureFullTimestamp(validEndDate, todayFull);
       }
     }
     
