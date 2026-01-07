@@ -140,9 +140,22 @@ const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, p
         vendorTenantIds.length === 0 || vendorTenantIds.includes(u.tenantId)
       );
     }
+
+    // If current user is a designer viewing clients, filter to clients related to their projects only
+    if (currentUser?.role === Role.DESIGNER && roleFilter === Role.CLIENT) {
+      const designerProjects = realtimeProjects.filter(p => 
+        p.leadDesignerId === currentUser.id || (p.teamMembers || []).includes(currentUser.id)
+      );
+      const relatedClientIds = new Set<string>();
+      designerProjects.forEach(p => {
+        if (p.clientId) relatedClientIds.add(p.clientId);
+        (p.clientIds || []).forEach(cId => relatedClientIds.add(cId));
+      });
+      filtered = filtered.filter(u => relatedClientIds.has(u.id) || u.createdBy === currentUser.id);
+    }
     
     return filtered;
-  }, [users, roleFilter, currentUser]);
+  }, [users, roleFilter, currentUser, realtimeProjects]);
 
   // Group Vendors by Specialty if in Vendor view
   const groupedVendors = React.useMemo(() => {
@@ -273,7 +286,8 @@ const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, p
         phone: newUser.phone || undefined,
         password: generatedPassword,
         authMethod: (authMethod) as 'email' | 'phone',
-        tenantId: currentUser?.tenantId
+        tenantId: currentUser?.tenantId,
+        createdBy: currentUser?.id
       }, currentUser?.email, adminCredentials?.password);
 
       // Create local user object with Firebase UID
@@ -286,7 +300,8 @@ const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, p
         specialty: newUser.specialty || undefined,
         phone: newUser.phone || undefined,
         password: generatedPassword,
-        authMethod: (authMethod) as 'email' | 'phone'
+        authMethod: (authMethod) as 'email' | 'phone',
+        createdBy: currentUser?.id
       };
 
       // Don't add to local state immediately - let Firebase subscription handle all users

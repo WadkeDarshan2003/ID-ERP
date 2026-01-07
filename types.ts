@@ -60,6 +60,9 @@ export interface User {
   company?: string; // For vendors
   specialty?: string; // For designers/vendors
   authMethod?: 'email' | 'phone'; // Authentication method for vendors (email or phone-based OTP)
+  tenantId?: string;
+  tenantIds?: string[]; // For vendors: array of tenant IDs they can access (multi-tenant support)
+  createdBy?: string; // ID of the user who created this user
   // Vendor project metrics - aggregated from all projects
   projectMetrics?: Record<string, {
     projectName: string;

@@ -736,6 +736,7 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
               {selectedProject ? (
                  <ProjectDetail 
                    project={selectedProject} 
+                   projects={projects}
                    users={users} 
                    onUpdateProject={handleUpdateProject}
                    onBack={() => { 

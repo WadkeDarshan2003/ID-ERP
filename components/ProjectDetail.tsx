@@ -29,6 +29,7 @@ import { useLoading } from '../contexts/LoadingContext';
 
 interface ProjectDetailProps {
   project: Project;
+  projects?: Project[]; // Add projects prop for filtering context
   users: User[];
   onUpdateProject: (updatedProject: Project) => void;
   onBack: () => void;
@@ -40,7 +41,7 @@ interface ProjectDetailProps {
 const ROW_HEIGHT = 48; // Fixed height for Gantt rows
 const DEFAULT_AVATAR = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"%3E%3Ccircle cx="12" cy="12" r="12" fill="%23e5e7eb"/%3E%3C/svg%3E';
 
-const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateProject, onBack, initialTab, initialTask, onCloseTask }) => {
+const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], users, onUpdateProject, onBack, initialTab, initialTask, onCloseTask }) => {
   const { user } = useAuth();
   const { addNotification } = useNotifications();
   const { updateExistingProject, deleteExistingProject, loading: projectLoading } = useProjectCrud();
@@ -714,7 +715,8 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
             { ...comment, id: 'temp' },
             userName,
             project.name,
-            uniqueRecipients
+            uniqueRecipients,
+            project.id
           );
         }
       }
@@ -2560,8 +2562,12 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
 
       // Send completion approval notification if task reaches 100% progress
       if (newStatus === TaskStatus.REVIEW || (newStatus === TaskStatus.DONE && task.status !== TaskStatus.DONE)) {
-        // Get client and admin users to notify them for completion approval
-        const clientAndAdmin = users.filter(u => u.role === Role.CLIENT || u.role === Role.ADMIN);
+        // Get project-specific clients and all admins to notify them for completion approval
+        const projectClientIds = [project.clientId, ...(project.clientIds || [])].filter(Boolean);
+        const clientAndAdmin = users.filter(u => 
+          u.role === Role.ADMIN || 
+          (u.role === Role.CLIENT && projectClientIds.includes(u.id))
+        );
         if (clientAndAdmin.length > 0) {
           await sendTaskCompletionApprovalNotificationEmail(task, clientAndAdmin, project.name, project.id);
         }
@@ -2919,7 +2925,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                    // Send task approval email
                    const assignee = projectTeam.find(u => u.id === editingTask.assigneeId);
                    if (assignee && assignee.email && editingTask.title) {
-                     await sendTaskApprovalEmail(editingTask.title, assignee, project.name, user.name, 'completion');
+                     await sendTaskApprovalEmail(editingTask.title, assignee, project.name, user.name, 'completion', project.id, editingTask.id);
                    }
                }
           } else if (stage === 'completion') {
@@ -2928,7 +2934,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                if (editingTask.assigneeId) {
                  const assignee = projectTeam.find(u => u.id === editingTask.assigneeId);
                  if (assignee && assignee.email && editingTask.title) {
-                   await sendTaskApprovalEmail(editingTask.title, assignee, project.name, user.name, 'completion');
+                   await sendTaskApprovalEmail(editingTask.title, assignee, project.name, user.name, 'completion', project.id, editingTask.id);
                  }
                }
           } else {
@@ -2937,7 +2943,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
               if (editingTask.assigneeId) {
                 const assignee = projectTeam.find(u => u.id === editingTask.assigneeId);
                 if (assignee && assignee.email && editingTask.title) {
-                  await sendTaskApprovalEmail(editingTask.title, assignee, project.name, user.name, stage);
+                  await sendTaskApprovalEmail(editingTask.title, assignee, project.name, user.name, stage, project.id, editingTask.id);
                 }
               }
           }
@@ -5495,11 +5501,26 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                       <div className={`border rounded-lg p-3 space-y-2 max-h-48 overflow-y-auto mt-2 border-gray-300`}>
                           {memberModalType === 'client' 
                             ? users
-                                .filter(u => 
-                                    u.role === Role.CLIENT &&
-                                    u.id !== project.clientId &&
-                                    !(project.clientIds || []).includes(u.id)
-                                )
+                                .filter(u => {
+                                    const isClient = u.role === Role.CLIENT;
+                                    const notOnProject = u.id !== project.clientId && !(project.clientIds || []).includes(u.id);
+                                    
+                                    if (!isClient || !notOnProject) return false;
+                                    
+                                    // designer restriction: only related clients
+                                    if (user.role === Role.DESIGNER) {
+                                        const designerProjects = (projects || []).filter(p => 
+                                          p.leadDesignerId === user.id || (p.teamMembers || []).includes(user.id)
+                                        );
+                                        const relatedClientIds = new Set<string>();
+                                        designerProjects.forEach(p => {
+                                          if (p.clientId) relatedClientIds.add(p.clientId);
+                                          (p.clientIds || []).forEach(cId => relatedClientIds.add(cId));
+                                        });
+                                        return relatedClientIds.has(u.id) || u.createdBy === user.id;
+                                    }
+                                    return true;
+                                })
                                 .length === 0 ? (
                                   <p className="text-gray-500 text-sm">No clients available to add</p>
                                 ) : (
@@ -5689,7 +5710,24 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, users, onUpdateP
                               title="Select a client from the list"
                           >
                               <option value="">Select a client...</option>
-                              {users.filter(u => u.role === Role.CLIENT).map(client => (
+                              {users.filter(u => {
+                                if (u.role !== Role.CLIENT) return false;
+                                // designer restriction: only related clients
+                                if (user.role === Role.DESIGNER) {
+                                    const designerProjectIds = (projects || []).filter(p => 
+                                      p.leadDesignerId === user.id || (p.teamMembers || []).includes(user.id)
+                                    ).map(p => p.id);
+                                    
+                                    // Check if this client is on any of the designer's projects
+                                    const isRelated = (projects || []).some(p => 
+                                      designerProjectIds.includes(p.id) && 
+                                      (p.clientId === u.id || (p.clientIds || []).includes(u.id))
+                                    );
+                                    
+                                    return isRelated || u.createdBy === user.id;
+                                }
+                                return true;
+                              }).map(client => (
                                 <option key={client.id} value={client.name}>
                                   {client.name}
                                 </option>

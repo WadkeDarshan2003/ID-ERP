@@ -19,12 +19,17 @@ import { sendPushNotification } from './pushNotificationService';
 export const sendTaskCreationEmail = async (
   task: Task,
   assignee: User,
-  projectName: string
+  projectName: string,
+  projectId?: string
 ): Promise<void> => {
   if (!assignee.email) {
     console.warn(`⚠️ No email for assignee ${assignee.name}`);
     return;
   }
+
+  // Generate task link
+  const appBaseUrl = typeof window !== 'undefined' ? window.location.origin : process.env.REACT_APP_BASE_URL || 'http://localhost:5173';
+  const taskLink = projectId ? `${appBaseUrl}?projectId=${projectId}&taskId=${task.id}&tab=plan` : undefined;
 
   try {
     const result = await sendTaskAssignmentEmail(
@@ -43,7 +48,8 @@ export const sendTaskCreationEmail = async (
       await sendPushNotification(
         assignee.id,
         'New Task Assigned',
-        `You have been assigned a new task: ${task.title} in project ${projectName}`
+        `You have been assigned a new task: ${task.title} in project ${projectName}`,
+        taskLink
       );
     } else {
       console.error(`❌ Failed to send task creation email:`, result.error);
@@ -60,11 +66,15 @@ export const checkAndSendDueDateReminders = async (
   tasks: Task[],
   users: User[],
   projectName: string,
+  projectId?: string,
   sentReminders: Set<string> = new Set()
 ): Promise<void> => {
   const now = new Date();
   const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
   const dayAfterTomorrow = new Date(now.getTime() + 25 * 60 * 60 * 1000);
+
+  // Generate app base URL
+  const appBaseUrl = typeof window !== 'undefined' ? window.location.origin : process.env.REACT_APP_BASE_URL || 'http://localhost:5173';
 
   for (const task of tasks) {
     const dueDate = new Date(task.dueDate);
@@ -80,6 +90,9 @@ export const checkAndSendDueDateReminders = async (
 
       if (assignee?.email) {
         try {
+          // Generate task link
+          const taskLink = projectId ? `${appBaseUrl}?projectId=${projectId}&taskId=${task.id}&tab=plan` : undefined;
+
           const result = await sendTaskReminder(
             assignee.email,
             assignee.name,
@@ -96,7 +109,8 @@ export const checkAndSendDueDateReminders = async (
             await sendPushNotification(
               assignee.id,
               'Task Due Reminder',
-              `Task "${task.title}" is due tomorrow in project ${projectName}`
+              `Task "${task.title}" is due tomorrow in project ${projectName}`,
+              taskLink
             );
           } else {
             console.error(`❌ Failed to send 24-hour reminder:`, result.error);
@@ -115,12 +129,17 @@ export const checkAndSendDueDateReminders = async (
 export const sendProjectWelcomeEmail = async (
   user: User,
   projectName: string,
-  addedBy: User
+  addedBy: User,
+  projectId?: string
 ): Promise<void> => {
   if (!user.email) {
     console.warn(`⚠️ No email for user ${user.name}`);
     return;
   }
+
+  // Generate project link
+  const appBaseUrl = typeof window !== 'undefined' ? window.location.origin : process.env.REACT_APP_BASE_URL || 'http://localhost:5173';
+  const projectLink = projectId ? `${appBaseUrl}?projectId=${projectId}` : undefined;
 
   const htmlContent = `
     <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; color: #333;">
@@ -140,6 +159,14 @@ export const sendProjectWelcomeEmail = async (
       
       <p>You can now access the project details and collaborate with the team. Login to the system to get started.</p>
       
+      ${projectLink ? `
+      <div style="margin: 20px 0;">
+        <a href="${projectLink}" style="display: inline-block; background-color: #0284c7; color: white; padding: 12px 24px; border-radius: 4px; text-decoration: none; font-weight: bold;">
+          Access Project
+        </a>
+      </div>
+      ` : ''}
+
       <p style="margin-top: 30px; color: #666; font-size: 14px;">
         Regards,<br>
         <strong>ID ERP System</strong>
@@ -162,7 +189,8 @@ export const sendProjectWelcomeEmail = async (
       await sendPushNotification(
         user.id,
         'Added to Project',
-        `You have been added to project: ${projectName} by ${addedBy.name}`
+        `You have been added to project: ${projectName} by ${addedBy.name}`,
+        projectLink
       );
     } else {
       console.error(`❌ Failed to send welcome email:`, result.error);
@@ -289,12 +317,18 @@ export const sendTaskApprovalEmail = async (
   recipient: User,
   projectName: string,
   approverName: string,
-  approvalStage: string
+  approvalStage: string,
+  projectId?: string,
+  taskId?: string
 ): Promise<void> => {
   if (!recipient.email) {
     console.warn(`⚠️ No email for recipient ${recipient.name}`);
     return;
   }
+
+  // Generate task link
+  const appBaseUrl = typeof window !== 'undefined' ? window.location.origin : process.env.REACT_APP_BASE_URL || 'http://localhost:5173';
+  const taskLink = projectId && taskId ? `${appBaseUrl}?projectId=${projectId}&taskId=${taskId}&tab=plan` : (projectId ? `${appBaseUrl}?projectId=${projectId}&tab=plan` : undefined);
 
   const htmlContent = `
     <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; color: #333;">
@@ -315,6 +349,14 @@ export const sendTaskApprovalEmail = async (
       
       <p>Great work! The task has been successfully approved and is moving forward.</p>
       
+      ${taskLink ? `
+      <div style="margin: 20px 0;">
+        <a href="${taskLink}" style="display: inline-block; background-color: #16a34a; color: white; padding: 12px 24px; border-radius: 4px; text-decoration: none; font-weight: bold;">
+          View Task Details
+        </a>
+      </div>
+      ` : ''}
+
       <p style="margin-top: 30px; color: #666; font-size: 14px;">
         Regards,<br>
         <strong>ID ERP System</strong>
@@ -337,7 +379,8 @@ export const sendTaskApprovalEmail = async (
       await sendPushNotification(
         recipient.id,
         'Task Approved',
-        `Task "${taskTitle}" in project ${projectName} has been approved by ${approverName}`
+        `Task "${taskTitle}" in project ${projectName} has been approved by ${approverName}`,
+        taskLink
       );
     } else {
       console.error(`❌ Failed to send task approval email:`, result.error);
@@ -1193,9 +1236,12 @@ export const sendMeetingCommentNotificationEmail = async (
   comment: Comment,
   commenterName: string,
   projectName: string,
-  recipients: User[]
+  recipients: User[],
+  projectId?: string
 ): Promise<void> => {
-  const meetingLink = `/projects?projectId=${meeting.id}`; // Adjust link as needed
+  // Generate app base URL
+  const appBaseUrl = typeof window !== 'undefined' ? window.location.origin : process.env.REACT_APP_BASE_URL || 'http://localhost:5173';
+  const meetingLink = projectId ? `${appBaseUrl}?projectId=${projectId}&meetingId=${meeting.id}&tab=meetings` : undefined;
   
   for (const recipient of recipients) {
     if (!recipient.email) {
@@ -1215,9 +1261,11 @@ export const sendMeetingCommentNotificationEmail = async (
             <p style="margin: 10px 0 0 0; color: #6b7280;">"${comment.text}"</p>
           </div>
           
+          ${meetingLink ? `
           <p style="margin-top: 20px;">
             <a href="${meetingLink}" style="background-color: #2563eb; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block;">View Meeting</a>
           </p>
+          ` : ''}
         </div>
       `;
 

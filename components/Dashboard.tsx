@@ -281,8 +281,8 @@ const Dashboard: React.FC<DashboardProps> = ({ projects, users, onSelectProject,
       return allClientIds.includes(user.id);
     });
   } else if (user.role === Role.DESIGNER) {
-    // Projects where designer is lead or part of team
-    const relatedProjectIds = new Set(projects.filter(p => p.leadDesignerId === user.id || (p.teamMembers || []).includes(user.id) || (p.clientIds || []).includes(user.id)).map(p => p.id));
+    // Projects where designer is lead or part of team only (not based on clientIds)
+    const relatedProjectIds = new Set(projects.filter(p => p.leadDesignerId === user.id || (p.teamMembers || []).includes(user.id)).map(p => p.id));
     filteredProjects = projects.filter(p => relatedProjectIds.has(p.id));
     // Collect assigned tasks for designer (only tasks assigned to them)
     assignedTasks = projects

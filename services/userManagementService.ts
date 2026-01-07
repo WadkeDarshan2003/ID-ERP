@@ -157,7 +157,8 @@ export const createUserInFirebase = async (
       phone: normalizedPhone || '',
       password: user.password,
       authMethod: user.authMethod || 'email',
-      tenantId: finalTenantId || firebaseUid // Fallback to UID if still null
+      tenantId: finalTenantId || firebaseUid, // Fallback to UID if still null
+      createdBy: user.createdBy || ''
     };
 
     // Add optional fields only if they exist
