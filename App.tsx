@@ -342,7 +342,11 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
 
     // Subscribe to users - combines from all role collections
     const unsubscribeUsers = subscribeToUsers((firebaseUsers) => {
-      setUsers(firebaseUsers || []);
+      setUsers(prev => {
+        const newIds = new Set(firebaseUsers.map(u => u.id));
+        const others = prev.filter(u => !newIds.has(u.id));
+        return [...others, ...firebaseUsers];
+      });
     }, user.tenantId);
 
     // Also subscribe to role-specific collections for redundancy/updates
@@ -490,7 +494,10 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
   };
 
   const handleAddUser = (newUser: User) => {
-    setUsers(prev => [...prev, newUser]);
+    setUsers(prev => {
+      if (prev.find(u => u.id === newUser.id)) return prev;
+      return [...prev, newUser];
+    });
   };
 
   const handleAddProject = (newProject: Project) => {

@@ -111,7 +111,20 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
     }
   };
   
-  const [activeTab, setActiveTab] = useState<'discovery' | 'plan' | 'financials' | 'team' | 'timeline' | 'documents' | 'meetings'>('plan');
+  const [activeTab, setActiveTab] = useState<'discovery' | 'plan' | 'financials' | 'team' | 'timeline' | 'documents' | 'meetings'>(() => {
+    if (initialTab) return initialTab;
+    const saved = localStorage.getItem('last_project_tab');
+    if (saved && ['discovery', 'plan', 'financials', 'team', 'timeline', 'documents', 'meetings'].includes(saved)) {
+      return saved as any;
+    }
+    return 'discovery';
+  });
+
+  // Save active tab to localStorage
+  useEffect(() => {
+    localStorage.setItem('last_project_tab', activeTab);
+  }, [activeTab]);
+
   const [planView, setPlanView] = useState<'list' | 'gantt' | 'kanban'>('list');
   const [isTaskModalOpen, setIsTaskModalOpen] = useState(!!initialTask);
   const [editingTask, setEditingTask] = useState<Partial<Task> | null>(initialTask || null);
@@ -202,6 +215,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
   const [deletingMeeting, setDeletingMeeting] = useState<Meeting | null>(null);
   const [isDocDeleteConfirmOpen, setIsDocDeleteConfirmOpen] = useState(false);
   const [deletingDoc, setDeletingDoc] = useState<ProjectDocument | null>(null);
+  const [isLeadDesignerRemovalConfirmOpen, setIsLeadDesignerRemovalConfirmOpen] = useState(false);
 
   // Vendor Billing Report State
   const [selectedVendorForBilling, setSelectedVendorForBilling] = useState<User | null>(null);
@@ -279,7 +293,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
     if (meetingId && realTimeMeetings.length > 0) {
       const meeting = realTimeMeetings.find(m => m.id === meetingId);
       if (meeting) {
-        setActiveTab('meetings');
+        setActiveTab('discovery');
         setEditingMeeting(meeting);
         setIsMeetingModalOpen(true);
         // Remove the meetingId from URL
@@ -775,6 +789,12 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
     setIsProjectDeleteConfirmOpen(true);
   };
 
+  const handleRemoveLeadDesigner = () => {
+    setIsLeadDesignerRemovalConfirmOpen(false);
+    onUpdateProject({ ...project, leadDesignerId: '' });
+    addNotification('Success', 'Lead Designer removed', 'success');
+  };
+
   // --- Helper: Notifications ---
   const notifyProjectTeam = (title: string, message: string, excludeUserId?: string, targetTab?: string) => {
       // Find all Admins
@@ -930,12 +950,13 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
         });
         
         addNotification('Success', `${newClientIds.length} client${newClientIds.length !== 1 ? 's' : ''} added`, 'success');
-      } else if (memberModalType === 'member') {
+      } else if (memberModalType === 'member' || memberModalType === 'designer') {
+        const isDesigner = memberModalType === 'designer';
         // Add as team members (vendors and designers)
         const newMemberIds = memberIds.filter(id => !(project.teamMembers || []).includes(id));
         
         if (newMemberIds.length === 0) {
-          addNotification("Info", "All selected members are already added", "info");
+          addNotification("Info", `All selected ${isDesigner ? 'designers' : 'members'} are already added`, "info");
           return;
         }
         
@@ -943,8 +964,8 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
         
         newMemberIds.forEach(memberId => {
           const member = users.find(u => u.id === memberId);
-          const log = logActivity('Team Member Added', `${member?.name} added as team member to project`);
-          notifyUser(memberId, 'Added to Project', `You have been added to "${project.name}"`, 'success', 'dashboard');
+          const log = logActivity(isDesigner ? 'Designer Added' : 'Team Member Added', `${member?.name} added as ${isDesigner ? 'designer' : 'team member'} to project`);
+          notifyUser(memberId, 'Added to Project', `You have been added to "${project.name}" as a ${isDesigner ? 'Designer' : 'Member'}`, 'success', 'dashboard');
         });
         
         onUpdateProject({
@@ -952,7 +973,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
             teamMembers: updatedTeamMembers
         });
         
-        addNotification('Success', `${newMemberIds.length} member${newMemberIds.length !== 1 ? 's' : ''} added`, 'success');
+        addNotification('Success', `${newMemberIds.length} ${isDesigner ? 'designer' : 'member'}${newMemberIds.length !== 1 ? 's' : ''} added`, 'success');
       }
       
       setIsMemberModalOpen(false);
@@ -5212,7 +5233,17 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
         {activeTab === 'team' && (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6 p-4 md:p-8">
             <div className="bg-white p-4 md:p-8 rounded-xl border border-gray-200">
-               <h3 className="font-bold text-lg md:text-base text-gray-800 mb-4">Project Clients</h3>
+               <div className="flex justify-between items-center mb-4">
+                  <h3 className="font-bold text-lg md:text-base text-gray-800">Project Clients</h3>
+                  {canEditProject && (
+                    <button 
+                      onClick={() => { setMemberModalType('client'); setSelectedMemberId(''); setIsMemberModalOpen(true); }}
+                      className="text-xs bg-gray-900 text-white px-3 py-1.5 rounded-lg hover:bg-gray-800 transition-colors flex items-center gap-1.5 font-bold"
+                    >
+                      <Plus className="w-3.5 h-3.5" /> Add Client
+                    </button>
+                  )}
+               </div>
                <div className="space-y-2">
                   {(() => {
                     // Combine primary clientId and additional clientIds, removing duplicates
@@ -5222,12 +5253,15 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
                       return <p className="text-gray-500 text-sm">No clients assigned</p>;
                     }
                     
-                    return clientIds.map((clientId) => {
-                      const client = users.find(u => u.id === clientId);
-                      if (!client) return null;
-                      
+                    // Fetch and sort clients
+                    const sortedClients = clientIds
+                      .map(id => users.find(u => u.id === id))
+                      .filter((u): u is User => !!u)
+                      .sort((a, b) => a.name.localeCompare(b.name));
+                    
+                    return sortedClients.map((client) => {
                       return (
-                        <div key={clientId} className="flex items-center justify-between border-b border-gray-50 pb-2">
+                        <div key={client.id} className="flex items-center justify-between border-b border-gray-50 pb-2">
                           <div className="flex items-center gap-4">
                             <div>
                               <p className="text-base md:text-sm font-bold text-gray-900">{client.name}</p>
@@ -5265,11 +5299,24 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
                   })()}
                </div>
 
-                  <div className="flex items-center gap-4 border-b border-gray-50 pb-2">
-                     <div>
-                        <p className="text-base md:text-sm font-bold text-gray-900">{getAssigneeName(project.leadDesignerId)}</p>
-                        <p className="text-sm text-gray-500">Lead Designer</p>
+                  <div className="flex items-center justify-between border-b border-gray-50 pb-2">
+                     <div className="flex items-center gap-4">
+                        <div>
+                           <p className="text-base md:text-sm font-bold text-gray-900">{project.leadDesignerId ? getAssigneeName(project.leadDesignerId) : 'No Lead Designer Assigned'}</p>
+                           <p className="text-sm text-gray-500">Lead Designer</p>
+                        </div>
                      </div>
+                     {isAdmin && project.leadDesignerId && (
+                        <button 
+                          onClick={() => {
+                            setIsLeadDesignerRemovalConfirmOpen(true);
+                          }}
+                          className="text-red-400 hover:text-red-600 p-1.5 hover:bg-red-50 rounded transition-colors"
+                          title="Remove Lead Designer"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                     )}
                   </div>
                   
                   {/* Designers */}
@@ -5278,53 +5325,80 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
                       ? project.teamMembers
                           .map(id => users.find(u => u.id === id))
                           .filter((u): u is User => u !== undefined && u.role === Role.DESIGNER)
+                          .sort((a, b) => a.name.localeCompare(b.name))
                       : [];
                     
-                    if (allDesigners.length === 0) return null;
-
                     return (
-                      <>
-                        <h4 className="text-sm font-bold text-gray-500 uppercase mb-2">Designers</h4>
-                        {allDesigners.map(designer => (
-                          <div key={designer.id} className="flex items-center justify-between gap-3 p-3 hover:bg-gray-50 rounded-lg transition-colors border border-transparent hover:border-gray-100">
-                            <div className="flex-1">
-                              <p className="font-bold text-gray-800 text-base md:text-sm">{designer.name}</p>
-                              <p className="text-sm text-gray-500">{designer.role}</p>
-                            </div>
-                            <div className="flex items-center gap-2">
+                      <div className="mt-8">
+                        <div className="flex justify-between items-center mb-4 border-b border-gray-100 pb-1">
+                           <h4 className="text-sm font-bold text-gray-500 uppercase">Designers</h4>
+                           {canEditProject && (
                               <button 
-                                onClick={() => setSelectedDesignerForDetails(designer)}
-                                className="text-blue-500 hover:text-blue-700 text-sm font-medium px-2 py-1 hover:bg-blue-50 rounded transition-colors"
-                                title="View designer details and projects"
+                                onClick={() => { setMemberModalType('designer'); setSelectedMemberId(''); setIsMemberModalOpen(true); }}
+                                className="text-[10px] bg-blue-50 text-blue-600 px-2.5 py-1 rounded-md hover:bg-blue-100 transition-colors flex items-center gap-1 font-bold"
                               >
-                                View Details
+                                <Plus className="w-3 h-3" /> Add Designer
                               </button>
-                              {canEditProject && (
-                                <button 
-                                  onClick={() => {
-                                    const updated = {
-                                      ...project,
-                                      teamMembers: (project.teamMembers || []).filter(id => id !== designer.id)
-                                    };
-                                    onUpdateProject(updated);
-                                    addNotification('Success', `${designer.name} removed from team`, 'success');
-                                  }}
-                                  className="text-red-400 hover:text-red-600 p-1.5 hover:bg-red-50 rounded transition-colors"
-                                  title="Remove Member"
-                                >
-                                  <X className="w-4 h-4" />
-                                </button>
-                              )}
-                            </div>
+                           )}
+                        </div>
+                        {allDesigners.length === 0 ? (
+                           <p className="text-gray-400 text-xs italic mb-4">No additional designers added</p>
+                        ) : (
+                          <div className="space-y-3 mb-6">
+                            {allDesigners.map(designer => (
+                              <div key={designer.id} className="flex items-center justify-between gap-3 p-3 hover:bg-gray-50 rounded-lg transition-colors border border-transparent hover:border-gray-100">
+                                <div className="flex-1">
+                                  <p className="font-bold text-gray-800 text-base md:text-sm">{designer.name}</p>
+                                  <p className="text-sm text-gray-500">{designer.role}</p>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <button 
+                                    onClick={() => setSelectedDesignerForDetails(designer)}
+                                    className="text-blue-500 hover:text-blue-700 text-sm font-medium px-2 py-1 hover:bg-blue-50 rounded transition-colors"
+                                    title="View designer details and projects"
+                                  >
+                                    View Details
+                                  </button>
+                                  {canEditProject && (
+                                    <button 
+                                      onClick={() => {
+                                        const updated = {
+                                          ...project,
+                                          teamMembers: (project.teamMembers || []).filter(id => id !== designer.id)
+                                        };
+                                        onUpdateProject(updated);
+                                        addNotification('Success', `${designer.name} removed from team`, 'success');
+                                      }}
+                                      className="text-red-400 hover:text-red-600 p-1.5 hover:bg-red-50 rounded transition-colors"
+                                      title="Remove Member"
+                                    >
+                                      <X className="w-4 h-4" />
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            ))}
                           </div>
-                        ))}
-                      </>
+                        )}
+                      </div>
                     );
                   })()}
 
-                  {sortedVendorCategories.length > 0 && (
-                     <>
-                        <div className="pt-4 space-y-6">
+                  <div className="mt-8">
+                     <div className="flex justify-between items-center mb-4 border-b border-gray-100 pb-1">
+                        <h4 className="text-sm font-bold text-gray-500 uppercase">Vendors</h4>
+                        {canEditProject && (
+                           <button 
+                             onClick={() => { setMemberModalType('member'); setSelectedMemberId(''); setIsMemberModalOpen(true); }}
+                             className="text-[10px] bg-green-50 text-green-600 px-2.5 py-1 rounded-md hover:bg-green-100 transition-colors flex items-center gap-1 font-bold"
+                           >
+                             <Plus className="w-3 h-3" /> Add Vendor
+                           </button>
+                        )}
+                     </div>
+                  
+                  {sortedVendorCategories.length > 0 ? (
+                        <div className="pt-2 space-y-6">
                             {sortedVendorCategories.map(category => (
                                 <div key={category}>
                                     <h4 className="text-sm font-bold text-gray-500 uppercase mb-3 border-b border-gray-100 pb-1 flex items-center gap-2">
@@ -5412,8 +5486,10 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
                                 </div>
                             ))}
                         </div>
-                     </>
+                  ) : (
+                     <p className="text-gray-400 text-xs italic">No vendors assigned to this project</p>
                   )}
+                  </div>
             </div>
           </div>
         )}
@@ -5486,18 +5562,24 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
                           onClick={() => { setMemberModalType('client'); setSelectedMemberId(''); }}
                           className={`flex-1 py-2 rounded font-medium text-sm transition-colors ${memberModalType === 'client' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-600 hover:text-gray-900'}`}
                       >
-                          Add Client
+                          Client
+                      </button>
+                      <button 
+                          onClick={() => { setMemberModalType('designer'); setSelectedMemberId(''); }}
+                          className={`flex-1 py-2 rounded font-medium text-sm transition-colors ${memberModalType === 'designer' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-600 hover:text-gray-900'}`}
+                      >
+                          Designer
                       </button>
                       <button 
                           onClick={() => { setMemberModalType('member'); setSelectedMemberId(''); }}
                           className={`flex-1 py-2 rounded font-medium text-sm transition-colors ${memberModalType === 'member' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-600 hover:text-gray-900'}`}
                       >
-                          Add Vendor
+                          Vendor
                       </button>
                   </div>
 
                   <div>
-                      <label className="text-sm font-bold text-gray-500 uppercase">Select {memberModalType === 'client' ? 'Clients' : 'Vendors'}</label>
+                      <label className="text-sm font-bold text-gray-500 uppercase">Select {memberModalType === 'client' ? 'Clients' : memberModalType === 'designer' ? 'Designers' : 'Vendors'}</label>
                       <div className={`border rounded-lg p-3 space-y-2 max-h-48 overflow-y-auto mt-2 border-gray-300`}>
                           {memberModalType === 'client' 
                             ? users
@@ -5530,6 +5612,34 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
                                         u.id !== project.clientId &&
                                         !(project.clientIds || []).includes(u.id)
                                     )
+                                    .sort((a, b) => (a.name || '').localeCompare(b.name || ''))
+                                    .map(u => (
+                                        <label key={u.id} className="flex items-center gap-2 cursor-pointer hover:bg-gray-50 p-2 rounded transition-colors">
+                                            <input 
+                                                type="checkbox"
+                                                checked={selectedMemberId.includes(u.id)}
+                                                onChange={(e) => {
+                                                    const current = selectedMemberId.split(',').filter(Boolean);
+                                                    const newIds = e.target.checked 
+                                                        ? [...current, u.id]
+                                                        : current.filter(id => id !== u.id);
+                                                    setSelectedMemberId(newIds.join(','));
+                                                }}
+                                                className="w-4 h-4 rounded border-gray-300 cursor-pointer"
+                                            />
+                                            <span className="text-sm text-gray-700">{u.name}</span>
+                                        </label>
+                                    ))
+                                )
+                            : memberModalType === 'designer'
+                            ? users
+                                .filter(u => u.role === Role.DESIGNER && u.id !== project.leadDesignerId && !((project.teamMembers || []).includes(u.id)))
+                                .length === 0 ? (
+                                  <p className="text-gray-500 text-sm">No designers available to add</p>
+                                ) : (
+                                  users
+                                    .filter(u => u.role === Role.DESIGNER && u.id !== project.leadDesignerId && !((project.teamMembers || []).includes(u.id)))
+                                    .sort((a, b) => (a.name || '').localeCompare(b.name || ''))
                                     .map(u => (
                                         <label key={u.id} className="flex items-center gap-2 cursor-pointer hover:bg-gray-50 p-2 rounded transition-colors">
                                             <input 
@@ -5555,6 +5665,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
                                 ) : (
                                   users
                                     .filter(u => u.role === Role.VENDOR && !((project.teamMembers || []).includes(u.id)))
+                                    .sort((a, b) => (a.name || '').localeCompare(b.name || ''))
                                     .map(u => (
                                         <label key={u.id} className="flex items-center gap-2 cursor-pointer hover:bg-gray-50 p-2 rounded transition-colors">
                                             <input 
@@ -5578,12 +5689,14 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
                       <p className="text-xs text-gray-400 mt-2">
                           {memberModalType === 'client' 
                             ? 'Select clients to add as additional contacts for this project.' 
+                            : memberModalType === 'designer'
+                            ? 'Select designers to add to this project.'
                             : 'Select vendors to add to this project.'}
                       </p>
                   </div>
                   <div className="flex gap-3 pt-2">
                       <button onClick={() => { setIsMemberModalOpen(false); setSelectedMemberId(''); }} className="flex-1 py-2 text-gray-500 hover:bg-gray-100 rounded">Cancel</button>
-                      <button onClick={handleInviteMember} className="flex-1 py-2 bg-gray-900 text-white rounded font-bold hover:bg-gray-800">Add {memberModalType === 'client' ? 'Clients' : 'Vendors'}</button>
+                      <button onClick={handleInviteMember} className="flex-1 py-2 bg-gray-900 text-white rounded font-bold hover:bg-gray-800">Add {memberModalType === 'client' ? 'Clients' : memberModalType === 'designer' ? 'Designers' : 'Vendors'}</button>
                   </div>
                </div>
            </div>
@@ -6882,8 +6995,15 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
                                    <input 
                                       type="text" 
                                       value={st.title}
-                                      placeholder="Subtask title"
+                                      placeholder="New Item"
                                       disabled={isEditingFrozen}
+                                      onFocus={(e) => {
+                                        if (st.title === 'New Item') {
+                                          const newSubs = [...(editingTask.subtasks || [])];
+                                          newSubs[idx].title = '';
+                                          setEditingTask({...editingTask, subtasks: newSubs});
+                                        }
+                                      }}
                                       onChange={(e) => {
                                          const newSubs = [...(editingTask.subtasks || [])];
                                          newSubs[idx].title = e.target.value;
@@ -8440,6 +8560,57 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
                 title="Confirm transaction deletion"
               >
                 <Trash2 className="w-4 h-4" /> Delete Transaction
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* Lead Designer Removal Confirmation Modal */}
+      {isLeadDesignerRemovalConfirmOpen && createPortal(
+        <div className="fixed inset-0 bg-black/50 z-[60] flex items-start justify-center pt-20 p-4">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md animate-fade-in border border-gray-200">
+            {/* Header */}
+            <div className="p-6 border-b border-gray-100 bg-orange-50">
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 rounded-full bg-orange-100 flex items-center justify-center">
+                  <AlertCircle className="w-6 h-6 text-orange-600" />
+                </div>
+                <div>
+                  <h2 className="text-lg font-bold text-gray-900">Remove Lead Designer?</h2>
+                  <p className="text-sm text-gray-600 mt-1">Confirm designer removal from project.</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Content */}
+            <div className="p-6">
+              <p className="text-sm text-gray-700 mb-4">
+                Are you sure you want to remove <span className="font-bold text-gray-900">{getAssigneeName(project.leadDesignerId)}</span> as the Lead Designer for this project?
+              </p>
+              <div className="bg-orange-50 border border-orange-200 rounded-lg p-3">
+                <p className="text-xs text-orange-700">
+                  <span className="font-bold">Note:</span> This will only unassign them as the Lead Designer. They may still be part of the team if they are in the team members list.
+                </p>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="p-6 border-t border-gray-100 flex gap-3 justify-end bg-gray-50 rounded-b-xl">
+              <button
+                onClick={() => setIsLeadDesignerRemovalConfirmOpen(false)}
+                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+                title="Cancel removal"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleRemoveLeadDesigner}
+                className="px-4 py-2 text-sm font-bold text-white bg-orange-600 rounded-lg hover:bg-orange-700 transition-colors flex items-center gap-2"
+                title="Confirm removal"
+              >
+                 Confirm Removal
               </button>
             </div>
           </div>

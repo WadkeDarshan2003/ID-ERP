@@ -65,7 +65,7 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
     // clientIds must have at least one client (use clientIds if available, otherwise check clientId)
     const selectedClients = formData.clientIds && formData.clientIds.length > 0 ? formData.clientIds : (formData.clientId ? [formData.clientId] : []);
     
-    if (!formData.name || !formData.leadDesignerId || !formData.startDate || !formData.deadline || !formData.budget) {
+    if (!formData.name || !formData.startDate || !formData.deadline) {
       setShowErrors(true);
       addNotification('Validation Error', 'Please complete all required fields marked in red.', 'error');
       return false;
@@ -121,13 +121,13 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
           clientId: selectedClients[0] || '', // Keep for backward compatibility; empty if none
           clientIds: selectedClients, // All clients treated equally (may be empty)
           tenantId: initialProject.tenantId || user?.tenantId || user?.id || '',
-          leadDesignerId: formData.leadDesignerId!,
+          leadDesignerId: formData.leadDesignerId || '',
           status: formData.status || ProjectStatus.DISCOVERY,
           type: formData.type as ProjectType,
           category: formData.category as ProjectCategory,
           startDate: formData.startDate!,
           deadline: formData.deadline!,
-          budget: Number(formData.budget),
+          budget: formData.budget ? Number(formData.budget) : 0,
           description: formData.description || ''
         };
         // Audit fields for update
@@ -202,14 +202,14 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
           clientId: selectedClients[0] || '', // Keep for backward compatibility; empty if none
           clientIds: selectedClients, // All clients treated equally (may be empty)
           tenantId: user?.tenantId || user?.id || '',
-          leadDesignerId: formData.leadDesignerId!,
+          leadDesignerId: formData.leadDesignerId || '',
           status: formData.status || ProjectStatus.DISCOVERY,
           type: formData.type as ProjectType,
           category: formData.category as ProjectCategory,
           startDate: formData.startDate!,
           deadline: formData.deadline!,
-          budget: Number(formData.budget),
-          initialBudget: Number(formData.budget),
+          budget: formData.budget ? Number(formData.budget) : 0,
+          initialBudget: formData.budget ? Number(formData.budget) : 0,
           thumbnail: '',
           description: formData.description || '',
           tasks: [],
@@ -313,8 +313,13 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
     }
   };
 
-  const clients = users.filter(u => u.role === Role.CLIENT);
-  const designers = users.filter(u => u.role === Role.DESIGNER);
+  const clients = users
+    .filter(u => u.role === Role.CLIENT)
+    .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+    
+  const designers = users
+    .filter(u => u.role === Role.DESIGNER)
+    .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
 
   const [showClientDropdown, setShowClientDropdown] = useState(false);
   const clientsDropdownRef = useRef<HTMLDivElement>(null);
@@ -441,9 +446,9 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
               )}
             </div>
             <div>
-              <label className="block text-sm font-bold text-gray-700 mb-1">Lead Designer <span className="text-red-500">*</span></label>
+              <label className="block text-sm font-bold text-gray-700 mb-1">Lead Designer</label>
               <select 
-                className={getInputClass(formData.leadDesignerId)}
+                className="w-full px-4 py-2 border rounded-lg focus:outline-none transition-all bg-white text-gray-900 placeholder-gray-400 text-base md:text-sm border-gray-200 focus:ring-2 focus:ring-gray-900 focus:border-transparent"
                 value={formData.leadDesignerId}
                 onChange={e => setFormData({...formData, leadDesignerId: e.target.value})}
                 title="Select the lead designer for the project"
@@ -512,11 +517,11 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
              </div>
              <div>
                <label className="block text-sm font-bold text-gray-700 mb-1 flex items-center gap-0.5">
-                 <IndianRupee className="w-3 h-3 text-gray-400"/> Budget <span className="text-red-500">*</span>
+                 <IndianRupee className="w-3 h-3 text-gray-400"/> Budget
                </label>
                <input 
                  type="number" 
-                 className={getInputClass(formData.budget)}
+                 className="w-full px-4 py-2 border rounded-lg focus:outline-none transition-all bg-white text-gray-900 placeholder-gray-400 text-base md:text-sm border-gray-200 focus:ring-2 focus:ring-gray-900 focus:border-transparent"
                  placeholder="0.00"
                  value={formData.budget || ''}
                  onChange={e => setFormData({...formData, budget: Number(e.target.value)})}

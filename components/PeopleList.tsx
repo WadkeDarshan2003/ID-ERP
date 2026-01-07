@@ -154,7 +154,8 @@ const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, p
       filtered = filtered.filter(u => relatedClientIds.has(u.id) || u.createdBy === currentUser.id);
     }
     
-    return filtered;
+    // Alphabetical Sorting by name
+    return [...filtered].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
   }, [users, roleFilter, currentUser, realtimeProjects]);
 
   // Group Vendors by Specialty if in Vendor view
@@ -540,6 +541,7 @@ const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, p
             {!(currentUser?.role === Role.DESIGNER && roleFilter === Role.CLIENT) && (
               <button 
                 onClick={() => {
+                  setEditingUser(null);
                   setNewUser({ 
                     role: roleFilter === 'All' ? Role.CLIENT : roleFilter,
                     phone: '+91 '
