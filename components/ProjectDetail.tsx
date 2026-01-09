@@ -56,9 +56,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
       const totalExpense = financials.filter(f => f.type === 'expense').reduce((sum, f) => sum + f.amount, 0);
       const newBudget = totalIncome - totalExpense;
       await updateDoc(doc(db, 'projects', projectId), { budget: newBudget });
-      if (process.env.NODE_ENV !== 'production') console.log('✅ Project budget synced:', newBudget);
     } catch (error) {
-      console.error('❌ Error syncing project budget:', error);
       // Don't throw - allow operation to continue even if sync fails
     }
   };
@@ -77,7 +75,6 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
       ]);
       return id;
     } catch (error) {
-      console.error('❌ Error creating financial record:', error);
       throw error;
     }
     finally {
@@ -93,7 +90,6 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
         syncProjectBudget(project.id, currentFinancials)
       ]);
     } catch (error) {
-      console.error('❌ Error updating financial record:', error);
       throw error;
     }
   };
@@ -106,7 +102,6 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
         syncProjectBudget(project.id, currentFinancials)
       ]);
     } catch (error) {
-      console.error('❌ Error deleting financial record:', error);
       throw error;
     }
   };
@@ -264,8 +259,6 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
   const displayTasks = useMemo(() => {
     if (user?.role === Role.VENDOR) {
       const vendorTasks = currentTasks.filter(task => task.assigneeId === user.id);
-      if (process.env.NODE_ENV !== 'production') console.log("Vendor filter - user.id:", user.id, "current tasks:", currentTasks.length, "vendor tasks:", vendorTasks.length);
-      if (process.env.NODE_ENV !== 'production') console.log("All task assigneeIds:", currentTasks.map(t => ({ id: t.id, assigneeId: t.assigneeId, title: t.title })));
       return vendorTasks;
     }
     return currentTasks;
@@ -436,10 +429,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
         
         // Update local state immediately for instant UI feedback
         onUpdateProject({ ...project, budget: newBudget });
-        
-        // Project budget updated in real-time (logging removed for production cleanliness)
       } catch (error) {
-        console.error('❌ Error syncing project budget in real-time:', error);
       }
     };
 
@@ -633,7 +623,6 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
       
       addNotification('Success', 'Meeting added successfully', 'success');
     } catch (error) {
-      console.error('Error creating meeting:', error);
       addNotification('Error', 'Failed to add meeting', 'error');
       throw error;
     } finally {
@@ -648,7 +637,6 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
       setTempSharedWith(doc.sharedWith || []);
       setIsShareEditOpen(true);
     } catch (err) {
-      console.error('Error opening share edit modal:', err);
     }
   };
 
@@ -666,7 +654,6 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
       
       addNotification('Success', 'Meeting updated successfully', 'success');
     } catch (error) {
-      console.error('Error updating meeting:', error);
       addNotification('Error', 'Failed to update meeting', 'error');
       throw error;
     } finally {
@@ -743,7 +730,6 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
       
       addNotification('Success', 'Comment added successfully', 'success');
     } catch (error: any) {
-      console.error('Error adding meeting comment:', error);
       addNotification('Error', 'Failed to add comment', 'error');
     } finally {
       setSendingMeetingComment(prev => ({ ...prev, [meetingId]: false }));
@@ -756,7 +742,6 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
       await deleteCommentFromMeeting(project.id, meetingId, commentId);
       addNotification('Success', 'Comment deleted successfully', 'success');
     } catch (error: any) {
-      console.error('Error deleting meeting comment:', error);
       addNotification('Error', 'Failed to delete comment', 'error');
     }
   };
@@ -767,7 +752,6 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
       await deleteMeeting(project.id, meetingId);
       addNotification('Success', `Meeting "${meetingTitle}" deleted successfully`, 'success');
     } catch (error: any) {
-      console.error('Error deleting meeting:', error);
       addNotification('Error', 'Failed to delete meeting', 'error');
     }
   };
@@ -780,7 +764,6 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
       addNotification('Success', 'Project deleted successfully', 'success');
       onBack(); // Go back to project list
     } catch (error: any) {
-      console.error('Error deleting project:', error);
       addNotification('Error', 'Failed to delete project', 'error');
     }
   };
@@ -979,7 +962,6 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
       setIsMemberModalOpen(false);
       setSelectedMemberId('');
     } catch (error: any) {
-      console.error("Error adding member:", error);
       addNotification("Error", "Failed to add member.", "error");
     }
   };
@@ -1020,7 +1002,6 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
               // Upload and get download URL
               fileUrl = await uploadFile(file, storagePath);
             } catch (uploadError) {
-              console.error("Upload failed, falling back to local preview:", uploadError);
               // Fallback to blob URL if upload fails (though this won't persist well)
               fileUrl = URL.createObjectURL(file);
               addNotification('Warning', `Failed to upload "${fileName}" to storage. Using local preview.`, 'warning');
@@ -1159,7 +1140,6 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
         addNotification("Success", `${createdDocIds.length} document(s) uploaded successfully to "${project.name}"`, "success", undefined, project.id, project.name);
         // Real-time listener will fetch the new documents
       } catch (error: any) {
-        console.error('Document upload error:', error);
         addNotification("Error", "Unable to upload document(s). Please check file size and try again.", "error", undefined, project.id, project.name);
       } finally {
         setIsUploadingDocument(false);
@@ -1222,7 +1202,6 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
       addNotification("Success", `Document "${doc.name}" deleted successfully`, "success");
       setIsDocDetailOpen(false);
     } catch (error) {
-      console.error('Error deleting document:', error);
       addNotification("Error", "Failed to delete document", "error");
     } finally {
       setIsDocDeleteConfirmOpen(false);
@@ -1277,7 +1256,6 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
       
       addNotification("Success", `Document "${doc.name}" approved`, "success");
     } catch (error) {
-      console.error('Error approving document:', error);
       addNotification("Error", "Failed to approve document", "error");
     } finally {
       setProcessingAction(null);
@@ -1323,7 +1301,6 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
 
       addNotification("Success", `Document "${doc.name}" rejected`, "success");
     } catch (error) {
-      console.error('Error rejecting document:', error);
       addNotification("Error", "Failed to reject document", "error");
     } finally {
       setProcessingAction(null);
@@ -1365,7 +1342,6 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
 
       addNotification("Success", `Document "${doc.name}" approved by you`, "success");
     } catch (error) {
-      console.error('Error approving document as client:', error);
       addNotification("Error", "Failed to approve document", "error");
     } finally {
       setProcessingAction(null);
@@ -1407,7 +1383,6 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
 
       addNotification("Success", `Document "${doc.name}" rejected by you`, "success");
     } catch (error) {
-      console.error('Error rejecting document as client:', error);
       addNotification("Error", "Failed to reject document", "error");
     } finally {
       setProcessingAction(null);
@@ -1483,7 +1458,6 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
 
       addNotification("Success", `Comment added to "${selectedDocument.name}"`, "success");
     } catch (error: any) {
-      console.error('Document comment error:', error);
       addNotification("Error", "Unable to add comment. Please try again.", "error");
     } finally {
       setIsSendingDocumentComment(false);
@@ -1835,7 +1809,6 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
            newRecord.id = recordId;
          }
        } catch (dbError) {
-         console.error('Database save error:', dbError);
          throw new Error('Failed to save transaction to database');
        }
 
@@ -1879,9 +1852,6 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
        setReceivedByName('');
        setReceivedByRole('');
        setCustomCategory('');
-       
-       // Log the actual error for debugging
-       console.error("Transaction save error:", error);
      }
   };
 
@@ -1973,7 +1943,6 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
 
       addNotification("Success", `Additional budget ${status === 'approved' ? 'approved' : 'rejected'} by ${approvalType === 'client' ? 'Client' : 'Admin'}`, "success", undefined, project.id, project.name);
     } catch (error: any) {
-      console.error('Approval error:', error);
       addNotification("Error", "Unable to process approval. Please try again.", "error", undefined, project.id, project.name);
     } finally {
       setProcessingAction(null);
@@ -2037,7 +2006,6 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
 
       addNotification("Success", `Payment ${status === 'approved' ? 'confirmed' : 'disputed'} by ${approvalType === 'client' ? 'Client' : 'Admin'}`, "success", undefined, project.id, project.name);
     } catch (error: any) {
-      console.error('Approval error:', error);
       addNotification("Error", "Unable to process approval. Please try again.", "error", undefined, project.id, project.name);
     } finally {
       setProcessingAction(null);
@@ -2090,7 +2058,6 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
       const roleText = approvalType === 'client' ? 'client' : 'admin';
       addNotification("Success", `Expense ${actionText} by ${roleText}`, "success", undefined, project.id, project.name);
     } catch (error) {
-      console.error('Approval error:', error);
       addNotification("Error", "Unable to process approval. Please try again.", "error", undefined, project.id, project.name);
     } finally {
       setProcessingAction(null);
@@ -2167,7 +2134,6 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
       comments: editingTask.comments || [],
       approvals: editingTask.approvals as any || defaultApprovals
     };
-    if (process.env.NODE_ENV !== 'production') console.log("Task data being saved:", taskData);
 
     // Cycle Detection Check
     if (taskData.dependencies?.includes(taskData.id)) {
@@ -2496,23 +2462,17 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
         });
         addNotification('Success', `Task marked as ${newStatus}`, 'success');
     } catch (error) {
-        console.error('Error completing task:', error);
-        addNotification('Error', 'Failed to complete task', 'error');
+addNotification('Error', 'Failed to complete task', 'error');
     }
   };
 
   const handleKanbanStatusUpdate = async (taskId: string, newStatus: TaskStatus) => {
-    console.log('🚀 handleKanbanStatusUpdate called for task:', taskId, 'new status:', newStatus);
     const task = currentTasks.find(t => t.id === taskId);
     if (!task) {
-      console.log('❌ Task not found:', taskId);
       return;
     }
 
-    console.log('📋 Found task:', task.title, 'current status:', task.status);
-
     if (isTaskFrozen(task.status)) {
-        console.log('❌ Task is frozen, cannot update');
         addNotification("Action Blocked", "Task is frozen (Aborted or On Hold).", "error");
         return;
     }
@@ -2520,15 +2480,12 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
     // STRICT: Check Approvals before DONE - DISABLED per user request for simple "Mark as Done"
     /*
     if (newStatus === TaskStatus.DONE) {
-         console.log('🔍 Checking approvals before marking as DONE');
          const startClient = task.approvals?.start?.client?.status === 'approved';
          const startAdmin = task.approvals?.start?.admin?.status === 'approved';
          const completionClient = task.approvals?.completion?.client?.status === 'approved';
          const completionAdmin = task.approvals?.completion?.admin?.status === 'approved';
-         console.log('📋 Approvals - Start Client:', startClient, 'Start Admin:', startAdmin, 'Completion Client:', completionClient, 'Completion Admin:', completionAdmin);
          
          if (!startClient || !startAdmin || !completionClient || !completionAdmin) {
-             console.log('❌ Missing required approvals');
              addNotification('Approval Required', 'All 4 approvals (Start & Completion from both Client & Admin) are required.', 'warning');
              return;
          }
@@ -2721,7 +2678,6 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
     console.log('🟢 Quick Complete clicked for task:', task.title, 'by user:', user.name, 'Current status:', task.status);
     
     if (isTaskFrozen(task.status)) {
-      console.log('❌ Task is frozen, cannot proceed');
       return;
     }
 
@@ -2874,7 +2830,6 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
         
         if (editingTask.id) {
           try {
-            if (process.env.NODE_ENV !== 'production') console.log(`🔄 Revoking ${stage}/${targetRole} approval...`);
             if (process.env.NODE_ENV !== 'production') console.log(`📝 Updated approvals:`, updatedApprovals);
             
             await updateTask(project.id, editingTask.id, { 

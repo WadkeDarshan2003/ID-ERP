@@ -34,10 +34,6 @@ export const saveSession = (user: User): void => {
 
     localStorage.setItem(SESSION_KEY, JSON.stringify(sessionData));
     localStorage.setItem(SESSION_EXPIRY_KEY, expiresAt.toISOString());
-
-    if (process.env.NODE_ENV !== 'production') {
-      console.log('💾 Session saved. Expires at:', expiresAt.toISOString());
-    }
   } catch (error) {
     console.error('Failed to save session:', error);
   }

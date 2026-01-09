@@ -9,7 +9,6 @@ import { Tenant } from '../types';
  */
 export const getTenantById = async (tenantId: string): Promise<Tenant | null> => {
   try {
-    console.log('🔍 Fetching tenant by ID:', tenantId);
     const tenantDoc = await getDoc(doc(db, 'tenants', tenantId));
     
     if (tenantDoc.exists()) {
@@ -17,14 +16,11 @@ export const getTenantById = async (tenantId: string): Promise<Tenant | null> =>
         id: tenantDoc.id,
         ...tenantDoc.data()
       } as Tenant;
-      console.log('✅ Tenant found:', tenantData);
       return tenantData;
     }
     
-    console.log('❌ Tenant not found for ID:', tenantId);
     return null;
   } catch (error) {
-    console.error('❌ Error fetching tenant:', error);
     return null;
   }
 };
@@ -39,7 +35,6 @@ export const getTenantBranding = async (tenantId?: string): Promise<{
   brandName: string;
   logoUrl: string;
 }> => {
-  console.log('🎨 Getting tenant branding for ID:', tenantId);
   
   const defaults = {
     brandName: 'Kydo Solutions',
@@ -47,7 +42,6 @@ export const getTenantBranding = async (tenantId?: string): Promise<{
   };
 
   if (!tenantId) {
-    console.log('⚠️ No tenantId provided, using defaults');
     return defaults;
   }
 
@@ -55,7 +49,6 @@ export const getTenantBranding = async (tenantId?: string): Promise<{
     const tenant = await getTenantById(tenantId);
     
     if (!tenant) {
-      console.log('⚠️ Tenant not found, using defaults');
       return defaults;
     }
 
@@ -64,10 +57,8 @@ export const getTenantBranding = async (tenantId?: string): Promise<{
       logoUrl: tenant.logoUrl || defaults.logoUrl
     };
     
-    console.log('✅ Tenant branding result:', result);
     return result;
   } catch (error) {
-    console.error('❌ Error getting tenant branding:', error);
     return defaults;
   }
 };
@@ -94,9 +85,7 @@ export const updateTenantBranding = async (
     // Use setDoc with merge option to create the document if it doesn't exist
     // or update only the specified fields if it does exist
     await setDoc(tenantRef, updateData, { merge: true });
-    console.log('✅ Tenant branding updated successfully');
   } catch (error) {
-    console.error('Error updating tenant branding:', error);
     throw error;
   }
 };

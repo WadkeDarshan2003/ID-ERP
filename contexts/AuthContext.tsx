@@ -73,9 +73,6 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
           // Save session for 24-hour persistence
           saveSession(userProfile);
           
-          if (process.env.NODE_ENV !== 'production') {
-            console.log('✅ Session restored from Firebase');
-          }
         } else {
           // Check if there's a valid cached session (24-hour persistence)
           const cachedSession = getSession();

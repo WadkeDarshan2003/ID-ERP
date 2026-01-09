@@ -164,8 +164,6 @@ export async function syncAllVendorMetrics(tenantId?: string): Promise<void> {
         }
       }
     }
-
-    if (process.env.NODE_ENV !== 'production') console.log('✅ All vendor metrics synced successfully');
   } catch (error) {
     console.error('❌ Error syncing vendor metrics:', error);
   }
