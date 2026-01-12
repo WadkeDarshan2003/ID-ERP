@@ -249,6 +249,11 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
   const [realTimeTasks, setRealTimeTasks] = useState<Map<string, Task[]>>(new Map());
   const [showNotifPermissionBanner, setShowNotifPermissionBanner] = useState(false);
 
+  // --- Project Filter State ---
+  const [projectNameFilter, setProjectNameFilter] = useState('');
+  const [projectCategoryFilterValue, setProjectCategoryFilterValue] = useState<ProjectCategory | 'All'>('All');
+  const [projectSortBy, setProjectSortBy] = useState<'name-asc' | 'name-desc' | 'progress-asc' | 'progress-desc' | 'recent-asc' | 'recent-desc'>('recent-desc');
+
   // Initialize push notifications
   useEffect(() => {
     if (user) {
@@ -672,6 +677,8 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
               </button>
               <button
                 onClick={() => setShowNotifPermissionBanner(false)}
+                aria-label="Dismiss notification banner"
+                title="Dismiss notification banner"
                 className="text-blue-600 px-2 py-1.5 rounded-lg text-sm font-medium hover:bg-blue-100 transition-colors"
               >
                 <X className="w-4 h-4" />
@@ -788,9 +795,211 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
                             </button>
                           )}
                       </div>
+
+                      {/* Project Filters */}
+                      <div className="bg-white rounded-lg border border-gray-200 p-3">
+                        {/* Desktop: All in one row */}
+                        <div className="hidden md:flex md:items-end gap-3">
+                          <div className="flex-1 min-w-[180px]">
+                            <label className="block text-xs font-medium text-gray-700 mb-1">Search by Name</label>
+                            <input
+                              type="text"
+                              placeholder="Search projects..."
+                              value={projectNameFilter}
+                              onChange={(e) => setProjectNameFilter(e.target.value)}
+                              className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-gray-900 bg-white"
+                            />
+                          </div>
+
+                          <div>
+                            <label className="block text-xs font-medium text-gray-700 mb-1">Category</label>
+                            <select
+                              aria-label="Filter by category"
+                              value={projectCategoryFilterValue}
+                              onChange={(e) => setProjectCategoryFilterValue(e.target.value as ProjectCategory | 'All')}
+                              className="px-2 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-900 bg-white hover:bg-gray-50 cursor-pointer font-medium text-gray-700 appearance-none"
+                              style={{
+                                backgroundImage: "url('data:image/svg+xml;utf8,<svg fill=\"none\" height=\"20\" viewBox=\"0 0 20 20\" width=\"20\" xmlns=\"http://www.w3.org/2000/svg\"><path d=\"M7 8l3 3 3-3\" stroke=\"%23333\" stroke-linecap=\"round\" stroke-linejoin=\"round\" stroke-width=\"1.5\"></path></svg>')",
+                                backgroundPosition: 'right 0.5rem center',
+                                backgroundRepeat: 'no-repeat',
+                                backgroundSize: '1.25rem 1.25rem',
+                                paddingRight: '1.75rem'
+                              }}
+                            >
+                              <option value="All">All Categories</option>
+                              <option value={ProjectCategory.RESIDENTIAL}>Residential</option>
+                              <option value={ProjectCategory.COMMERCIAL}>Commercial</option>
+                            </select>
+                          </div>
+
+                          <div>
+                            <label className="block text-xs font-medium text-gray-700 mb-1">Sort By</label>
+                            <select
+                              aria-label="Sort projects"
+                              value={projectSortBy}
+                              onChange={(e) => setProjectSortBy(e.target.value as 'name-asc' | 'name-desc' | 'progress-asc' | 'progress-desc' | 'recent-asc' | 'recent-desc')}
+                              className="px-2 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-900 bg-white hover:bg-gray-50 cursor-pointer font-medium text-gray-700 appearance-none"
+                              style={{
+                                backgroundImage: "url('data:image/svg+xml;utf8,<svg fill=\"none\" height=\"20\" viewBox=\"0 0 20 20\" width=\"20\" xmlns=\"http://www.w3.org/2000/svg\"><path d=\"M7 8l3 3 3-3\" stroke=\"%23333\" stroke-linecap=\"round\" stroke-linejoin=\"round\" stroke-width=\"1.5\"></path></svg>')",
+                                backgroundPosition: 'right 0.5rem center',
+                                backgroundRepeat: 'no-repeat',
+                                backgroundSize: '1.25rem 1.25rem',
+                                paddingRight: '1.75rem'
+                              }}
+                            >
+                              <option value="recent-desc">Recent (Newest First)</option>
+                              <option value="recent-asc">Recent (Oldest First)</option>
+                              <option value="name-asc">Name (A-Z)</option>
+                              <option value="name-desc">Name (Z-A)</option>
+                              <option value="progress-asc">Progress (Low to High)</option>
+                              <option value="progress-desc">Progress (High to Low)</option>
+                            </select>
+                          </div>
+
+                          {(projectNameFilter || projectCategoryFilterValue !== 'All') && (
+                            <button
+                              type="button"
+                              aria-label="Clear all filters"
+                              title="Clear all filters"
+                              onClick={() => {
+                                setProjectNameFilter('');
+                                setProjectCategoryFilterValue('All');
+                              }}
+                              className="px-2 py-1.5 bg-gray-200 hover:bg-gray-300 rounded text-xs font-medium transition-colors whitespace-nowrap"
+                            >
+                              Clear
+                            </button>
+                          )}
+                        </div>
+
+                        {/* Mobile: Search above, Category and Sort in one row */}
+                        <div className="md:hidden space-y-3">
+                          <div className="flex items-end">
+                            <div className="flex-1 min-w-[180px]">
+                              <label className="block text-xs font-medium text-gray-700 mb-1">Search by Name</label>
+                              <input
+                                type="text"
+                                placeholder="Search projects..."
+                                value={projectNameFilter}
+                                onChange={(e) => setProjectNameFilter(e.target.value)}
+                                className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-gray-900 bg-white"
+                              />
+                            </div>
+                          </div>
+
+                          <div className="flex items-end gap-3 flex-wrap">
+                            <div>
+                              <label className="block text-xs font-medium text-gray-700 mb-1">Category:</label>
+                              <select
+                                aria-label="Filter by category"
+                                value={projectCategoryFilterValue}
+                                onChange={(e) => setProjectCategoryFilterValue(e.target.value as ProjectCategory | 'All')}
+                                className="px-2 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-900 bg-white hover:bg-gray-50 cursor-pointer font-medium text-gray-700 appearance-none"
+                                style={{
+                                  backgroundImage: "url('data:image/svg+xml;utf8,<svg fill=\"none\" height=\"20\" viewBox=\"0 0 20 20\" width=\"20\" xmlns=\"http://www.w3.org/2000/svg\"><path d=\"M7 8l3 3 3-3\" stroke=\"%23333\" stroke-linecap=\"round\" stroke-linejoin=\"round\" stroke-width=\"1.5\"></path></svg>')",
+                                  backgroundPosition: 'right 0.5rem center',
+                                  backgroundRepeat: 'no-repeat',
+                                  backgroundSize: '1.25rem 1.25rem',
+                                  paddingRight: '1.75rem'
+                                }}
+                              >
+                                <option value="All">All Categories</option>
+                                <option value={ProjectCategory.RESIDENTIAL}>Residential</option>
+                                <option value={ProjectCategory.COMMERCIAL}>Commercial</option>
+                              </select>
+                            </div>
+                            
+
+                            <div>
+                              <label className="block text-xs font-medium text-gray-700 mb-1">Sort By: </label>
+                              <select
+                                aria-label="Sort projects"
+                                value={projectSortBy}
+                                onChange={(e) => setProjectSortBy(e.target.value as 'name-asc' | 'name-desc' | 'progress-asc' | 'progress-desc' | 'recent-asc' | 'recent-desc')}
+                                className="px-2 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-900 bg-white hover:bg-gray-50 cursor-pointer font-medium text-gray-700 appearance-none"
+                                style={{
+                                  backgroundImage: "url('data:image/svg+xml;utf8,<svg fill=\"none\" height=\"20\" viewBox=\"0 0 20 20\" width=\"20\" xmlns=\"http://www.w3.org/2000/svg\"><path d=\"M7 8l3 3 3-3\" stroke=\"%23333\" stroke-linecap=\"round\" stroke-linejoin=\"round\" stroke-width=\"1.5\"></path></svg>')",
+                                  backgroundPosition: 'right 0.5rem center',
+                                  backgroundRepeat: 'no-repeat',
+                                  backgroundSize: '1.25rem 1.25rem',
+                                  paddingRight: '1.75rem'
+                                }}
+                              >
+                                <option value="recent-desc">Recent (Newest First)</option>
+                                <option value="recent-asc">Recent (Oldest First)</option>
+                                <option value="name-asc">Name (A-Z)</option>
+                                <option value="name-desc">Name (Z-A)</option>
+                                <option value="progress-asc">Progress (Low to High)</option>
+                                <option value="progress-desc">Progress (High to Low)</option>
+                              </select>
+                            </div>
+
+                            {(projectNameFilter || projectCategoryFilterValue !== 'All') && (
+                              <button
+                                type="button"
+                                aria-label="Clear all filters"
+                                title="Clear all filters"
+                                onClick={() => {
+                                  setProjectNameFilter('');
+                                  setProjectCategoryFilterValue('All');
+                                }}
+                                className="px-2 py-1.5 bg-gray-200 hover:bg-gray-300 rounded text-xs font-medium transition-colors whitespace-nowrap"
+                              >
+                                Clear
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
                       {visibleProjects.length > 0 ? (
                         <ProjectList 
-                          projects={visibleProjects} 
+                          projects={(() => {
+                            // First filter the projects
+                            let filtered = visibleProjects.filter(p => {
+                              // Name filter
+                              if (projectNameFilter.trim() && !p.name.toLowerCase().includes(projectNameFilter.toLowerCase())) {
+                                return false;
+                              }
+                              // Category filter
+                              if (projectCategoryFilterValue !== 'All' && p.category !== projectCategoryFilterValue) {
+                                return false;
+                              }
+                              return true;
+                            });
+
+                            // Then sort the filtered projects
+                            return filtered.sort((a, b) => {
+                              switch (projectSortBy) {
+                                case 'name-asc':
+                                  return a.name.localeCompare(b.name);
+                                case 'name-desc':
+                                  return b.name.localeCompare(a.name);
+                                case 'progress-asc': {
+                                  const progressA = calculateProjectProgress(realTimeTasks.get(a.id) || []);
+                                  const progressB = calculateProjectProgress(realTimeTasks.get(b.id) || []);
+                                  return progressA - progressB;
+                                }
+                                case 'progress-desc': {
+                                  const progressA = calculateProjectProgress(realTimeTasks.get(a.id) || []);
+                                  const progressB = calculateProjectProgress(realTimeTasks.get(b.id) || []);
+                                  return progressB - progressA;
+                                }
+                                case 'recent-asc': {
+                                  const dateA = new Date(typeof a.createdAt === 'string' ? a.createdAt : (a.createdAt as any)?.toDate?.() || new Date());
+                                  const dateB = new Date(typeof b.createdAt === 'string' ? b.createdAt : (b.createdAt as any)?.toDate?.() || new Date());
+                                  return dateA.getTime() - dateB.getTime();
+                                }
+                                case 'recent-desc': {
+                                  const dateA = new Date(typeof a.createdAt === 'string' ? a.createdAt : (a.createdAt as any)?.toDate?.() || new Date());
+                                  const dateB = new Date(typeof b.createdAt === 'string' ? b.createdAt : (b.createdAt as any)?.toDate?.() || new Date());
+                                  return dateB.getTime() - dateA.getTime();
+                                }
+                                default:
+                                  return 0;
+                              }
+                            });
+                          })()} 
                           onSelect={(project) => {
                             setSelectedProject(project);
                             setSelectedTask(null);

@@ -1,11 +1,37 @@
 rules_version = '2';
 
-// Firebase Storage Security Rules - No restrictions
+// Firebase Storage Security Rules
 service firebase.storage {
   match /b/{bucket}/o {
-    // Allow all operations on all files
+    // Helper function
+    function isAuth() { return request.auth != null; }
+
+    // Existing thumbnails path (for backward compatibility)
+    match /thumbnails/{projectId}/{allPaths=**} {
+      allow read, write: if isAuth();
+    }
+
+    // Tenant-level files (general documents, thumbnails, etc.)
+    match /tenants/{tenantId}/{allPaths=**} {
+      allow write: if isAuth() && request.auth.token.tenantId == tenantId;
+      allow read: if isAuth() && request.auth.token.tenantId == tenantId;
+    }
+
+    // Project-specific files
+    match /tenants/{tenantId}/projects/{projectId}/{allPaths=**} {
+      allow write: if isAuth() && request.auth.token.tenantId == tenantId;
+      allow read: if isAuth() && request.auth.token.tenantId == tenantId;
+    }
+
+    // Task attachments within projects
+    match /tenants/{tenantId}/projects/{projectId}/tasks/{taskId}/{allPaths=**} {
+      allow write: if isAuth() && request.auth.token.tenantId == tenantId;
+      allow read: if isAuth() && request.auth.token.tenantId == tenantId;
+    }
+
+    // Fallback: deny all other access
     match /{allPaths=**} {
-      allow read, write: if true;
+      allow read, write: if false;
     }
   }
 }

@@ -2835,7 +2835,6 @@ addNotification('Error', 'Failed to complete task', 'error');
             await updateTask(project.id, editingTask.id, { 
               approvals: updatedApprovals
             });
-            if (process.env.NODE_ENV !== 'production') console.log(`✅ Approval updated in Firebase`);
             
             const revokeNow = new Date().toISOString();
             await logTimelineEvent(
@@ -2846,7 +2845,6 @@ addNotification('Error', 'Failed to complete task', 'error');
               revokeNow,
               revokeNow
             );
-            if (process.env.NODE_ENV !== 'production') console.log(`✅ Timeline event logged`);
             
             addNotification('Approval Revoked', `${targetRole} approval for ${stage} stage revoked.`, 'info');
           } catch (error) {

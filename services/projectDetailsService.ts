@@ -158,7 +158,6 @@ export const updateTask = async (projectId: string, taskId: string, updates: Par
     const cleanedUpdates = Object.fromEntries(
       Object.entries({ ...updates }).filter(([_, v]) => v !== undefined)
     );
-    if (process.env.NODE_ENV !== 'production') console.log(`📤 Updating task ${taskId} with:`, cleanedUpdates);
     await updateDoc(doc(db, "projects", projectId, "tasks", taskId), {
       ...cleanedUpdates,
       updatedAt: new Date()
@@ -187,7 +186,6 @@ export const updateTask = async (projectId: string, taskId: string, updates: Par
       }
     }
 
-    if (process.env.NODE_ENV !== 'production') console.log(`✅ Task ${taskId} updated in Firestore`);
   } catch (error) {
     console.error("Error updating task:", error);
     throw error;
@@ -656,7 +654,6 @@ export const createTimeline = async (projectId: string, timeline: Omit<Timeline,
       createdAt: new Date(),
       updatedAt: new Date()
     });
-    if (process.env.NODE_ENV !== 'production') console.log(`✅ Timeline created: ${timeline.title}`);
     return newDocRef.id;
   } catch (error) {
     console.error("Error creating timeline:", error);
@@ -711,7 +708,6 @@ export const subscribeToTimelines = (projectId: string, callback: (timelines: Ti
       timelinesRef,
       (snapshot) => {
         const timelines = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as Timeline));
-        if (process.env.NODE_ENV !== 'production') console.log(`📥 Real-time update from timelines: ${timelines.length} timelines`);
         callback(timelines);
       },
       (error) => {

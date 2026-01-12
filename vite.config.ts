@@ -18,6 +18,34 @@ export default defineConfig(({ mode }) => {
         alias: {
           '@': path.resolve(__dirname, '.'),
         }
+      },
+      build: {
+        target: 'ES2020',
+        minify: 'terser',
+        terserOptions: {
+          compress: {
+            drop_console: true,
+            dead_code: true,
+            passes: 2,
+          },
+          mangle: true,
+          output: {
+            comments: false,
+          },
+        },
+        rollupOptions: {
+          output: {
+            manualChunks: {
+              'firebase': ['firebase/app', 'firebase/auth', 'firebase/firestore', 'firebase/storage', 'firebase/functions'],
+              'recharts': ['recharts'],
+              'vendor': ['react', 'react-dom'],
+            },
+          },
+        },
+        chunkSizeWarningLimit: 500,
+        sourcemap: false,
+        cssCodeSplit: true,
+        reportCompressedSize: true,
       }
     };
 });

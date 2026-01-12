@@ -992,7 +992,7 @@ const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, p
                 <h3 className="text-lg font-bold text-gray-900">Assign to Project</h3>
                 <p className="text-xs text-gray-500">Add {userToAssign.name} to a project team</p>
               </div>
-              <button onClick={() => setIsAssignModalOpen(false)} className="text-gray-400 hover:text-gray-600">
+              <button type="button" onClick={() => setIsAssignModalOpen(false)} className="text-gray-400 hover:text-gray-600" aria-label="Close assign modal" title="Close">
                 <X className="w-5 h-5" />
               </button>
             </div>
