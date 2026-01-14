@@ -240,8 +240,8 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
         // Create project first
         const projectId = await createNewProject(newProject);
         
-        // Create timeline event for project creation
-        await logTimelineEvent(
+        // Create timeline event for project creation - background
+        logTimelineEvent(
           projectId,
           `Project Created: ${formData.name}`,
           `Project initialized by ${user?.name || 'System'}. Category: ${formData.category}, Type: ${formData.type}. Budget: ₹${Number(formData.budget).toLocaleString()}`,
@@ -250,7 +250,6 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
           formatIndianToISO(formData.deadline)
         ).catch((err: any) => {
           console.error('Failed to log project creation timeline:', err);
-          // Don't fail the project creation if timeline fails
         });
         
         let thumbnailUrl: string | undefined;

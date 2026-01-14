@@ -68,11 +68,12 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
       showLoading('Saving transaction...');
       const id = await createFinancialRecord(record);
       const newRecord = { ...record, id } as FinancialRecord;
-      // Sync after successful creation
-      await Promise.all([
+      // Sync after successful creation - run in background (don't await)
+      Promise.all([
         syncAllVendorsEarnings(user?.tenantId),
         syncProjectBudget(project.id, [...currentFinancials, newRecord])
-      ]);
+      ]).catch(err => console.error("Background sync error:", err));
+      
       return id;
     } catch (error) {
       throw error;
@@ -84,11 +85,11 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
   const updateFinancialRecordAndSync = async (recordId: string, updates: Partial<FinancialRecord>) => {
     try {
       await updateFinancialRecord(recordId, updates);
-      // Sync after successful update
-      await Promise.all([
+      // Sync after successful update - run in background
+      Promise.all([
         syncAllVendorsEarnings(user?.tenantId),
         syncProjectBudget(project.id, currentFinancials)
-      ]);
+      ]).catch(err => console.error("Background sync error:", err));
     } catch (error) {
       throw error;
     }
@@ -96,11 +97,11 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
   const deleteFinancialRecordAndSync = async (recordId: string) => {
     try {
       await deleteFinancialRecord(recordId);
-      // Sync after successful deletion
-      await Promise.all([
+      // Sync after successful deletion - run in background
+      Promise.all([
         syncAllVendorsEarnings(user?.tenantId),
         syncProjectBudget(project.id, currentFinancials)
-      ]);
+      ]).catch(err => console.error("Background sync error:", err));
     } catch (error) {
       throw error;
     }
@@ -627,8 +628,8 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
       setIsSavingMeeting(true);
       const meetingId = await createMeeting(project.id, meeting);
       
-      // Create timeline event for meeting creation
-      await logTimelineEvent(
+      // Create timeline event for meeting creation - background
+      logTimelineEvent(
         project.id,
         `Meeting Created: ${meeting.title}`,
         `Meeting Type: ${meeting.type}. Attendees: ${meeting.attendees.length}. Date: ${meeting.date}`,
@@ -637,16 +638,25 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
         meeting.date
       ).catch((err: any) => {
         console.error('Failed to log meeting creation timeline:', err);
-        // Don't fail the meeting creation if timeline fails
       });
       
-      // Send meeting notification emails to attendees
+      // Send meeting notification emails to attendees - background
       if (meeting.attendees && meeting.attendees.length > 0) {
         const attendeeUsers = projectTeam.filter(u => meeting.attendees.includes(u.id));
         const createdMeeting = { ...meeting, id: meetingId };
-        await sendMeetingNotificationEmail(createdMeeting, attendeeUsers, project.name, project.id, 'created');
+        sendMeetingNotificationEmail(createdMeeting, attendeeUsers, project.name, project.id, 'created')
+          .catch(err => console.error('Failed to send meeting email:', err));
       }
       
+      // Update activity log
+      const log = logActivity('Meeting Created', `Created meeting "${meeting.title}" on ${meeting.date}`, 'info');
+      
+      // Update local state (activity log only) - meeting itself is handled via subscription
+      onUpdateProject({
+        ...project,
+        activityLog: [log, ...(project.activityLog || [])]
+      });
+
       addNotification('Success', 'Meeting added successfully', 'success');
     } catch (error) {
       addNotification('Error', 'Failed to add meeting', 'error');
@@ -2218,26 +2228,27 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
         // Save to Firestore subcollection
         await updateTask(project.id, taskData.id, taskData);
         
-        // Create detailed timeline event with progress info
+        // Create detailed timeline event with progress info - background
         const progress = calculateTaskProgress(taskData);
         const updateAssigneeName = taskData.assigneeId ? getAssigneeName(taskData.assigneeId) : 'Unassigned';
         const detailedDescription = `Priority: ${taskData.priority} | Status: ${taskData.status} | Assigned to: ${updateAssigneeName} | Progress: ${progress}% | Due: ${taskData.dueDate}${changeDetails ? ' | Changes: ' + changeDetails : ''}`;
         
-        await logTimelineEvent(
+        logTimelineEvent(
           project.id,
           `Task Updated: ${taskData.title}`,
           detailedDescription,
           taskData.status === TaskStatus.DONE ? 'completed' : 'in-progress',
           new Date().toISOString(),
           new Date().toISOString()
-        );
+        ).catch(err => console.error("Timeline log failed:", err));
         
-        // Notify Assignee if changed
+        // Notify Assignee if changed - background
         if (oldTask && oldTask.assigneeId !== taskData.assigneeId && taskData.assigneeId) {
             const newAssignee = users.find(u => u.id === taskData.assigneeId);
             if (newAssignee) {
               // Send task assignment notification with link
-              await sendTaskAssignmentNotificationEmail(taskData, newAssignee, project.name, project.id, 'updated');
+              sendTaskAssignmentNotificationEmail(taskData, newAssignee, project.name, project.id, 'updated')
+                .catch(err => console.error("Email send failed:", err));
             }
             notifyUser(taskData.assigneeId, 'Task Reassignment', `You have been assigned to task "${taskData.title}" in "${project.name}"`, 'info', 'plan');
         }
@@ -2249,23 +2260,24 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
         // Save to Firestore subcollection
         await createTask(project.id, taskData);
         
-        // Log timeline event for task creation - ensure dates are valid
+        // Log timeline event for task creation - ensure dates are valid - background
         const newAssigneeName = taskData.assigneeId ? getAssigneeName(taskData.assigneeId) : 'Unassigned';
-        await logTimelineEvent(
+        logTimelineEvent(
           project.id,
           `Task Created: ${taskData.title}`,
           `Assigned to ${newAssigneeName}. Priority: ${taskData.priority}, Due: ${taskData.dueDate}`,
           'planned',
           new Date().toISOString(),
           new Date().toISOString()
-        );
+        ).catch(err => console.error("Timeline log failed:", err));
         
-        // Send email notification to assignee
+        // Send email notification to assignee - background
         if (taskData.assigneeId) {
           const assignee = users.find(u => u.id === taskData.assigneeId);
           if (assignee) {
             // Send new detailed notification with task link (single notification)
-            await sendTaskAssignmentNotificationEmail(taskData, assignee, project.name, project.id, 'created');
+            sendTaskAssignmentNotificationEmail(taskData, assignee, project.name, project.id, 'created')
+              .catch(err => console.error("Email send failed:", err));
           }
           
           // In-app notification
