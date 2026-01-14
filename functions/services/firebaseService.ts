@@ -496,3 +496,36 @@ export const subscribeToClients = (callback: (clients: User[]) => void): Unsubsc
     }
   });
 };
+// ============ TENANT MANAGEMENT ============
+
+/**
+ * Get all available tenants for the current admin
+ * Admins can see and manage tenants they own
+ */
+export const getAvailableTenants = async (adminId: string): Promise<any[]> => {
+  try {
+    const q = query(collection(db, 'tenants'), where('ownerId', '==', adminId));
+    const snapshot = await getDocs(q);
+    return snapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data()
+    }));
+  } catch (error) {
+    console.error('Error fetching available tenants:', error);
+    return [];
+  }
+};
+
+/**
+ * Subscribe to available tenants for the current admin (real-time)
+ */
+export const subscribeToAvailableTenants = (adminId: string, callback: (tenants: any[]) => void): Unsubscribe => {
+  const q = query(collection(db, 'tenants'), where('ownerId', '==', adminId));
+  return onSnapshot(q, (snapshot) => {
+    const tenants = snapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data()
+    }));
+    callback(tenants);
+  });
+};

@@ -249,7 +249,23 @@ export const deleteProject = async (projectId: string): Promise<void> => {
 };
 
 // Real-time listener for projects
-export const subscribeToProjects = (callback: (projects: Project[]) => void, tenantId?: string): Unsubscribe => {
+// Supports multi-tenant designers/vendors who have tenantIds array
+export const subscribeToProjects = (callback: (projects: Project[]) => void, tenantId?: string, tenantIds?: string[]): Unsubscribe => {
+  // If user has multiple tenantIds (multi-tenant designer/vendor), fetch ALL projects and filter in memory
+  if (tenantIds && tenantIds.length > 0) {
+    return onSnapshot(query(projectsRef), (snapshot) => {
+      let projects = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as Project));
+      // Filter to only projects from user's tenants
+      projects = projects.filter(p => tenantIds.includes(p.tenantId));
+      callback(projects);
+    }, (error) => {
+      if (error.code !== 'permission-denied') {
+        console.error('❌ Error in projects collection listener:', error);
+      }
+    });
+  }
+  
+  // Single tenant case (admin, client, etc.)
   let q = query(projectsRef);
   if (tenantId) {
     q = query(projectsRef, where('tenantId', '==', tenantId));
@@ -524,9 +540,15 @@ export const seedDatabase = async (projects: Project[], users: User[]): Promise<
 
 // Real-time listener for designers
 export const subscribeToDesigners = (callback: (designers: User[]) => void, tenantId?: string): Unsubscribe => {
-  let q = query(collection(db, "designers"));
+  let q: any;
   if (tenantId) {
-    q = query(collection(db, "designers"), where('tenantId', '==', tenantId));
+    // Query for designers that have this tenantId in their tenantIds array OR old single tenantId field
+    q = query(
+      collection(db, "designers"),
+      where('tenantIds', 'array-contains', tenantId)
+    );
+  } else {
+    q = query(collection(db, "designers"));
   }
   return onSnapshot(q, (snapshot) => {
     const designers = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as User));
@@ -542,9 +564,15 @@ export const subscribeToDesigners = (callback: (designers: User[]) => void, tena
 
 // Real-time listener for vendors
 export const subscribeToVendors = (callback: (vendors: User[]) => void, tenantId?: string): Unsubscribe => {
-  let q = query(collection(db, "vendors"));
+  let q: any;
   if (tenantId) {
-    q = query(collection(db, "vendors"), where('tenantId', '==', tenantId));
+    // Query for vendors that have this tenantId in their tenantIds array OR old single tenantId field
+    q = query(
+      collection(db, "vendors"),
+      where('tenantIds', 'array-contains', tenantId)
+    );
+  } else {
+    q = query(collection(db, "vendors"));
   }
   return onSnapshot(q, (snapshot) => {
     const vendors = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as User));
@@ -573,5 +601,30 @@ export const subscribeToClients = (callback: (clients: User[]) => void, tenantId
     if (error.code !== 'permission-denied') {
       console.error('❌ Error in clients collection listener:', error);
     }
+  });
+};
+
+// ============ TENANT MANAGEMENT ============
+
+// Get available tenants for an admin
+export const getAvailableTenants = async (adminId: string): Promise<any[]> => {
+  try {
+    const q = query(collection(db, 'tenants'), where('ownerId', '==', adminId));
+    const snapshot = await getDocs(q);
+    return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+  } catch (error) {
+    console.error('Error fetching available tenants:', error);
+    return [];
+  }
+};
+
+// Subscribe to available tenants for an admin (real-time)
+export const subscribeToAvailableTenants = (adminId: string, callback: (tenants: any[]) => void): Unsubscribe => {
+  const q = query(collection(db, 'tenants'), where('ownerId', '==', adminId));
+  return onSnapshot(q, (snapshot) => {
+    const tenants = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    callback(tenants);
+  }, (error) => {
+    console.error('Error listening to available tenants:', error);
   });
 };

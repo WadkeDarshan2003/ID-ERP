@@ -35,6 +35,9 @@ try {
 export const messaging = messagingInstance;
 
 // Enable offline persistence for Firestore
+// DISABLED: Causes cross-tenant data leakage when switching users
+// Uncomment below if you want offline functionality, but implement proper cache clearing on logout
+/*
 try {
   enableIndexedDbPersistence(db).catch((error) => {
     if (error.code === "failed-precondition") {
@@ -46,5 +49,6 @@ try {
 } catch (error) {
   console.warn("Firestore persistence error:", error);
 }
+*/
 
 export default app;

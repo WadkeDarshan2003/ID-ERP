@@ -25,6 +25,8 @@ export const updateUserInFirebase = async (user: User): Promise<void> => {
 
     if (user.company) updateData.company = user.company;
     if (user.specialty) updateData.specialty = user.specialty;
+    // Preserve tenantIds for multi-tenant vendors/designers
+    if (user.tenantIds && user.tenantIds.length > 0) updateData.tenantIds = user.tenantIds;
 
     // Use setDoc with merge: true instead of updateDoc to handle cases where document might be missing
     await setDoc(userRef, updateData, { merge: true });
@@ -95,6 +97,14 @@ export const createUserInFirebase = async (
     }
 
     // Step 2: Prepare user profile for Firestore
+    let finalTenantIds = user.tenantIds || [];
+
+    // For Vendors/Designers: Use tenantIds array for multi-tenant support
+    // If tenantIds not provided, fallback to firebaseUid
+    if ((user.role === Role.VENDOR || user.role === Role.DESIGNER) && finalTenantIds.length === 0) {
+      finalTenantIds = [firebaseUid];
+    }
+
     const userProfile: any = {
       id: firebaseUid,
       name: user.name,
@@ -104,6 +114,11 @@ export const createUserInFirebase = async (
       password: user.password,
       authMethod: user.authMethod || 'email'
     };
+
+    // Add tenantIds for vendors and designers (multi-tenant support)
+    if ((user.role === Role.VENDOR || user.role === Role.DESIGNER) && finalTenantIds.length > 0) {
+      userProfile.tenantIds = finalTenantIds;
+    }
 
     // Add optional fields only if they exist
     if (user.company) userProfile.company = user.company;

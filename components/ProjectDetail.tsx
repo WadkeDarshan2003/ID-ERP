@@ -147,7 +147,20 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
 
   // Email/Action Loading States
   const [sendingEmailFor, setSendingEmailFor] = useState<string | null>(null);
-  const [processingAction, setProcessingAction] = useState<string | null>(null);
+  const [processingActions, setProcessingActions] = useState<Set<string>>(new Set());
+
+  // Helper functions for managing concurrent actions
+  const isProcessing = (actionId: string) => processingActions.has(actionId);
+  const startProcessing = (actionId: string) => {
+    setProcessingActions(prev => new Set([...prev, actionId]));
+  };
+  const stopProcessing = (actionId: string) => {
+    setProcessingActions(prev => {
+      const newSet = new Set(prev);
+      newSet.delete(actionId);
+      return newSet;
+    });
+  };
 
 
 
@@ -614,6 +627,19 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
       setIsSavingMeeting(true);
       const meetingId = await createMeeting(project.id, meeting);
       
+      // Create timeline event for meeting creation
+      await logTimelineEvent(
+        project.id,
+        `Meeting Created: ${meeting.title}`,
+        `Meeting Type: ${meeting.type}. Attendees: ${meeting.attendees.length}. Date: ${meeting.date}`,
+        'planned',
+        meeting.date,
+        meeting.date
+      ).catch((err: any) => {
+        console.error('Failed to log meeting creation timeline:', err);
+        // Don't fail the meeting creation if timeline fails
+      });
+      
       // Send meeting notification emails to attendees
       if (meeting.attendees && meeting.attendees.length > 0) {
         const attendeeUsers = projectTeam.filter(u => meeting.attendees.includes(u.id));
@@ -981,8 +1007,8 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
         const filesToUpload: File[] = selectedFiles.length > 0 ? selectedFiles : [{ name: newDoc.name } as File];
         const createdDocIds: string[] = [];
 
-        // Upload each file
-        for (const file of filesToUpload) {
+        // PARALLEL: Upload all files simultaneously
+        const uploadPromises = filesToUpload.map(async (file, index) => {
           const fileName = file.name || newDoc.name;
           
           // Determine type
@@ -998,7 +1024,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
           if (file instanceof File && file.size) {
             try {
               // Create a unique path for the file
-              const storagePath = `projects/${project.id}/documents/${Date.now()}_${file.name}`;
+              const storagePath = `projects/${project.id}/documents/${Date.now()}_${index}_${file.name}`;
               // Upload and get download URL
               fileUrl = await uploadFile(file, storagePath);
             } catch (uploadError) {
@@ -1023,8 +1049,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
           
           // Save to Firestore subcollection
           const createdDocId = await createDocument(project.id, doc as Omit<ProjectDocument, 'id'>);
-          createdDocIds.push(createdDocId);
-
+          
           // Convert shared IDs to names for timeline
           const sharedNames = newDoc.sharedWith.length > 0 
             ? newDoc.sharedWith.map(id => {
@@ -1034,17 +1059,23 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
               }).join(', ')
             : 'Admin, Designer, Client';
 
-          // Log timeline event
+          // Log timeline event (parallel, don't await)
           const now = new Date().toISOString();
-          await logTimelineEvent(
+          logTimelineEvent(
             project.id,
             `Document Uploaded: ${fileName}`,
             `${fileName} (${docType}) uploaded by ${user.name}. Shared with: ${sharedNames}`,
             'completed',
             now,
             now
-          );
-        }
+          ).catch(err => console.error('Timeline logging failed:', err));
+
+          return { createdDocId, doc, fileName };
+        });
+
+        // Wait for all uploads and saves to complete
+        const uploadResults = await Promise.all(uploadPromises);
+        uploadResults.forEach(result => createdDocIds.push(result.createdDocId));
 
         // If attaching to a task, update the task with all document IDs
         if (newDoc.attachToTaskId && createdDocIds.length > 0) {
@@ -1058,11 +1089,11 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
             if (newDocIds.length > 0) {
               const updatedDocArray = [...taskDocs, ...newDocIds];
               
-              // Update Firestore
-              await updateTask(project.id, targetTask.id, {
+              // Update Firestore (fire and forget, don't await)
+              updateTask(project.id, targetTask.id, {
                 ...targetTask,
                 documents: updatedDocArray
-              });
+              }).catch(err => console.error('Task update failed:', err));
               
               // Sync editingTask state if it's the same task
               if (editingTask?.id === targetTask.id) {
@@ -1090,18 +1121,10 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
             activityLog: [log, ...(project.activityLog || [])]
         });
         
-        // Send notifications to shared users
-        for (let i = 0; i < createdDocIds.length; i++) {
-          const doc = {
-            id: createdDocIds[i],
-            name: selectedFiles[i]?.name || newDoc.name,
-            type: newDoc.type,
-            url: '',
-            uploadedBy: user.id,
-            uploadDate: new Date().toISOString(),
-            sharedWith: newDoc.sharedWith.length > 0 ? newDoc.sharedWith : [Role.ADMIN, Role.DESIGNER, Role.CLIENT],
-            approvalStatus: 'pending' as const
-          };
+        // PARALLEL: Send notifications to all shared users simultaneously
+        const notificationPromises = uploadResults.map(async (result) => {
+          const doc = result.doc;
+          doc.id = result.createdDocId;
 
           // Get recipients - admins and users in sharedWith
           const recipients: User[] = [];
@@ -1121,15 +1144,19 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
           );
           
           if (uniqueRecipients.length > 0) {
-            await sendDocumentUploadNotificationEmail(
-              doc,
+            // Fire and forget - don't wait for email notifications
+            sendDocumentUploadNotificationEmail(
+              doc as ProjectDocument,
               user.name,
               project.name,
               uniqueRecipients,
               project.id
-            );
+            ).catch(err => console.error('Email notification failed:', err));
           }
-        }
+        });
+
+        // Send all notifications in parallel (fire and forget)
+        Promise.allSettled(notificationPromises).catch(err => console.error('Notification errors:', err));
         
         notifyProjectTeam('Files Added', `${user.name} uploaded ${createdDocIds.length} document(s) to "${project.name}"`, user.id, 'documents');
         
@@ -1217,8 +1244,9 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
   };
 
   const handleApproveDocument = async (doc: ProjectDocument) => {
-    if (processingAction) return;
-    setProcessingAction(`approve-doc-${doc.id}`);
+    const actionId = `approve-doc-${doc.id}`;
+    if (isProcessing(actionId)) return;
+    startProcessing(actionId);
     try {
       await updateDocument(project.id, doc.id, {
         approvalStatus: 'approved',
@@ -1226,45 +1254,46 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
         approvalDate: new Date().toISOString()
       });
       
-      // Show loader for at least 500ms for visibility
-      await new Promise(resolve => setTimeout(resolve, 500));
-      
-      // Send approval email to document recipients and team
-      const recipientIds = new Set<string>();
-      // Include lead designer and uploader
-      if (project.leadDesignerId) recipientIds.add(project.leadDesignerId);
-      if (doc.uploadedBy) recipientIds.add(doc.uploadedBy);
-      // Include anyone the document is explicitly shared with
-      (doc.sharedWith || []).forEach(id => recipientIds.add(id));
-      // Include client only if the document was shared with them
-      if (project.clientId && doc.sharedWith?.includes(project.clientId)) recipientIds.add(project.clientId);
-      // Include all tenant admins
-      users.filter(u => u.role === Role.ADMIN && u.tenantId === user.tenantId).forEach(u => recipientIds.add(u.id));
+      // Don't wait for email - send it in background
+      const emailPromise = (async () => {
+        // Send approval email to document recipients and team
+        const recipientIds = new Set<string>();
+        // Include lead designer and uploader
+        if (project.leadDesignerId) recipientIds.add(project.leadDesignerId);
+        if (doc.uploadedBy) recipientIds.add(doc.uploadedBy);
+        // Include anyone the document is explicitly shared with
+        (doc.sharedWith || []).forEach(id => recipientIds.add(id));
+        // Include client only if the document was shared with them
+        if (project.clientId && doc.sharedWith?.includes(project.clientId)) recipientIds.add(project.clientId);
+        // Include all tenant admins
+        users.filter(u => u.role === Role.ADMIN && u.tenantId === user.tenantId).forEach(u => recipientIds.add(u.id));
 
-      const relevantUsers = users.filter(u => recipientIds.has(u.id));
+        const relevantUsers = users.filter(u => recipientIds.has(u.id));
 
-      if (relevantUsers.length > 0) {
-        await sendDocumentAdminApprovalNotificationEmail(
-          doc,
-          user.name || 'Unknown User',
-          relevantUsers,
-          project.name,
-          project.id,
-          'approved'
-        );
-      }
+        if (relevantUsers.length > 0) {
+          await sendDocumentAdminApprovalNotificationEmail(
+            doc,
+            user.name || 'Unknown User',
+            relevantUsers,
+            project.name,
+            project.id,
+            'approved'
+          );
+        }
+      })();
       
       addNotification("Success", `Document "${doc.name}" approved`, "success");
     } catch (error) {
       addNotification("Error", "Failed to approve document", "error");
     } finally {
-      setProcessingAction(null);
+      stopProcessing(actionId);
     }
   };
 
   const handleRejectDocument = async (doc: ProjectDocument) => {
-    if (processingAction) return;
-    setProcessingAction(`reject-doc-${doc.id}`);
+    const actionId = `reject-doc-${doc.id}`;
+    if (isProcessing(actionId)) return;
+    startProcessing(actionId);
     try {
       await updateDocument(project.id, doc.id, {
         approvalStatus: 'rejected',
@@ -1272,44 +1301,44 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
         rejectionDate: new Date().toISOString()
       });
 
-      // Show loader for at least 500ms for visibility
-      await new Promise(resolve => setTimeout(resolve, 500));
+      // Don't wait for email - send it in background
+      const emailPromise = (async () => {
+        // Send rejection email to document recipients and team
+        const recipientIds = new Set<string>();
+        // Notify admins and project owners on client action
+        users.filter(u => u.role === Role.ADMIN).forEach(u => recipientIds.add(u.id));
+        if (project.leadDesignerId) recipientIds.add(project.leadDesignerId);
+        if (doc.uploadedBy) recipientIds.add(doc.uploadedBy);
+        (doc.sharedWith || []).forEach(id => {
+          if (id !== user.id) recipientIds.add(id);
+        });
 
-      // Send rejection email to document recipients and team
+        const relevantUsers = users.filter(u => recipientIds.has(u.id));
 
-      const recipientIds = new Set<string>();
-      // Notify admins and project owners on client action
-      users.filter(u => u.role === Role.ADMIN).forEach(u => recipientIds.add(u.id));
-      if (project.leadDesignerId) recipientIds.add(project.leadDesignerId);
-      if (doc.uploadedBy) recipientIds.add(doc.uploadedBy);
-      (doc.sharedWith || []).forEach(id => {
-        if (id !== user.id) recipientIds.add(id);
-      });
-
-      const relevantUsers = users.filter(u => recipientIds.has(u.id));
-
-      if (relevantUsers.length > 0) {
-        await sendDocumentAdminApprovalNotificationEmail(
-          doc,
-          user.name || 'Unknown User',
-          relevantUsers,
-          project.name,
-          project.id,
-          'rejected'
-        );
-      }
+        if (relevantUsers.length > 0) {
+          await sendDocumentAdminApprovalNotificationEmail(
+            doc,
+            user.name || 'Unknown User',
+            relevantUsers,
+            project.name,
+            project.id,
+            'rejected'
+          );
+        }
+      })();
 
       addNotification("Success", `Document "${doc.name}" rejected`, "success");
     } catch (error) {
       addNotification("Error", "Failed to reject document", "error");
     } finally {
-      setProcessingAction(null);
+      stopProcessing(actionId);
     }
   };
 
   const handleClientApproveDocument = async (doc: ProjectDocument) => {
-    if (processingAction) return;
-    setProcessingAction(`client-approve-doc-${doc.id}`);
+    const actionId = `client-approve-doc-${doc.id}`;
+    if (isProcessing(actionId)) return;
+    startProcessing(actionId);
     try {
       await updateDocument(project.id, doc.id, {
         clientApprovalStatus: 'approved',
@@ -1317,40 +1346,41 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
         clientApprovedDate: new Date().toISOString()
       });
 
-      // Show loader for at least 500ms for visibility
-      await new Promise(resolve => setTimeout(resolve, 500));
+      // Don't wait for email - send it in background
+      const emailPromise = (async () => {
+        // Send approval email to admin and document owners
+        const relevantUsers = users.filter(u => {
+          // Include admin/lead designer
+          if (u.id === project.leadDesignerId) return true;
+          // Include anyone the document is shared with (except client themselves)
+          if (doc.sharedWith?.includes(u.id) && u.id !== user.id) return true;
+          return false;
+        });
 
-      // Send approval email to admin and document owners
-      const relevantUsers = users.filter(u => {
-        // Include admin/lead designer
-        if (u.id === project.leadDesignerId) return true;
-        // Include anyone the document is shared with (except client themselves)
-        if (doc.sharedWith?.includes(u.id) && u.id !== user.id) return true;
-        return false;
-      });
-
-      if (relevantUsers.length > 0) {
-        await sendDocumentClientApprovalNotificationEmail(
-          doc,
-          user.name || 'Unknown User',
-          relevantUsers,
-          project.name,
-          project.id,
-          'approved'
-        );
-      }
+        if (relevantUsers.length > 0) {
+          await sendDocumentClientApprovalNotificationEmail(
+            doc,
+            user.name || 'Unknown User',
+            relevantUsers,
+            project.name,
+            project.id,
+            'approved'
+          );
+        }
+      })();
 
       addNotification("Success", `Document "${doc.name}" approved by you`, "success");
     } catch (error) {
       addNotification("Error", "Failed to approve document", "error");
     } finally {
-      setProcessingAction(null);
+      stopProcessing(actionId);
     }
   };
 
   const handleClientRejectDocument = async (doc: ProjectDocument) => {
-    if (processingAction) return;
-    setProcessingAction(`client-reject-doc-${doc.id}`);
+    const actionId = `client-reject-doc-${doc.id}`;
+    if (isProcessing(actionId)) return;
+    startProcessing(actionId);
     try {
       await updateDocument(project.id, doc.id, {
         clientApprovalStatus: 'rejected',
@@ -1358,34 +1388,34 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
         clientApprovedDate: new Date().toISOString()
       });
 
-      // Show loader for at least 500ms for visibility
-      await new Promise(resolve => setTimeout(resolve, 500));
+      // Don't wait for email - send it in background
+      const emailPromise = (async () => {
+        // Send rejection email to admin and document owners
+        const relevantUsers = users.filter(u => {
+          // Include admin/lead designer
+          if (u.id === project.leadDesignerId) return true;
+          // Include anyone the document is shared with (except client themselves)
+          if (doc.sharedWith?.includes(u.id) && u.id !== user.id) return true;
+          return false;
+        });
 
-      // Send rejection email to admin and document owners
-      const relevantUsers = users.filter(u => {
-        // Include admin/lead designer
-        if (u.id === project.leadDesignerId) return true;
-        // Include anyone the document is shared with (except client themselves)
-        if (doc.sharedWith?.includes(u.id) && u.id !== user.id) return true;
-        return false;
-      });
-
-      if (relevantUsers.length > 0) {
-        await sendDocumentClientApprovalNotificationEmail(
-          doc,
-          user.name || 'Unknown User',
-          relevantUsers,
-          project.name,
-          project.id,
-          'rejected'
-        );
-      }
+        if (relevantUsers.length > 0) {
+          await sendDocumentClientApprovalNotificationEmail(
+            doc,
+            user.name || 'Unknown User',
+            relevantUsers,
+            project.name,
+            project.id,
+            'rejected'
+          );
+        }
+      })();
 
       addNotification("Success", `Document "${doc.name}" rejected by you`, "success");
     } catch (error) {
       addNotification("Error", "Failed to reject document", "error");
     } finally {
-      setProcessingAction(null);
+      stopProcessing(actionId);
     }
   };
 
@@ -1859,8 +1889,8 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
 
   // Handle approval for additional budgets
   const handleApproveAdditionalBudget = async (transactionId: string, approvalType: 'client' | 'admin', status: 'approved' | 'rejected') => {
-    if (processingAction) return;
-    setProcessingAction(`approve-budget-${transactionId}-${approvalType}-${status}`);
+    if (isProcessing(`approve-budget-${transactionId}-${approvalType}-${status}`)) return;
+    startProcessing(`approve-budget-${transactionId}-${approvalType}-${status}`);
     try {
       const key = approvalType === 'client' ? 'clientApprovalForAdditionalBudget' : 'adminApprovalForAdditionalBudget';
       
@@ -1945,14 +1975,14 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
     } catch (error: any) {
       addNotification("Error", "Unable to process approval. Please try again.", "error", undefined, project.id, project.name);
     } finally {
-      setProcessingAction(null);
+      stopProcessing(`approve-budget-${transactionId}-${approvalType}-${status}`);
     }
   };
 
   // Handle approval for received payments
   const handleApprovePayment = async (transactionId: string, approvalType: 'client' | 'admin', status: 'approved' | 'rejected') => {
-    if (processingAction) return;
-    setProcessingAction(`approve-payment-${transactionId}-${approvalType}-${status}`);
+    if (isProcessing(`approve-payment-${transactionId}-${approvalType}-${status}`)) return;
+    startProcessing(`approve-payment-${transactionId}-${approvalType}-${status}`);
     try {
       const key = approvalType === 'client' ? 'clientApprovalForPayment' : 'adminApprovalForPayment';
       
@@ -2008,13 +2038,13 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
     } catch (error: any) {
       addNotification("Error", "Unable to process approval. Please try again.", "error", undefined, project.id, project.name);
     } finally {
-      setProcessingAction(null);
+      stopProcessing(`approve-payment-${transactionId}-${approvalType}-${status}`);
     }
   };
 
   const handleApproveExpense = useCallback(async (transactionId: string, approvalType: 'client' | 'admin', isApproved: boolean) => {
-    if (processingAction) return;
-    setProcessingAction(`approve-expense-${transactionId}-${approvalType}-${isApproved}`);
+    if (isProcessing(`approve-expense-${transactionId}-${approvalType}-${isApproved}`)) return;
+    startProcessing(`approve-expense-${transactionId}-${approvalType}-${isApproved}`);
     const key = approvalType === 'client' ? 'clientApproved' : 'adminApproved';
     
     try {
@@ -2060,9 +2090,9 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
     } catch (error) {
       addNotification("Error", "Unable to process approval. Please try again.", "error", undefined, project.id, project.name);
     } finally {
-      setProcessingAction(null);
+      stopProcessing(`approve-expense-${transactionId}-${approvalType}-${isApproved}`);
     }
-  }, [project.id, addNotification, realTimeFinancials, currentFinancials, project.leadDesignerId, project.clientId, users, user.name, processingAction]);
+  }, [project.id, addNotification, realTimeFinancials, currentFinancials, project.leadDesignerId, project.clientId, users, user.name]);
 
   const handleDependencyChange = (dependencyId: string, isChecked: boolean) => {
      if (!editingTask || isTaskFrozen(editingTask.status)) return;
@@ -3788,7 +3818,7 @@ addNotification('Error', 'Failed to complete task', 'error');
                                 return (
                                 <React.Fragment key={task.id}>
                                   {isNewCategory && (
-                                    <div className="bg-gray-100/50 px-2 py-1 text-xs font-bold text-gray-500 uppercase tracking-wider sticky left-0 mb-1 mt-2" style={{ width: `${totalWidth}px` }}>
+                                    <div className="bg-gray-100/50 px-2 py-1 text-xs font-bold text-gray-500 tracking-wider sticky left-0 mb-1 mt-2" style={{ width: `${totalWidth}px` }}>
                                       {task.category}
                                     </div>
                                   )}
@@ -3867,7 +3897,7 @@ addNotification('Error', 'Failed to complete task', 'error');
                 .sort((a, b) => getCategorySortIndex(a[0]) - getCategorySortIndex(b[0]))
                 .map(([category, tasks]: [string, Task[]]) => (
                   <div key={category}>
-                    <h3 className="text-base font-bold text-gray-500 uppercase tracking-wide mb-4 pl-1 flex items-center gap-1">
+                    <h3 className="text-base font-bold text-gray-500 tracking-wide mb-4 pl-1 flex items-center gap-1">
                        <Tag className="w-4 h-4" /> {category}
                     </h3>
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -3882,7 +3912,7 @@ addNotification('Error', 'Failed to complete task', 'error');
                         return (
                         <div key={task.id} className={`bg-white p-4 md:p-6 rounded-xl border border-gray-200 shadow-sm hover:shadow-md transition-all ${blocked || frozen ? 'opacity-75 bg-gray-50' : ''}`}>
                             <div className="flex justify-between items-start mb-3">
-                              <span className={`px-1.5 py-0.5 rounded text-xs font-medium uppercase
+                              <span className={`px-1.5 py-0.5 rounded text-xs font-medium
                                 ${task.priority === 'high' ? 'bg-red-100 text-red-600' : task.priority === 'medium' ? 'bg-yellow-100 text-yellow-600' : 'bg-green-100 text-green-600'}`}>
                                 {task.priority}
                               </span>
@@ -4188,17 +4218,17 @@ addNotification('Error', 'Failed to complete task', 'error');
                                 className="p-2 bg-white rounded-full text-green-600 hover:bg-green-50" 
                                 title="Approve"
                                 onClick={() => handleApproveDocument(doc)}
-                                disabled={processingAction === `approve-doc-${doc.id}`}
+                                disabled={isProcessing(`approve-doc-${doc.id}`)}
                               >
-                                 {processingAction === `approve-doc-${doc.id}` ? <Spinner size="md" color="currentColor" /> : <Check className="w-4 h-4" />}
+                                 {isProcessing(`approve-doc-${doc.id}`) ? <Spinner size="md" color="currentColor" /> : <Check className="w-4 h-4" />}
                               </button>
                               <button 
                                 className="p-2 bg-white rounded-full text-red-600 hover:bg-red-50" 
                                 title="Reject"
                                 onClick={() => handleRejectDocument(doc)}
-                                disabled={processingAction === `reject-doc-${doc.id}`}
+                                disabled={isProcessing(`reject-doc-${doc.id}`)}
                               >
-                                 {processingAction === `reject-doc-${doc.id}` ? <Spinner size="md" color="currentColor" /> : <X className="w-4 h-4" />}
+                                 {isProcessing(`reject-doc-${doc.id}`) ? <Spinner size="md" color="currentColor" /> : <X className="w-4 h-4" />}
                               </button>
                             </div>
                           )}
@@ -4208,17 +4238,17 @@ addNotification('Error', 'Failed to complete task', 'error');
                                 className="p-2 bg-white rounded-full text-green-600 hover:bg-green-50" 
                                 title="Approve as Client"
                                 onClick={() => handleClientApproveDocument(doc)}
-                                disabled={processingAction === `client-approve-doc-${doc.id}`}
+                                disabled={isProcessing(`client-approve-doc-${doc.id}`)}
                               >
-                                 {processingAction === `client-approve-doc-${doc.id}` ? <Spinner size="md" color="currentColor" /> : <Check className="w-4 h-4" />}
+                                 {isProcessing(`client-approve-doc-${doc.id}`) ? <Spinner size="md" color="currentColor" /> : <Check className="w-4 h-4" />}
                               </button>
                               <button 
                                 className="p-2 bg-white rounded-full text-red-600 hover:bg-red-50" 
                                 title="Reject as Client"
                                 onClick={() => handleClientRejectDocument(doc)}
-                                disabled={processingAction === `client-reject-doc-${doc.id}`}
+                                disabled={isProcessing(`client-reject-doc-${doc.id}`)}
                               >
-                                 {processingAction === `client-reject-doc-${doc.id}` ? <Spinner size="md" color="currentColor" /> : <X className="w-4 h-4" />}
+                                 {isProcessing(`client-reject-doc-${doc.id}`) ? <Spinner size="md" color="currentColor" /> : <X className="w-4 h-4" />}
                               </button>
                             </div>
                           )}
@@ -4239,7 +4269,7 @@ addNotification('Error', 'Failed to complete task', 'error');
                           ) : doc.type === 'pdf' ? (
                               <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-red-50 to-red-100">
                                  <FileText className="w-12 h-12 text-red-400 mb-2" />
-                                 <span className="text-sm font-bold text-red-600 uppercase">PDF</span>
+                                 <span className="text-sm font-bold text-red-600">PDF</span>
                               </div>
                           ) : (
                               <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-blue-50 to-blue-100">
@@ -4301,7 +4331,7 @@ addNotification('Error', 'Failed to complete task', 'error');
             <div className="bg-gray-900 text-white p-4 md:p-8 rounded-xl shadow-lg flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
                 <div>
                     <div className="flex items-center gap-2">
-                        <p className="text-gray-400 text-sm md:text-xs font-bold uppercase mb-1">Total Project Budget</p>
+                        <p className="text-gray-400 text-sm md:text-xs font-bold mb-1">Total Project Budget</p>
                         {canEditProject && (
                             <button 
                                 onClick={() => {
@@ -4327,7 +4357,7 @@ addNotification('Error', 'Failed to complete task', 'error');
                     )}
                 </div>
                 <div className="text-left md:text-right">
-                    <p className="text-gray-400 text-sm md:text-xs font-bold uppercase mb-1">Remaining Budget</p>
+                    <p className="text-gray-400 text-sm md:text-xs font-bold mb-1">Remaining Budget</p>
                      {/* Remaining = Budget - Total Expenses (Paid + Pending) to reflect actual committed cost against budget */}
                     <h2 className={`text-3xl md:text-2xl font-bold ${((project.initialBudget || project.budget) + totalAdditionalBudget) - (paidOut + pendingExpenses) < 0 ? 'text-red-400' : 'text-emerald-400'}`}>
                         ₹{(((project.initialBudget || project.budget) + totalAdditionalBudget) - (paidOut + pendingExpenses)).toLocaleString()}
@@ -4352,31 +4382,31 @@ addNotification('Error', 'Failed to complete task', 'error');
                     return (
                       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 md:gap-6">
                         <div className="p-4 md:p-6 bg-blue-50 rounded-lg border border-blue-100">
-                          <p className="text-sm md:text-xs text-blue-600 font-bold uppercase mb-1">Estimated</p>
+                          <p className="text-sm md:text-xs text-blue-600 font-bold mb-1">Estimated</p>
                           <p className="text-2xl md:text-xl font-bold text-blue-700">₹{(project.initialBudget || project.budget).toLocaleString()}</p>
                         </div>
                         <div className="p-4 md:p-6 bg-purple-50 rounded-lg border border-purple-100">
-                          <p className="text-sm md:text-xs text-purple-600 font-bold uppercase mb-1">Additional</p>
+                          <p className="text-sm md:text-xs text-purple-600 font-bold mb-1">Additional</p>
                           <p className="text-2xl md:text-xl font-bold text-purple-700">₹{totalAdditionalBudget.toLocaleString()}</p>
                         </div>
                         <div className="p-4 md:p-6 bg-green-50 rounded-lg border border-green-100">
-                          <p className="text-sm md:text-xs text-green-600 font-bold uppercase mb-1">Received</p>
+                          <p className="text-sm md:text-xs text-green-600 font-bold mb-1">Received</p>
                           <p className="text-2xl md:text-xl font-bold text-green-700">₹{received.toLocaleString()}</p>
                           <p className="text-sm md:text-xs text-green-600 mt-1">{Math.round((received / ((project.initialBudget || project.budget) + totalAdditionalBudget)) * 100) || 0}% of budget</p>
                         </div>
                         <div className="p-4 md:p-6 bg-red-50 rounded-lg border border-red-100">
-                          <p className="text-sm md:text-xs text-red-600 font-bold uppercase mb-1">Expense</p>
+                          <p className="text-sm md:text-xs text-red-600 font-bold mb-1">Expense</p>
                           <p className="text-2xl md:text-xl font-bold text-red-700">₹{paidOut.toLocaleString()}</p>
                           <p className="text-sm md:text-xs text-red-600 mt-1">{Math.round((paidOut / ((project.initialBudget || project.budget) + totalAdditionalBudget)) * 100) || 0}% of budget</p>
                         </div>
                         <div className={`p-4 md:p-6 rounded-lg border ${received - paidOut >= 0 ? 'bg-green-50 border-green-100' : 'bg-red-50 border-red-100'}`}>
-                          <p className={`text-sm md:text-xs font-bold uppercase mb-1 ${received - paidOut >= 0 ? 'text-green-600' : 'text-red-600'}`}>Profit/Loss</p>
+                          <p className={`text-sm md:text-xs font-bold mb-1 ${received - paidOut >= 0 ? 'text-green-600' : 'text-red-600'}`}>Profit/Loss</p>
                           <p className={`text-2xl md:text-xl font-bold ${received - paidOut >= 0 ? 'text-green-700' : 'text-red-700'}`}>
                             {received - paidOut >= 0 ? '+' : ''}₹{(received - paidOut).toLocaleString()}
                           </p>
                         </div>
                         <div className="p-4 md:p-6 bg-orange-50 rounded-lg border border-orange-100">
-                          <p className="text-sm md:text-xs text-orange-600 font-bold uppercase mb-1">Not Received</p>
+                          <p className="text-sm md:text-xs text-orange-600 font-bold mb-1">Not Received</p>
                           <p className={`text-2xl md:text-xl font-bold ${(((project.initialBudget || project.budget) + totalAdditionalBudget) - received) < 0 ? 'text-red-700' : 'text-orange-700'}`}>
                             ₹{(((project.initialBudget || project.budget) + totalAdditionalBudget) - received).toLocaleString()}
                           </p>
@@ -4580,17 +4610,17 @@ addNotification('Error', 'Failed to complete task', 'error');
                                       onClick={() => handleApproveAdditionalBudget(fin.id, 'client', 'approved')}
                                       className="text-white bg-green-600 hover:bg-green-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                       title="Approve"
-                                      disabled={processingAction === `approve-budget-${fin.id}-client-approved`}
+                                      disabled={isProcessing(`approve-budget-${fin.id}-client-approved`)}
                                     >
-                                      {processingAction === `approve-budget-${fin.id}-client-approved` ? <Spinner size="sm" color="currentColor" /> : '✓'}
+                                      {isProcessing(`approve-budget-${fin.id}-client-approved`) ? <Spinner size="sm" color="currentColor" /> : '✓'}
                                     </button>
                                     <button 
                                       onClick={() => handleApproveAdditionalBudget(fin.id, 'client', 'rejected')}
                                       className="text-white bg-red-600 hover:bg-red-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                       title="Reject"
-                                      disabled={processingAction === `approve-budget-${fin.id}-client-rejected`}
+                                      disabled={isProcessing(`approve-budget-${fin.id}-client-rejected`)}
                                     >
-                                      {processingAction === `approve-budget-${fin.id}-client-rejected` ? <Spinner size="sm" color="currentColor" /> : '✗'}
+                                      {isProcessing(`approve-budget-${fin.id}-client-rejected`) ? <Spinner size="sm" color="currentColor" /> : '✗'}
                                     </button>
                                   </div>
                                 )}
@@ -4616,17 +4646,17 @@ addNotification('Error', 'Failed to complete task', 'error');
                                       onClick={() => handleApproveAdditionalBudget(fin.id, 'admin', 'approved')}
                                       className="text-white bg-green-600 hover:bg-green-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                       title="Approve"
-                                      disabled={processingAction === `approve-budget-${fin.id}-admin-approved`}
+                                      disabled={isProcessing(`approve-budget-${fin.id}-admin-approved`)}
                                     >
-                                      {processingAction === `approve-budget-${fin.id}-admin-approved` ? <Spinner size="sm" color="currentColor" /> : '✓'}
+                                      {isProcessing(`approve-budget-${fin.id}-admin-approved`) ? <Spinner size="sm" color="currentColor" /> : '✓'}
                                     </button>
                                     <button 
                                       onClick={() => handleApproveAdditionalBudget(fin.id, 'admin', 'rejected')}
                                       className="text-white bg-red-600 hover:bg-red-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                       title="Reject"
-                                      disabled={processingAction === `approve-budget-${fin.id}-admin-rejected`}
+                                      disabled={isProcessing(`approve-budget-${fin.id}-admin-rejected`)}
                                     >
-                                      {processingAction === `approve-budget-${fin.id}-admin-rejected` ? <Spinner size="sm" color="currentColor" /> : '✗'}
+                                      {isProcessing(`approve-budget-${fin.id}-admin-rejected`) ? <Spinner size="sm" color="currentColor" /> : '✗'}
                                     </button>
                                   </div>
                                 )}
@@ -4654,17 +4684,17 @@ addNotification('Error', 'Failed to complete task', 'error');
                                       onClick={() => handleApprovePayment(fin.id, 'client', 'approved')}
                                       className="text-white bg-green-600 hover:bg-green-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                       title="Confirm payment"
-                                      disabled={processingAction === `approve-payment-${fin.id}-client-approved`}
+                                      disabled={isProcessing(`approve-payment-${fin.id}-client-approved`)}
                                     >
-                                      {processingAction === `approve-payment-${fin.id}-client-approved` ? <Spinner size="sm" color="currentColor" /> : '✓'}
+                                      {isProcessing(`approve-payment-${fin.id}-client-approved`) ? <Spinner size="sm" color="currentColor" /> : '✓'}
                                     </button>
                                     <button 
                                       onClick={() => handleApprovePayment(fin.id, 'client', 'rejected')}
                                       className="text-white bg-red-600 hover:bg-red-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                       title="Dispute payment"
-                                      disabled={processingAction === `approve-payment-${fin.id}-client-rejected`}
+                                      disabled={isProcessing(`approve-payment-${fin.id}-client-rejected`)}
                                     >
-                                      {processingAction === `approve-payment-${fin.id}-client-rejected` ? <Spinner size="sm" color="currentColor" /> : '✗'}
+                                      {isProcessing(`approve-payment-${fin.id}-client-rejected`) ? <Spinner size="sm" color="currentColor" /> : '✗'}
                                     </button>
                                   </div>
                                 )}
@@ -4690,17 +4720,17 @@ addNotification('Error', 'Failed to complete task', 'error');
                                       onClick={() => handleApprovePayment(fin.id, 'admin', 'approved')}
                                       className="text-white bg-green-600 hover:bg-green-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                       title="Approve payment"
-                                      disabled={processingAction === `approve-payment-${fin.id}-admin-approved`}
+                                      disabled={isProcessing(`approve-payment-${fin.id}-admin-approved`)}
                                     >
-                                      {processingAction === `approve-payment-${fin.id}-admin-approved` ? <Spinner size="sm" color="currentColor" /> : '✓'}
+                                      {isProcessing(`approve-payment-${fin.id}-admin-approved`) ? <Spinner size="sm" color="currentColor" /> : '✓'}
                                     </button>
                                     <button 
                                       onClick={() => handleApprovePayment(fin.id, 'admin', 'rejected')}
                                       className="text-white bg-red-600 hover:bg-red-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                       title="Reject payment"
-                                      disabled={processingAction === `approve-payment-${fin.id}-admin-rejected`}
+                                      disabled={isProcessing(`approve-payment-${fin.id}-admin-rejected`)}
                                     >
-                                      {processingAction === `approve-payment-${fin.id}-admin-rejected` ? <Spinner size="sm" color="currentColor" /> : '✗'}
+                                      {isProcessing(`approve-payment-${fin.id}-admin-rejected`) ? <Spinner size="sm" color="currentColor" /> : '✗'}
                                     </button>
                                   </div>
                                 )}
@@ -4728,17 +4758,17 @@ addNotification('Error', 'Failed to complete task', 'error');
                                       onClick={() => handleApproveExpense(fin.id, 'client', true)}
                                       className="text-white bg-green-600 hover:bg-green-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                       title="Approve expense"
-                                      disabled={processingAction === `approve-expense-${fin.id}-client-true`}
+                                      disabled={isProcessing(`approve-expense-${fin.id}-client-true`)}
                                     >
-                                      {processingAction === `approve-expense-${fin.id}-client-true` ? <Spinner size="sm" color="currentColor" /> : '✓'}
+                                      {isProcessing(`approve-expense-${fin.id}-client-true`) ? <Spinner size="sm" color="currentColor" /> : '✓'}
                                     </button>
                                     <button 
                                       onClick={() => handleApproveExpense(fin.id, 'client', false)}
                                       className="text-white bg-red-600 hover:bg-red-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                       title="Reject expense"
-                                      disabled={processingAction === `approve-expense-${fin.id}-client-false`}
+                                      disabled={isProcessing(`approve-expense-${fin.id}-client-false`)}
                                     >
-                                      {processingAction === `approve-expense-${fin.id}-client-false` ? <Spinner size="sm" color="currentColor" /> : '✗'}
+                                      {isProcessing(`approve-expense-${fin.id}-client-false`) ? <Spinner size="sm" color="currentColor" /> : '✗'}
                                     </button>
                                   </div>
                                 )}
@@ -4764,17 +4794,17 @@ addNotification('Error', 'Failed to complete task', 'error');
                                       onClick={() => handleApproveExpense(fin.id, 'admin', true)}
                                       className="text-white bg-green-600 hover:bg-green-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                       title="Approve expense"
-                                      disabled={processingAction === `approve-expense-${fin.id}-admin-true`}
+                                      disabled={isProcessing(`approve-expense-${fin.id}-admin-true`)}
                                     >
-                                      {processingAction === `approve-expense-${fin.id}-admin-true` ? <Spinner size="sm" color="currentColor" /> : '✓'}
+                                      {isProcessing(`approve-expense-${fin.id}-admin-true`) ? <Spinner size="sm" color="currentColor" /> : '✓'}
                                     </button>
                                     <button 
                                       onClick={() => handleApproveExpense(fin.id, 'admin', false)}
                                       className="text-white bg-red-600 hover:bg-red-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                       title="Reject expense"
-                                      disabled={processingAction === `approve-expense-${fin.id}-admin-false`}
+                                      disabled={isProcessing(`approve-expense-${fin.id}-admin-false`)}
                                     >
-                                      {processingAction === `approve-expense-${fin.id}-admin-false` ? <Spinner size="sm" color="currentColor" /> : '✗'}
+                                      {isProcessing(`approve-expense-${fin.id}-admin-false`) ? <Spinner size="sm" color="currentColor" /> : '✗'}
                                     </button>
                                   </div>
                                 )}
@@ -7652,17 +7682,17 @@ addNotification('Error', 'Failed to complete task', 'error');
                                                         onClick={() => handleApprovePayment(fin.id, 'client', 'approved')}
                                                         className="text-white bg-green-600 hover:bg-green-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                                         title="Confirm payment"
-                                                        disabled={processingAction === `approve-payment-${fin.id}-client-approved`}
+                                                        disabled={isProcessing(`approve-payment-${fin.id}-client-approved`)}
                                                       >
-                                                        {processingAction === `approve-payment-${fin.id}-client-approved` ? <Spinner size="sm" color="currentColor" /> : '✓'}
+                                                        {isProcessing(`approve-payment-${fin.id}-client-approved`) ? <Spinner size="sm" color="currentColor" /> : '✓'}
                                                       </button>
                                                       <button 
                                                         onClick={() => handleApprovePayment(fin.id, 'client', 'rejected')}
                                                         className="text-white bg-red-600 hover:bg-red-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                                         title="Dispute payment"
-                                                        disabled={processingAction === `approve-payment-${fin.id}-client-rejected`}
+                                                        disabled={isProcessing(`approve-payment-${fin.id}-client-rejected`)}
                                                       >
-                                                        {processingAction === `approve-payment-${fin.id}-client-rejected` ? <Spinner size="sm" color="currentColor" /> : '✗'}
+                                                        {isProcessing(`approve-payment-${fin.id}-client-rejected`) ? <Spinner size="sm" color="currentColor" /> : '✗'}
                                                       </button>
                                                     </div>
                                                   )}
@@ -7688,17 +7718,17 @@ addNotification('Error', 'Failed to complete task', 'error');
                                                         onClick={() => handleApprovePayment(fin.id, 'admin', 'approved')}
                                                         className="text-white bg-green-600 hover:bg-green-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                                         title="Approve payment"
-                                                        disabled={processingAction === `approve-payment-${fin.id}-admin-approved`}
+                                                        disabled={isProcessing(`approve-payment-${fin.id}-admin-approved`)}
                                                       >
-                                                        {processingAction === `approve-payment-${fin.id}-admin-approved` ? <Spinner size="sm" color="currentColor" /> : '✓'}
+                                                        {isProcessing(`approve-payment-${fin.id}-admin-approved`) ? <Spinner size="sm" color="currentColor" /> : '✓'}
                                                       </button>
                                                       <button 
                                                         onClick={() => handleApprovePayment(fin.id, 'admin', 'rejected')}
                                                         className="text-white bg-red-600 hover:bg-red-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                                         title="Reject payment"
-                                                        disabled={processingAction === `approve-payment-${fin.id}-admin-rejected`}
+                                                        disabled={isProcessing(`approve-payment-${fin.id}-admin-rejected`)}
                                                       >
-                                                        {processingAction === `approve-payment-${fin.id}-admin-rejected` ? <Spinner size="sm" color="currentColor" /> : '✗'}
+                                                        {isProcessing(`approve-payment-${fin.id}-admin-rejected`) ? <Spinner size="sm" color="currentColor" /> : '✗'}
                                                       </button>
                                                     </div>
                                                   )}
@@ -7726,17 +7756,17 @@ addNotification('Error', 'Failed to complete task', 'error');
                                                         onClick={() => handleApproveExpense(fin.id, 'client', true)}
                                                         className="text-white bg-green-600 hover:bg-green-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                                         title="Approve expense"
-                                                        disabled={processingAction === `approve-expense-${fin.id}-client-true`}
+                                                        disabled={isProcessing(`approve-expense-${fin.id}-client-true`)}
                                                       >
-                                                        {processingAction === `approve-expense-${fin.id}-client-true` ? <Spinner size="sm" color="currentColor" /> : '✓'}
+                                                        {isProcessing(`approve-expense-${fin.id}-client-true`) ? <Spinner size="sm" color="currentColor" /> : '✓'}
                                                       </button>
                                                       <button 
                                                         onClick={() => handleApproveExpense(fin.id, 'client', false)}
                                                         className="text-white bg-red-600 hover:bg-red-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                                         title="Reject expense"
-                                                        disabled={processingAction === `approve-expense-${fin.id}-client-false`}
+                                                        disabled={isProcessing(`approve-expense-${fin.id}-client-false`)}
                                                       >
-                                                        {processingAction === `approve-expense-${fin.id}-client-false` ? <Spinner size="sm" color="currentColor" /> : '✗'}
+                                                        {isProcessing(`approve-expense-${fin.id}-client-false`) ? <Spinner size="sm" color="currentColor" /> : '✗'}
                                                       </button>
                                                     </div>
                                                   )}
@@ -7762,17 +7792,17 @@ addNotification('Error', 'Failed to complete task', 'error');
                                                         onClick={() => handleApproveExpense(fin.id, 'admin', true)}
                                                         className="text-white bg-green-600 hover:bg-green-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                                         title="Approve expense"
-                                                        disabled={processingAction === `approve-expense-${fin.id}-admin-true`}
+                                                        disabled={isProcessing(`approve-expense-${fin.id}-admin-true`)}
                                                       >
-                                                        {processingAction === `approve-expense-${fin.id}-admin-true` ? <Spinner size="sm" color="currentColor" /> : '✓'}
+                                                        {isProcessing(`approve-expense-${fin.id}-admin-true`) ? <Spinner size="sm" color="currentColor" /> : '✓'}
                                                       </button>
                                                       <button 
                                                         onClick={() => handleApproveExpense(fin.id, 'admin', false)}
                                                         className="text-white bg-red-600 hover:bg-red-700 font-bold text-xs px-1.5 py-0.5 rounded transition-colors cursor-pointer flex items-center justify-center min-w-[20px]"
                                                         title="Reject expense"
-                                                        disabled={processingAction === `approve-expense-${fin.id}-admin-false`}
+                                                        disabled={isProcessing(`approve-expense-${fin.id}-admin-false`)}
                                                       >
-                                                        {processingAction === `approve-expense-${fin.id}-admin-false` ? <Spinner size="sm" color="currentColor" /> : '✗'}
+                                                        {isProcessing(`approve-expense-${fin.id}-admin-false`) ? <Spinner size="sm" color="currentColor" /> : '✗'}
                                                       </button>
                                                     </div>
                                                   )}
@@ -8307,17 +8337,17 @@ addNotification('Error', 'Failed to complete task', 'error');
                                 className="p-2 bg-white rounded-full text-green-600 hover:bg-green-50" 
                                 title="Approve"
                                 onClick={() => handleApproveDocument(doc)}
-                                disabled={processingAction === `approve-doc-${doc.id}`}
+                                disabled={isProcessing(`approve-doc-${doc.id}`)}
                               >
-                                 {processingAction === `approve-doc-${doc.id}` ? <Spinner size="md" color="currentColor" /> : <Check className="w-4 h-4" />}
+                                 {isProcessing(`approve-doc-${doc.id}`) ? <Spinner size="md" color="currentColor" /> : <Check className="w-4 h-4" />}
                               </button>
                               <button 
                                 className="p-2 bg-white rounded-full text-red-600 hover:bg-red-50" 
                                 title="Reject"
                                 onClick={() => handleRejectDocument(doc)}
-                                disabled={processingAction === `reject-doc-${doc.id}`}
+                                disabled={isProcessing(`reject-doc-${doc.id}`)}
                               >
-                                 {processingAction === `reject-doc-${doc.id}` ? <Spinner size="md" color="currentColor" /> : <X className="w-4 h-4" />}
+                                 {isProcessing(`reject-doc-${doc.id}`) ? <Spinner size="md" color="currentColor" /> : <X className="w-4 h-4" />}
                               </button>
                             </div>
                           )}
@@ -8575,3 +8605,7 @@ addNotification('Error', 'Failed to complete task', 'error');
 };
 
 export default ProjectDetail;
+
+
+
+

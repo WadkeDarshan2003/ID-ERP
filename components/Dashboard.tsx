@@ -304,7 +304,7 @@ const Dashboard: React.FC<DashboardProps> = ({ projects, users, onSelectProject,
       className={`bg-white p-5 md:p-6 rounded-xl border border-gray-100 flex items-center justify-between hover:shadow-sm transition-shadow ${onClick ? 'cursor-pointer hover:border-gray-300' : ''}`}
     >
       <div>
-        <p className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-1">{title}</p>
+        <p className="text-sm font-semibold text-gray-400 tracking-wide mb-1">{title}</p>
         <h3 className="text-3xl font-bold text-gray-800">{value}</h3>
       </div>
       <div className={`p-3 rounded-lg ${color} bg-opacity-10`}>

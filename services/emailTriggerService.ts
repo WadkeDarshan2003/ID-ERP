@@ -5,6 +5,7 @@
 
 import { Task, User, Project, ProjectDocument, Meeting, Comment, FinancialRecord } from '../types';
 import { formatDateToIndian } from '../utils/taskUtils';
+import { getAppBaseUrl } from '../utils/getAppBaseUrl';
 import {
   sendTaskAssignmentEmail,
   sendTaskReminder,
@@ -28,7 +29,7 @@ export const sendTaskCreationEmail = async (
   }
 
   // Generate task link
-  const appBaseUrl = typeof window !== 'undefined' ? window.location.origin : process.env.REACT_APP_BASE_URL || 'http://localhost:5173';
+  const appBaseUrl = getAppBaseUrl();
   const taskLink = projectId ? `${appBaseUrl}?projectId=${projectId}&taskId=${task.id}&tab=plan` : undefined;
 
   try {
@@ -74,7 +75,7 @@ export const checkAndSendDueDateReminders = async (
   const dayAfterTomorrow = new Date(now.getTime() + 25 * 60 * 60 * 1000);
 
   // Generate app base URL
-  const appBaseUrl = typeof window !== 'undefined' ? window.location.origin : process.env.REACT_APP_BASE_URL || 'http://localhost:5173';
+  const appBaseUrl = getAppBaseUrl();
 
   for (const task of tasks) {
     const dueDate = new Date(task.dueDate);
@@ -138,7 +139,7 @@ export const sendProjectWelcomeEmail = async (
   }
 
   // Generate project link
-  const appBaseUrl = typeof window !== 'undefined' ? window.location.origin : process.env.REACT_APP_BASE_URL || 'http://localhost:5173';
+  const appBaseUrl = getAppBaseUrl();
   const projectLink = projectId ? `${appBaseUrl}?projectId=${projectId}` : undefined;
 
   const htmlContent = `
@@ -216,7 +217,7 @@ export const sendDocumentApprovalEmail = async (
   }
 
   try {
-    const appBaseUrl = typeof window !== 'undefined' ? window.location.origin : process.env.REACT_APP_BASE_URL || 'http://localhost:5173';
+    const appBaseUrl = getAppBaseUrl();
     const deepLink = projectId ? `${appBaseUrl}?projectId=${projectId}&tab=documents` : undefined;
 
     const result = await sendDocumentSharedEmail(
@@ -256,7 +257,7 @@ export const sendDocumentUploadNotificationEmail = async (
   recipients: User[],
   projectId?: string
 ): Promise<void> => {
-  const appBaseUrl = typeof window !== 'undefined' ? window.location.origin : process.env.REACT_APP_BASE_URL || 'http://localhost:5173';
+  const appBaseUrl = getAppBaseUrl();
   const docLink = projectId ? `${appBaseUrl}?projectId=${projectId}&tab=documents` : undefined;
   
   for (const recipient of recipients) {
@@ -327,7 +328,7 @@ export const sendTaskApprovalEmail = async (
   }
 
   // Generate task link
-  const appBaseUrl = typeof window !== 'undefined' ? window.location.origin : process.env.REACT_APP_BASE_URL || 'http://localhost:5173';
+  const appBaseUrl = getAppBaseUrl();
   const taskLink = projectId && taskId ? `${appBaseUrl}?projectId=${projectId}&taskId=${taskId}&tab=plan` : (projectId ? `${appBaseUrl}?projectId=${projectId}&tab=plan` : undefined);
 
   const htmlContent = `
@@ -406,7 +407,7 @@ export const sendMeetingNotificationEmail = async (
   }
 
   // Generate meeting link
-  const appBaseUrl = typeof window !== 'undefined' ? window.location.origin : process.env.REACT_APP_BASE_URL || 'http://localhost:5173';
+  const appBaseUrl = getAppBaseUrl();
   const meetingLink = `${appBaseUrl}?projectId=${projectId}&meetingId=${meeting.id}&tab=meetings`;
 
   const actionText = meetingAction === 'created' ? 'New Meeting Scheduled' : 'Meeting Updated';
@@ -502,7 +503,7 @@ export const sendTaskAssignmentNotificationEmail = async (
   }
 
   // Generate task link
-  const appBaseUrl = typeof window !== 'undefined' ? window.location.origin : process.env.REACT_APP_BASE_URL || 'http://localhost:5173';
+  const appBaseUrl = getAppBaseUrl();
   const taskLink = `${appBaseUrl}?projectId=${projectId}&taskId=${task.id}&tab=plan`;
 
   const actionText = taskAction === 'created' ? 'New Task Assigned' : 'Task Updated';
@@ -584,7 +585,7 @@ export const sendTaskStartApprovalNotificationEmail = async (
   }
 
   // Generate task link
-  const appBaseUrl = typeof window !== 'undefined' ? window.location.origin : process.env.REACT_APP_BASE_URL || 'http://localhost:5173';
+  const appBaseUrl = getAppBaseUrl();
   const taskLink = `${appBaseUrl}?projectId=${projectId}&taskId=${task.id}&tab=plan`;
 
   const htmlContent = `
@@ -677,7 +678,7 @@ export const sendTaskCompletionApprovalNotificationEmail = async (
   }
 
   // Generate task link
-  const appBaseUrl = typeof window !== 'undefined' ? window.location.origin : process.env.REACT_APP_BASE_URL || 'http://localhost:5173';
+  const appBaseUrl = getAppBaseUrl();
   const taskLink = `${appBaseUrl}?projectId=${projectId}&taskId=${task.id}&tab=plan`;
 
   const htmlContent = `
@@ -770,7 +771,7 @@ export const sendTaskCommentNotificationEmail = async (
   }
 
   // Generate task link
-  const appBaseUrl = typeof window !== 'undefined' ? window.location.origin : process.env.REACT_APP_BASE_URL || 'http://localhost:5173';
+  const appBaseUrl = getAppBaseUrl();
   const taskLink = `${appBaseUrl}?projectId=${projectId}&taskId=${task.id}&tab=plan`;
 
   const htmlContent = `
@@ -863,7 +864,7 @@ export const sendDocumentCommentNotificationEmail = async (
   }
 
   // Generate document link
-  const appBaseUrl = typeof window !== 'undefined' ? window.location.origin : process.env.REACT_APP_BASE_URL || 'http://localhost:5173';
+  const appBaseUrl = getAppBaseUrl();
   const documentLink = `${appBaseUrl}?projectId=${projectId}&tab=documents&docId=${document.id}`;
 
   const htmlContent = `
@@ -956,7 +957,7 @@ export const sendDocumentAdminApprovalNotificationEmail = async (
   }
 
   // Generate documents link
-  const appBaseUrl = typeof window !== 'undefined' ? window.location.origin : process.env.REACT_APP_BASE_URL || 'http://localhost:5173';
+  const appBaseUrl = getAppBaseUrl();
   const documentLink = `${appBaseUrl}?projectId=${projectId}&tab=documents&docId=${document.id}`;
 
   const isApproved = action === 'approved';
@@ -1047,7 +1048,7 @@ export const sendDocumentClientApprovalNotificationEmail = async (
   }
 
   // Generate documents link
-  const appBaseUrl = typeof window !== 'undefined' ? window.location.origin : process.env.REACT_APP_BASE_URL || 'http://localhost:5173';
+  const appBaseUrl = getAppBaseUrl();
   const documentLink = `${appBaseUrl}?projectId=${projectId}&tab=documents`;
 
   const isApproved = action === 'approved';
@@ -1140,7 +1141,7 @@ export const sendFinancialApprovalNotificationEmail = async (
   }
 
   // Generate financials link
-  const appBaseUrl = typeof window !== 'undefined' ? window.location.origin : process.env.REACT_APP_BASE_URL || 'http://localhost:5173';
+  const appBaseUrl = getAppBaseUrl();
   const financialLink = `${appBaseUrl}?projectId=${projectId}&tab=financials`;
 
   const isApproved = action === 'approved';
@@ -1240,7 +1241,7 @@ export const sendMeetingCommentNotificationEmail = async (
   projectId?: string
 ): Promise<void> => {
   // Generate app base URL
-  const appBaseUrl = typeof window !== 'undefined' ? window.location.origin : process.env.REACT_APP_BASE_URL || 'http://localhost:5173';
+  const appBaseUrl = getAppBaseUrl();
   const meetingLink = projectId ? `${appBaseUrl}?projectId=${projectId}&meetingId=${meeting.id}&tab=meetings` : undefined;
   
   for (const recipient of recipients) {
@@ -1294,3 +1295,4 @@ export const sendMeetingCommentNotificationEmail = async (
     }
   }
 };
+

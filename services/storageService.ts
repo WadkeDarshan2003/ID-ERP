@@ -1,17 +1,32 @@
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { storage } from "./firebaseConfig";
+import { optimizeFile, formatFileSize, getCompressionStats } from "../utils/imageOptimization";
 
 /**
  * Uploads a file to Firebase Storage and returns the download URL.
+ * Automatically optimizes images to save storage space.
  * @param file The file to upload
  * @param path The path in storage (e.g., 'projects/{projectId}/documents/{fileName}')
  * @returns Promise resolving to the download URL
  */
 export const uploadFile = async (file: File, path: string): Promise<string> => {
   try {
+    let fileToUpload = file;
+    let originalSize = file.size;
+
+    // Attempt to optimize file (especially images)
+    const optimizedFile = await optimizeFile(file);
+    if (optimizedFile) {
+      fileToUpload = optimizedFile;
+      const stats = getCompressionStats(originalSize, fileToUpload.size);
+      console.log(`📦 Image optimized: ${stats.originalSize} → ${stats.compressedSize} (saved ${stats.savedPercent})`);
+    }
+
     const storageRef = ref(storage, path);
-    const snapshot = await uploadBytes(storageRef, file);
+    const snapshot = await uploadBytes(storageRef, fileToUpload);
     const downloadURL = await getDownloadURL(snapshot.ref);
+    
+    console.log(`✅ File uploaded: ${fileToUpload.name} (${formatFileSize(fileToUpload.size)})`);
     return downloadURL;
   } catch (error) {
     console.error("Error uploading file:", error);

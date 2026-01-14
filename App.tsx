@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { 
   LayoutDashboard, FolderKanban, Users, ShoppingBag, 
-  Palette, LogOut, Bell, Menu, X, Tag, Edit, Trash2, Settings, Shield
+  Palette, LogOut, Bell, Menu, X, Tag, Edit, Trash2, Settings, Shield, CalendarDays, Building2, ChevronDown
 } from 'lucide-react';
 import { IoPersonOutline } from 'react-icons/io5';
 import { MOCK_PROJECTS, MOCK_USERS } from './constants';
@@ -9,7 +9,7 @@ import { Project, Role, User, ProjectStatus, ProjectType, ProjectCategory, Task 
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { NotificationProvider, useNotifications } from './contexts/NotificationContext';
 import { LoadingProvider } from './contexts/LoadingContext';
-import { subscribeToProjects, subscribeToUserProjects, subscribeToUsers, subscribeToDesigners, subscribeToVendors, subscribeToClients, seedDatabase, updateProject, deleteProject, syncAllVendorMetrics } from './services/firebaseService';
+import { subscribeToProjects, subscribeToUserProjects, subscribeToUsers, subscribeToDesigners, subscribeToVendors, subscribeToClients, seedDatabase, updateProject, deleteProject, syncAllVendorMetrics, getAvailableTenants } from './services/firebaseService';
 import { subscribeToProjectTasks } from './services/projectDetailsService';
 import { requestNotificationPermission, onMessageListener } from './services/pushNotificationService';
 import { AvatarCircle } from './utils/avatarUtils';
@@ -26,8 +26,10 @@ import Loader from './components/Loader';
 import RememberedDevices from './components/RememberedDevices';
 import SessionExpiryWarning from './components/SessionExpiryWarning';
 import BrandingSettings from './components/BrandingSettings';
+import FirmSettings from './components/FirmSettings';
 import { PageTitleUpdater } from './components/PageTitleUpdater';
 import { useTenantBranding } from './hooks/useTenantBranding';
+// import TeamScheduler from './components/TeamScheduler'; // TODO: Team Pulse - Disabled for deployment
 
 import { calculateProjectProgress } from './utils/taskUtils';
 
@@ -192,7 +194,7 @@ const ProjectList = ({
   );
 };
 
-type ViewState = 'dashboard' | 'projects' | 'clients' | 'vendors' | 'designers' | 'admins' | 'settings';
+type ViewState = 'dashboard' | 'projects' | 'clients' | 'vendors' | 'designers' | 'admins' | 'settings' | 'scheduler';
 
 function App() {
   // Lifted state to allow NotificationProvider access to projects
@@ -224,7 +226,7 @@ interface AppContentProps {
 
 function AppContent({ projects, setProjects, users, setUsers }: AppContentProps) {
 
-  const { user, logout, loading: authLoading } = useAuth();
+  const { user, logout, loading: authLoading, currentTenant, availableTenants } = useAuth();
   const { unreadCount, addNotification } = useNotifications();
   const { brandName, logoUrl } = useTenantBranding();
   
@@ -245,14 +247,25 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
   const [isNewProjectModalOpen, setIsNewProjectModalOpen] = useState(false);
   const [editingProject, setEditingProject] = useState<Project | null>(null);
   const [isBrandingSettingsOpen, setIsBrandingSettingsOpen] = useState(false);
+  const [isFirmSettingsOpen, setIsFirmSettingsOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [realTimeTasks, setRealTimeTasks] = useState<Map<string, Task[]>>(new Map());
   const [showNotifPermissionBanner, setShowNotifPermissionBanner] = useState(false);
+
+  // --- Multi-tenant Admin State ---
+  const [selectedFirmId, setSelectedFirmId] = useState<string | null>(null);
 
   // --- Project Filter State ---
   const [projectNameFilter, setProjectNameFilter] = useState('');
   const [projectCategoryFilterValue, setProjectCategoryFilterValue] = useState<ProjectCategory | 'All'>('All');
   const [projectSortBy, setProjectSortBy] = useState<'name-asc' | 'name-desc' | 'progress-asc' | 'progress-desc' | 'recent-asc' | 'recent-desc'>('recent-desc');
+
+  // Sync currentTenant from AuthContext to local selectedFirmId
+  useEffect(() => {
+    if (currentTenant?.id) {
+      setSelectedFirmId(currentTenant.id);
+    }
+  }, [currentTenant?.id]);
 
   // Initialize push notifications
   useEffect(() => {
@@ -334,16 +347,26 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
     // vendors couldn't see projects they were assigned to via tasks but not in vendorIds array.
     // Long term fix: Ensure vendorIds is always updated when tasks are assigned (implemented in projectDetailsService)
     // But for immediate fix for existing data, we fetch all.
+    
+    // For multi-tenant designers/vendors, pass their tenantIds array so they see projects from all their firms
+    const userTenantIds = (user as any).tenantIds || [];
+    const isMultiTenantDesignerVendor = (user.role === Role.DESIGNER || user.role === Role.VENDOR) && userTenantIds.length > 0;
+    // Check if admin has multiple tenants via availableTenants (from AuthContext)
+    const isMultiTenantAdmin = user.role === Role.ADMIN && availableTenants.length > 1;
+    
+    // Determine which tenantId to use for data fetching
+    const effectiveTenantId = isMultiTenantAdmin && selectedFirmId ? selectedFirmId : user.tenantId;
+    
     unsubscribeProjects = subscribeToProjects((firebaseProjects) => {
       setProjects(firebaseProjects || []);
       
       // Sync all vendor metrics whenever projects change (except for vendors)
       if (user.role !== Role.VENDOR) {
-        syncAllVendorMetrics(user.tenantId).catch((err: any) => {
+        syncAllVendorMetrics(effectiveTenantId).catch((err: any) => {
           console.error('Failed to sync vendor metrics:', err);
         });
       }
-    }, user.tenantId);
+    }, effectiveTenantId, isMultiTenantDesignerVendor ? userTenantIds : undefined);
 
     // Subscribe to users - combines from all role collections
     const unsubscribeUsers = subscribeToUsers((firebaseUsers) => {
@@ -352,7 +375,7 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
         const others = prev.filter(u => !newIds.has(u.id));
         return [...others, ...firebaseUsers];
       });
-    }, user.tenantId);
+    }, effectiveTenantId);
 
     // Also subscribe to role-specific collections for redundancy/updates
     const unsubscribeDesigners = subscribeToDesigners((designers) => {
@@ -362,7 +385,7 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
         const others = prev.filter(u => !newIds.has(u.id));
         return [...others, ...designers];
       });
-    }, user.tenantId);
+    }, effectiveTenantId);
 
     const unsubscribeVendors = subscribeToVendors((vendors) => {
       // Replace all vendors with the new list, ensuring no ID duplicates
@@ -371,7 +394,7 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
         const others = prev.filter(u => !newIds.has(u.id));
         return [...others, ...vendors];
       });
-    }, user.tenantId);
+    }, effectiveTenantId);
 
     const unsubscribeClients = subscribeToClients((clients) => {
       // Replace all clients with the new list, ensuring no ID duplicates
@@ -380,7 +403,7 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
         const others = prev.filter(u => !newIds.has(u.id));
         return [...others, ...clients];
       });
-    }, user.tenantId);
+    }, effectiveTenantId);
 
     // Cleanup subscriptions on unmount
     return () => {
@@ -390,7 +413,7 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
       unsubscribeVendors();
       unsubscribeClients();
     };
-  }, [user, setProjects, setUsers]);
+  }, [user, setProjects, setUsers, selectedFirmId]);
 
     // Apply pending deep-link after projects or realTimeTasks update
     useEffect(() => {
@@ -560,12 +583,12 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
       <SessionExpiryWarning />
       {/* Mobile Overlay */}
       {isSidebarOpen && (
-        <div className="fixed inset-0 bg-black/50 z-20 md:hidden" onClick={() => setIsSidebarOpen(false)} />
+        <div className="fixed inset-0 bg-black/50 z-[250] md:hidden" onClick={() => setIsSidebarOpen(false)} />
       )}
 
       {/* Sidebar */}
       <aside className={`
-        fixed inset-y-0 left-0 z-30 bg-white border-r border-gray-200 transform transition-all duration-300 ease-in-out md:relative md:translate-x-0
+        fixed inset-y-0 left-0 z-[300] bg-white border-r border-gray-200 transform transition-all duration-300 ease-in-out md:relative md:translate-x-0
         ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'} md:translate-x-0
         ${isSidebarCollapsed ? 'md:w-20' : 'md:w-64 w-64'}
       `}>
@@ -588,7 +611,7 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
           {/* Toggle Button - On Right Border */}
           <button 
             onClick={() => setIsSidebarCollapsed(!isSidebarCollapsed)} 
-            className="hidden md:flex absolute -right-3 top-6 w-7 h-7 bg-white text-gray-900 rounded-full items-center justify-center hover:bg-gray-100 transition-colors shadow-md border border-gray-200 z-40"
+            className="hidden md:flex absolute -right-3 top-6 w-7 h-7 bg-white text-gray-900 rounded-full items-center justify-center hover:bg-gray-100 transition-colors shadow-md border border-gray-200 z-[310]"
             title={isSidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
             aria-label="Toggle sidebar"
           >
@@ -616,15 +639,16 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
 
           <div className="px-4 flex-1 overflow-y-auto">
               <div className="mb-6">
-              {!isSidebarCollapsed && <p className="px-4 text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Main</p>}
+              {!isSidebarCollapsed && <p className="px-4 text-xs font-semibold text-gray-400 tracking-wider mb-2">Main</p>}
               {/* Hide Dashboard for clients; clients should see Projects directly */}
               {user.role !== Role.CLIENT && <SidebarItem view="dashboard" icon={LayoutDashboard} label="Dashboard" />}
               {canSeeProjects && <SidebarItem view="projects" icon={FolderKanban} label="Projects" />}
+              {/* {user.role !== Role.CLIENT && <SidebarItem view="scheduler" icon={CalendarDays} label="Team Pulse" />} */}
             </div>
 
             {(canSeeClients || canSeeDesigners || canSeeVendors || canSeeAdmins) && (
               <div className="mb-6">
-                {!isSidebarCollapsed && <p className="px-4 text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">People</p>}
+                {!isSidebarCollapsed && <p className="px-4 text-xs font-semibold text-gray-400 tracking-wider mb-2">People</p>}
                 {canSeeClients && <SidebarItem view="clients" icon={IoPersonOutline} label="Clients" />}
                 {canSeeDesigners && <SidebarItem view="designers" icon={Users} label="Team" />}
                 {canSeeVendors && <SidebarItem view="vendors" icon={ShoppingBag} label="Vendors" />}
@@ -633,7 +657,7 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
             )}
 
             <div className="mb-6">
-              {!isSidebarCollapsed && <p className="px-4 text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Account</p>}
+              {!isSidebarCollapsed && <p className="px-4 text-xs font-semibold text-gray-400 tracking-wider mb-2">Account</p>}
               <SidebarItem view="settings" icon={Settings} label="Settings" />
             </div>
           </div>
@@ -688,8 +712,8 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
         )}
         
         {/* Top Navbar */}
-        {/* Added relative and z-20 to ensure dropdowns overlap sticky content in main */}
-        <header className="h-16 bg-white border-b border-gray-200 flex items-center justify-between px-4 sm:px-6 relative z-20">
+        {/* Added relative and z-[200] to ensure it stays above main sticky content but below modals */}
+        <header className="h-16 bg-white border-b border-gray-200 flex items-center justify-between px-4 sm:px-6 relative z-10">
           <div className="flex items-center gap-4">
             <button onClick={() => setIsSidebarOpen(true)} className="md:hidden p-2 text-gray-500 hover:bg-gray-100 rounded-lg" title="Toggle sidebar menu">
               <Menu className="w-6 h-6" />
@@ -733,7 +757,7 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
 
         {/* View Content */}
         <main 
-          className="flex-1 overflow-x-hidden overflow-y-auto bg-gray-50 p-4 sm:p-6 relative z-0" 
+          className="flex-1 overflow-x-hidden overflow-y-auto bg-gray-50 p-4 sm:p-6 relative" 
           onClick={() => isNotifOpen && setIsNotifOpen(false)}
         >
           {isLoading && (
@@ -1060,13 +1084,16 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
                     setSelectedTask(task);
                     setIsTaskOnlyView(true);
                   }} />}
+
+                  {/* {currentView === 'scheduler' && <TeamScheduler />} */} {/* TODO: Team Pulse - Disabled for deployment */}
                   
                   {currentView === 'settings' && (
-                    <div className="max-w-3xl mx-auto space-y-8">
-                      <div>
-                        <h2 className="text-2xl font-bold text-gray-800 mb-2">Settings</h2>
-                        <p className="text-gray-600">Manage your account security and preferences</p>
-                      </div>
+                    <div className="w-full min-h-full">
+                      <div className="max-w-3xl mx-auto space-y-8 pb-8">
+                        <div>
+                          <h2 className="text-2xl font-bold text-gray-800 mb-2">Settings</h2>
+                          <p className="text-gray-600">Manage your account security and preferences</p>
+                        </div>
 
                       {/* Account Info Card */}
                       <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
@@ -1074,20 +1101,20 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
                         <div className="space-y-4">
                           <div className="grid grid-cols-2 gap-4">
                             <div>
-                              <p className="text-xs text-gray-500 uppercase font-semibold">Name</p>
+                              <p className="text-xs text-gray-500 font-semibold">Name</p>
                               <p className="text-gray-900 font-medium">{user.name}</p>
                             </div>
                             <div>
-                              <p className="text-xs text-gray-500 uppercase font-semibold">Email</p>
+                              <p className="text-xs text-gray-500 font-semibold">Email</p>
                               <p className="text-gray-900 font-medium">{user.email}</p>
                             </div>
                             <div>
-                              <p className="text-xs text-gray-500 uppercase font-semibold">Role</p>
+                              <p className="text-xs text-gray-500 font-semibold">Role</p>
                               <p className="text-gray-900 font-medium capitalize">{user.role}</p>
                             </div>
                             {user.phone && (
                               <div>
-                                <p className="text-xs text-gray-500 uppercase font-semibold">Phone</p>
+                                <p className="text-xs text-gray-500 font-semibold">Phone</p>
                                 <p className="text-gray-900 font-medium">{user.phone}</p>
                               </div>
                             )}
@@ -1097,32 +1124,65 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
 
                       {/* Branding Settings - Admin Only */}
                       {user.role === Role.ADMIN && (
-                        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-                          <div className="flex items-center justify-between mb-4">
-                            <div>
-                              <h3 className="text-lg font-bold text-gray-900">Company Branding</h3>
-                              <p className="text-sm text-gray-600">Customize your organization's brand name and logo</p>
+                        <>
+                          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+                            <div className="flex items-center justify-between mb-4">
+                              <div>
+                                <h3 className="text-lg font-bold text-gray-900">Company Branding</h3>
+                                <p className="text-sm text-gray-600">Customize your organization's brand name and logo</p>
+                              </div>
+                              <button
+                                onClick={() => setIsBrandingSettingsOpen(true)}
+                                className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition-colors flex items-center gap-2"
+                              >
+                                <Palette className="w-4 h-4" />
+                                Edit Branding
+                              </button>
                             </div>
-                            <button
-                              onClick={() => setIsBrandingSettingsOpen(true)}
-                              className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition-colors flex items-center gap-2"
-                            >
-                              <Palette className="w-4 h-4" />
-                              Edit Branding
-                            </button>
-                          </div>
-                          <div className="bg-gray-50 p-4 rounded-lg">
-                            <div className="flex items-center gap-3">
-                              <img src={logoUrl} alt={brandName} className="w-8 h-8 rounded" />
-                              <span className="font-medium text-gray-900">{brandName}</span>
+                            <div className="bg-gray-50 p-4 rounded-lg">
+                              <div className="flex items-center gap-3">
+                                <img src={logoUrl} alt={brandName} className="w-8 h-8 rounded" />
+                                <span className="font-medium text-gray-900">{brandName}</span>
+                              </div>
                             </div>
                           </div>
-                        </div>
+
+                          {/* Firm Settings - Admin Only */}
+                          {availableTenants && availableTenants.length > 0 && (
+                            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+                              <div className="flex items-center justify-between mb-4">
+                                <div>
+                                  <h3 className="text-lg font-bold text-gray-900">Firm Management</h3>
+                                  <p className="text-sm text-gray-600">View and switch between your firms</p>
+                                </div>
+                                <button
+                                  onClick={() => setIsFirmSettingsOpen(true)}
+                                  className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition-colors flex items-center gap-2"
+                                >
+                                  <Building2 className="w-4 h-4" />
+                                  Manage Firms
+                                </button>
+                              </div>
+                              <div className="bg-gray-50 p-4 rounded-lg">
+                                <div className="flex items-center gap-3">
+                                  <div className="w-8 h-8 bg-blue-600 text-white rounded flex items-center justify-center">
+                                    <Building2 className="w-4 h-4" />
+                                  </div>
+                                  <div>
+                                    <p className="text-xs text-gray-600">Current Firm</p>
+                                    <span className="font-medium text-gray-900">{currentTenant?.name || 'Loading...'}</span>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          )}
+                        </>
                       )}
 
                       {/* Remembered Devices */}
                       <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
                         <RememberedDevices />
+                      </div>
                       </div>
                     </div>
                   )}
@@ -1142,6 +1202,7 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
           }}
           onSave={handleAddProject}
           initialProject={editingProject}
+          selectedFirmId={selectedFirmId}
         />
       )}
       
@@ -1149,6 +1210,13 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
         <BrandingSettings 
           isOpen={isBrandingSettingsOpen}
           onClose={() => setIsBrandingSettingsOpen(false)}
+        />
+      )}
+      
+      {isFirmSettingsOpen && (
+        <FirmSettings 
+          isOpen={isFirmSettingsOpen}
+          onClose={() => setIsFirmSettingsOpen(false)}
         />
       )}
       

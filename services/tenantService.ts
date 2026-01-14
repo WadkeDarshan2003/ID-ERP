@@ -1,4 +1,4 @@
-import { doc, getDoc } from 'firebase/firestore';
+import { doc, getDoc, collection, query, where, getDocs } from 'firebase/firestore';
 import { db } from './firebaseConfig';
 import { Tenant } from '../types';
 
@@ -87,5 +87,74 @@ export const updateTenantBranding = async (
     await setDoc(tenantRef, updateData, { merge: true });
   } catch (error) {
     throw error;
+  }
+};
+
+/**
+ * Get all tenants where the given adminId is the owner or co-admin
+ * Fetches tenants where:
+ * - User is the adminUid (owner/creator of the firm)
+ * - User's ID is in the adminIds array (co-admin support for business partnerships)
+ * @param adminId The admin user ID
+ * @returns Promise resolving to array of tenant objects with id and name
+ */
+export const getTenantsByAdmin = async (adminId: string): Promise<Array<{ id: string; name: string }>> => {
+  try {
+    // Query 1: Tenants where user is the owner (adminUid)
+    const ownerQuery = query(collection(db, 'tenants'), where('adminUid', '==', adminId));
+    const ownerSnapshot = await getDocs(ownerQuery);
+    
+    // Query 2: Tenants where user is in the adminIds array (co-admin)
+    const coAdminQuery = query(collection(db, 'tenants'), where('adminIds', 'array-contains', adminId));
+    const coAdminSnapshot = await getDocs(coAdminQuery);
+    
+    // Combine results and remove duplicates (in case user is both owner and in adminIds)
+    const tenantMap = new Map<string, { id: string; name: string }>();
+    
+    ownerSnapshot.docs.forEach(doc => {
+      tenantMap.set(doc.id, {
+        id: doc.id,
+        name: doc.data().name || 'Unnamed Firm'
+      });
+    });
+    
+    coAdminSnapshot.docs.forEach(doc => {
+      tenantMap.set(doc.id, {
+        id: doc.id,
+        name: doc.data().name || 'Unnamed Firm'
+      });
+    });
+    
+    return Array.from(tenantMap.values());
+  } catch (error) {
+    console.error('Error fetching tenants by admin:', error);
+    return [];
+  }
+};
+
+/**
+ * Save the current selected tenant ID to localStorage
+ * @param adminId The admin user ID
+ * @param tenantId The tenant ID to save
+ */
+export const saveSelectedTenant = (adminId: string, tenantId: string): void => {
+  try {
+    localStorage.setItem(`selectedTenant_${adminId}`, tenantId);
+  } catch (error) {
+    console.warn('Could not save selected tenant:', error);
+  }
+};
+
+/**
+ * Get the last selected tenant ID from localStorage
+ * @param adminId The admin user ID
+ * @returns The saved tenant ID or null
+ */
+export const getSelectedTenant = (adminId: string): string | null => {
+  try {
+    return localStorage.getItem(`selectedTenant_${adminId}`);
+  } catch (error) {
+    console.warn('Could not retrieve selected tenant:', error);
+    return null;
   }
 };

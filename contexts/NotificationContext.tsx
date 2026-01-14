@@ -168,8 +168,8 @@ export const NotificationProvider: React.FC<{ children: ReactNode, projects?: Pr
     }}>
       {children}
       
-      {/* Toast Container - z-[100] to ensure it is above everything including modals */}
-      <div className="fixed bottom-6 right-6 z-[100] flex flex-col gap-2 pointer-events-none">
+      {/* Toast Container - z-[11000] to ensure it is above everything including modals */}
+      <div className="fixed bottom-6 right-6 z-[11000] flex flex-col gap-2 pointer-events-none">
         {toasts.map(toast => (
           <div 
             key={toast.id}
@@ -190,7 +190,12 @@ export const NotificationProvider: React.FC<{ children: ReactNode, projects?: Pr
                <h4 className="font-bold text-gray-800 text-sm">{toast.title}</h4>
                <p className="text-xs text-gray-600 mt-1">{toast.message}</p>
              </div>
-             <button onClick={() => removeToast(toast.id)} className="text-gray-400 hover:text-gray-600">
+             <button 
+               onClick={() => removeToast(toast.id)} 
+               className="text-gray-400 hover:text-gray-600"
+               title="Dismiss notification"
+               aria-label="Dismiss notification"
+             >
                <X className="w-4 h-4" />
              </button>
           </div>

@@ -1,4 +1,4 @@
-rules_version = '2';
+rules_version = '3';
 service cloud.firestore {
   match /databases/{database}/documents {
     // Helper function
@@ -39,17 +39,37 @@ service cloud.firestore {
     }
     
     // -------- Role Collections --------
+    // Vendors with multi-tenant support (tenantIds array)
     match /vendors/{docId} {
-      allow read, write: if isAuth();
+      allow read, write: if isAuth() && (
+        request.auth.uid == docId ||
+        request.auth.token.role == 'admin' ||
+        // Check if admin's tenantId is in vendor's tenantIds array
+        (resource.data.tenantIds != null && 
+         request.auth.token.tenantId in resource.data.tenantIds) ||
+        // Backward compatibility: check single tenantId field
+        request.auth.token.tenantId == resource.data.tenantId
+      );
     }
+    
+    // Designers with multi-tenant support (tenantIds array)
     match /designers/{docId} {
-      allow read, write: if isAuth();
+      allow read, write: if isAuth() && (
+        request.auth.uid == docId ||
+        request.auth.token.role == 'admin' ||
+        // Check if admin's tenantId is in designer's tenantIds array
+        (resource.data.tenantIds != null && 
+         request.auth.token.tenantId in resource.data.tenantIds) ||
+        // Backward compatibility: check single tenantId field
+        request.auth.token.tenantId == resource.data.tenantId
+      );
     }
+    
     match /clients/{docId} {
-      allow read, write: if isAuth();
+      allow read, write: if isAuth() && request.auth.token.tenantId == resource.data.tenantId;
     }
     match /admins/{docId} {
-      allow read, write: if isAuth();
+      allow read, write: if isAuth() && request.auth.token.tenantId == resource.data.tenantId;
     }
   }
 }

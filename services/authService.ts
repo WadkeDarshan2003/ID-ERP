@@ -17,7 +17,16 @@ import { auth } from "./firebaseConfig";
 export const loginWithEmail = async (email: string, password: string): Promise<FirebaseUser> => {
   try {
     const result = await signInWithEmailAndPassword(auth, email, password);
-    return result.user;
+    const user = result.user;
+    
+    // Force refresh the ID token to get updated custom claims (tenantId)
+    // This is crucial for Firestore security rules to work properly
+    await user.getIdTokenResult(true);
+    
+    // Small delay to ensure token is propagated to Firestore
+    await new Promise(resolve => setTimeout(resolve, 500));
+    
+    return user;
   } catch (error) {
     console.error("Login error:", error);
     throw error;
@@ -114,7 +123,16 @@ export const setupPhoneAuthentication = async (phoneNumber: string, recaptchaCon
 export const verifyPhoneOTP = async (confirmationResult: any, otp: string): Promise<FirebaseUser> => {
   try {
     const result = await confirmationResult.confirm(otp);
-    return result.user;
+    const user = result.user;
+    
+    // Force refresh the ID token to get updated custom claims (tenantId)
+    // This is crucial for Firestore security rules to work properly
+    await user.getIdTokenResult(true);
+    
+    // Small delay to ensure token is propagated to Firestore
+    await new Promise(resolve => setTimeout(resolve, 500));
+    
+    return user;
   } catch (error) {
     console.error("Phone OTP verification error:", error);
     throw error;

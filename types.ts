@@ -19,6 +19,17 @@ export interface Tenant {
   secondaryColor?: string;
 }
 
+// Early definition - needed before header checks
+export interface Meeting {
+  id: string;
+  date: string;
+  title: string;
+  attendees: string[]; // List of user IDs
+  notes: string;
+  type: string; // Flexible meeting type (e.g., Discovery, Progress, Site Visit, etc.)
+  comments?: Comment[]; // Comments on the meeting
+}
+
 export enum ProjectStatus {
   DISCOVERY = 'Discovery',
   PLANNING = 'Planning',
@@ -56,12 +67,10 @@ export interface User {
   phone?: string;
   avatar?: string;
   tenantId?: string;
-  tenantIds?: string[]; // For vendors: array of tenant IDs they can access (multi-tenant support)
+  tenantIds?: string[]; // For vendors/designers: array of tenant IDs they can access (multi-tenant support - can work across multiple firms)
   company?: string; // For vendors
   specialty?: string; // For designers/vendors
   authMethod?: 'email' | 'phone'; // Authentication method for vendors (email or phone-based OTP)
-  tenantId?: string;
-  tenantIds?: string[]; // For vendors: array of tenant IDs they can access (multi-tenant support)
   createdBy?: string; // ID of the user who created this user
   // Vendor project metrics - aggregated from all projects
   projectMetrics?: Record<string, {
@@ -152,14 +161,42 @@ export interface Task {
   };
 }
 
-export interface Meeting {
+export enum ScheduleItemType {
+  MEETING = 'Meeting',
+  SITE_VISIT = 'Site Visit',
+  FOCUS_WORK = 'Focus Work',
+  LEAVE = 'Leave / Unavailable',
+  TRAVEL = 'In Transit'
+}
+
+export type ScheduleItemStatus = 'planned' | 'in-progress' | 'completed' | 'cancelled';
+
+export interface WorkScheduleItem {
   id: string;
-  date: string;
+  tenantId: string;
+  userId: string;
+  creatorId: string;
+  type: ScheduleItemType;
   title: string;
-  attendees: string[]; // List of user IDs
-  notes: string;
-  type: string; // Flexible meeting type (e.g., Discovery, Progress, Site Visit, etc.)
-  comments?: Comment[]; // Comments on the meeting
+  description?: string;
+  date: string; // YYYY-MM-DD
+  status: ScheduleItemStatus;
+  slotType: 'first_half' | 'second_half' | 'hourly';
+  startTime: string; // ISO
+  endTime: string; // ISO
+  projectId?: string;
+  isConfirmed: boolean;
+  comments: Comment[];
+  googleEventId?: string;
+}
+
+export interface UserAvailability {
+  userId: string;
+  workingHours: {
+    start: string; // e.g. "09:00"
+    end: string; // e.g. "18:00"
+  };
+  defaultBreak?: string;
 }
 
 export interface Timeline {

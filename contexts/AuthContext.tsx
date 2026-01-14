@@ -1,10 +1,12 @@
 import React, { createContext, useContext, useState, ReactNode, useEffect } from 'react';
 import { User } from '../types';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
-import { auth } from '../services/firebaseConfig';
+import { auth, db } from '../services/firebaseConfig';
 import { getUser, createUser, claimPhoneUserProfile } from '../services/firebaseService';
+import { getTenantsByAdmin, saveSelectedTenant, getSelectedTenant, getTenantById } from '../services/tenantService';
 import { updateDeviceLastLogin } from '../utils/deviceUtils';
 import { saveSession, getSession, clearSession, extendSession as extendSessionUtil } from '../utils/sessionUtils';
+import { clearIndexedDbPersistence } from 'firebase/firestore';
 
 interface AuthContextType {
   user: User | null;
@@ -15,6 +17,9 @@ interface AuthContextType {
   adminCredentials: { email: string; password: string } | null;
   setAdminCredentials: (credentials: { email: string; password: string } | null) => void;
   extendSession: () => void;
+  currentTenant: { id: string; name: string } | null;
+  availableTenants: Array<{ id: string; name: string }>;
+  switchTenant: (tenantId: string) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -24,6 +29,8 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const [firebaseUser, setFirebaseUser] = useState<any | null>(null);
   const [loading, setLoading] = useState(true);
   const [adminCredentials, setAdminCredentials] = useState<{ email: string; password: string } | null>(null);
+  const [currentTenant, setCurrentTenant] = useState<{ id: string; name: string } | null>(null);
+  const [availableTenants, setAvailableTenants] = useState<Array<{ id: string; name: string }>>([]);
 
   // Listen to Firebase authentication state
   useEffect(() => {
@@ -124,11 +131,22 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       // Clear session cache
       clearSession();
       
+      // Clear Firestore cache/persistence to prevent cross-tenant data leakage
+      try {
+        await clearIndexedDbPersistence(db);
+        console.log('🗑️ Firestore cache cleared on logout');
+      } catch (error) {
+        console.warn('Could not clear Firestore cache:', error);
+      }
+      
       // Small delay to allow cleanup handlers to run
       await new Promise(resolve => setTimeout(resolve, 100));
       
       // Now sign out
       await signOut(auth);
+      
+      // Force page reload to ensure complete cleanup
+      window.location.href = '/';
     } catch (error) {
       console.error('Logout error:', error);
       throw error;
@@ -141,8 +159,93 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
+  // Load available tenants for admin users
+  useEffect(() => {
+    if (!user || user.role !== 'Admin') {
+      setAvailableTenants([]);
+      setCurrentTenant(null);
+      return;
+    }
+
+    const loadTenants = async () => {
+      try {
+        const tenants = await getTenantsByAdmin(user.id);
+        
+        // If no tenants found, fetch tenant name from Firestore
+        if (!tenants || tenants.length === 0) {
+          if (user.tenantId) {
+            const tenantDoc = await getTenantById(user.tenantId);
+            const tenantName = tenantDoc?.name || user.tenantId;
+            const defaultTenant = { id: user.tenantId, name: tenantName };
+            setAvailableTenants([defaultTenant]);
+            setCurrentTenant(defaultTenant);
+          }
+          return;
+        }
+        
+        setAvailableTenants(tenants);
+
+        // Load last selected tenant or use first one
+        const lastSelected = getSelectedTenant(user.id);
+        const tenantToUse = tenants.find(t => t.id === lastSelected) || tenants[0] || null;
+        
+        if (tenantToUse) {
+          setCurrentTenant(tenantToUse);
+        }
+      } catch (error) {
+        console.error('Error loading tenants:', error);
+        // Fallback: fetch tenant name from Firestore
+        if (user.tenantId) {
+          try {
+            const tenantDoc = await getTenantById(user.tenantId);
+            const tenantName = tenantDoc?.name || user.tenantId;
+            const defaultTenant = { id: user.tenantId, name: tenantName };
+            setAvailableTenants([defaultTenant]);
+            setCurrentTenant(defaultTenant);
+          } catch (err) {
+            // Last resort: use tenantId as name
+            const defaultTenant = { id: user.tenantId, name: user.tenantId };
+            setAvailableTenants([defaultTenant]);
+            setCurrentTenant(defaultTenant);
+          }
+        }
+      }
+    };
+
+    loadTenants();
+  }, [user]);
+
+  const switchTenant = async (tenantId: string) => {
+    try {
+      const tenant = availableTenants.find(t => t.id === tenantId);
+      if (!tenant) {
+        throw new Error('Tenant not found');
+      }
+      
+      setCurrentTenant(tenant);
+      if (user) {
+        saveSelectedTenant(user.id, tenantId);
+      }
+    } catch (error) {
+      console.error('Error switching tenant:', error);
+      throw error;
+    }
+  };
+
   return (
-    <AuthContext.Provider value={{ user, firebaseUser, login, logout, loading, adminCredentials, setAdminCredentials, extendSession }}>
+    <AuthContext.Provider value={{ 
+      user, 
+      firebaseUser, 
+      login, 
+      logout, 
+      loading, 
+      adminCredentials, 
+      setAdminCredentials, 
+      extendSession,
+      currentTenant,
+      availableTenants,
+      switchTenant
+    }}>
       {children}
     </AuthContext.Provider>
   );

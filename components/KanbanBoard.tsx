@@ -186,7 +186,7 @@ const KanbanBoard: React.FC<KanbanBoardProps> = ({ tasks, users, onUpdateTaskSta
                         )}
                         <span className="text-xs font-medium text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded border border-gray-200 flex-shrink-0">{task.category}</span>
                       </div>
-                      <span className={`px-1.5 py-0.5 rounded text-xs font-bold uppercase flex-shrink-0 ${getStatusColor(task.status)}`}>
+                      <span className={`px-1.5 py-0.5 rounded text-xs font-bold flex-shrink-0 ${getStatusColor(task.status)}`}>
                          {task.status}
                       </span>
                     </div>

@@ -6,7 +6,7 @@ import { useNotifications } from '../contexts/NotificationContext';
 import { useProjectCrud } from '../hooks/useCrud';
 import { storage } from '../services/firebaseConfig';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
-import { createDocument } from '../services/projectDetailsService';
+import { createDocument, logTimelineEvent } from '../services/projectDetailsService';
 import { formatDateToIndian, formatIndianToISO } from '../utils/taskUtils';
 
 interface NewProjectModalProps {
@@ -14,9 +14,10 @@ interface NewProjectModalProps {
   onClose: () => void;
   onSave: (project: Project) => void;
   initialProject?: Project | null;
+  selectedFirmId?: string | null; // Multi-tenant: The currently selected firm to create the project in
 }
 
-const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSave, initialProject }) => {
+const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSave, initialProject, selectedFirmId }) => {
   const { addNotification } = useNotifications();
   const { user } = useAuth();
   const { createNewProject, updateExistingProject } = useProjectCrud();
@@ -42,7 +43,9 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
       leadDesignerId: initialProject.leadDesignerId
     } : {
       name: '',
-      tenantId: user?.tenantId || user?.id || '',
+      // CRITICAL FIX: Use selectedFirmId if available (multi-tenant co-admin scenario)
+      // Fall back to user.tenantId (primary firm for this admin)
+      tenantId: selectedFirmId || user?.tenantId || user?.id || '',
       status: ProjectStatus.DISCOVERY,
       type: ProjectType.DESIGNING,
       category: ProjectCategory.COMMERCIAL,
@@ -197,11 +200,15 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
         // Create mode
         const selectedClients = formData.clientIds && formData.clientIds.length > 0 ? formData.clientIds : (formData.clientId ? [formData.clientId] : []);
         
+        // CRITICAL FIX: Use selectedFirmId if available (multi-tenant co-admin scenario)
+        // Fall back to user.tenantId (primary firm for this admin)
+        const effectiveTenantId = selectedFirmId || user?.tenantId || user?.id || '';
+        
         const newProject: Omit<Project, 'id'> = {
           name: formData.name!,
           clientId: selectedClients[0] || '', // Keep for backward compatibility; empty if none
           clientIds: selectedClients, // All clients treated equally (may be empty)
-          tenantId: user?.tenantId || user?.id || '',
+          tenantId: effectiveTenantId,
           leadDesignerId: formData.leadDesignerId || '',
           status: formData.status || ProjectStatus.DISCOVERY,
           type: formData.type as ProjectType,
@@ -232,6 +239,19 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
 
         // Create project first
         const projectId = await createNewProject(newProject);
+        
+        // Create timeline event for project creation
+        await logTimelineEvent(
+          projectId,
+          `Project Created: ${formData.name}`,
+          `Project initialized by ${user?.name || 'System'}. Category: ${formData.category}, Type: ${formData.type}. Budget: ₹${Number(formData.budget).toLocaleString()}`,
+          'planned',
+          formatIndianToISO(formData.startDate),
+          formatIndianToISO(formData.deadline)
+        ).catch((err: any) => {
+          console.error('Failed to log project creation timeline:', err);
+          // Don't fail the project creation if timeline fails
+        });
         
         let thumbnailUrl: string | undefined;
         // Upload cover image if provided

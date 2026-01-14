@@ -5,10 +5,10 @@ import { Lock, ArrowRight, Phone, Mail } from 'lucide-react';
 import { useNotifications } from '../contexts/NotificationContext';
 import Loader from './Loader';
 import { useLoading } from '../contexts/LoadingContext';
-import { signInWithEmailAndPassword, signOut } from 'firebase/auth';
+import { signOut } from 'firebase/auth';
 import { auth } from '../services/firebaseConfig';
 import { getUser, claimPhoneUserProfile } from '../services/firebaseService';
-import { setupPhoneAuthentication, verifyPhoneOTP } from '../services/authService';
+import { setupPhoneAuthentication, verifyPhoneOTP, loginWithEmail } from '../services/authService';
 import { getFirebaseErrorMessage } from '../utils/firebaseErrorMessages';
 import { createDeviceInfo, saveDeviceToLocal } from '../utils/deviceUtils';
 import CreateAdmin from './CreateAdmin';
@@ -53,8 +53,9 @@ const Login: React.FC<LoginProps> = ({ users = [] }) => {
     setLoading(true);
     showLoading('Signing in...');
     try {
-      // Sign in with Firebase
-      const authResult = await signInWithEmailAndPassword(auth, email, password);
+      // Sign in with Firebase using the authService function
+      // This ensures token refresh with updated custom claims
+      const authResult = await loginWithEmail(email, password);
       
       // Store admin credentials for creating new users without logout
       if (process.env.NODE_ENV !== 'production') console.log(`🔐 Storing admin credentials: ${email}`);
@@ -68,7 +69,7 @@ const Login: React.FC<LoginProps> = ({ users = [] }) => {
       // Try to fetch user profile from Firestore
       let userProfile = null;
       try {
-        userProfile = await getUser(authResult.user.uid);
+        userProfile = await getUser(authResult.uid);
       } catch (error) {
         console.warn('Could not fetch user profile:', error);
       }
@@ -96,6 +97,9 @@ const Login: React.FC<LoginProps> = ({ users = [] }) => {
       
       login(userProfile);
       setError('');
+      
+      // Reload immediately with fresh tenant data and cleared cache
+      window.location.href = '/';
     } catch (err: any) {
       console.error('Firebase login error:', err);
       
