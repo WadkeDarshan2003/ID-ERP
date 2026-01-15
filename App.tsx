@@ -29,7 +29,7 @@ import BrandingSettings from './components/BrandingSettings';
 import FirmSettings from './components/FirmSettings';
 import { PageTitleUpdater } from './components/PageTitleUpdater';
 import { useTenantBranding } from './hooks/useTenantBranding';
-// import TeamScheduler from './components/TeamScheduler'; // TODO: Team Pulse - Disabled for deployment
+import TeamScheduler from './components/TeamScheduler';
 
 import { calculateProjectProgress } from './utils/taskUtils';
 
@@ -643,7 +643,7 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
               {/* Hide Dashboard for clients; clients should see Projects directly */}
               {user.role !== Role.CLIENT && <SidebarItem view="dashboard" icon={LayoutDashboard} label="Dashboard" />}
               {canSeeProjects && <SidebarItem view="projects" icon={FolderKanban} label="Projects" />}
-              {/* {user.role !== Role.CLIENT && <SidebarItem view="scheduler" icon={CalendarDays} label="Team Pulse" />} */}
+              {user.role !== Role.CLIENT && <SidebarItem view="scheduler" icon={CalendarDays} label="Team Pulse" />}
             </div>
 
             {(canSeeClients || canSeeDesigners || canSeeVendors || canSeeAdmins) && (
@@ -1085,7 +1085,7 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
                     setIsTaskOnlyView(true);
                   }} />}
 
-                  {/* {currentView === 'scheduler' && <TeamScheduler />} */} {/* TODO: Team Pulse - Disabled for deployment */}
+                  {currentView === 'scheduler' && <TeamScheduler />}
                   
                   {currentView === 'settings' && (
                     <div className="w-full min-h-full">

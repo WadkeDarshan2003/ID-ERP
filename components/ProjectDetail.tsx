@@ -1028,22 +1028,44 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
             else if (file.type === 'application/pdf') docType = 'pdf';
           }
 
-          // Generate URL: Upload to Firebase Storage for real file, or Local placeholder for name-only
+          // Generate URL: Upload to Firebase Storage with retry logic
           let fileUrl = '';
           
           if (file instanceof File && file.size) {
-            try {
-              // Create a unique path for the file
-              const storagePath = `projects/${project.id}/documents/${Date.now()}_${index}_${file.name}`;
-              // Upload and get download URL
-              fileUrl = await uploadFile(file, storagePath);
-            } catch (uploadError) {
-              // Fallback to blob URL if upload fails (though this won't persist well)
-              fileUrl = URL.createObjectURL(file);
-              addNotification('Warning', `Failed to upload "${fileName}" to storage. Using local preview.`, 'warning');
+            let uploadSuccess = false;
+            let lastError: Error | null = null;
+            const maxRetries = 3;
+            
+            // Retry logic for upload failures
+            for (let retry = 0; retry <= maxRetries && !uploadSuccess; retry++) {
+              try {
+                // Create a unique path for the file
+                const storagePath = `projects/${project.id}/documents/${Date.now()}_${index}_${file.name}`;
+                console.log(`📤 Uploading ${fileName} (Attempt ${retry + 1}/${maxRetries + 1})`);
+                
+                // Upload and get download URL
+                fileUrl = await uploadFile(file, storagePath);
+                uploadSuccess = true;
+                console.log(`✅ Upload successful: ${fileName}`);
+              } catch (uploadError) {
+                lastError = uploadError as Error;
+                console.error(`❌ Upload attempt ${retry + 1} failed for "${fileName}":`, uploadError);
+                
+                // Wait before retrying (exponential backoff)
+                if (retry < maxRetries) {
+                  const delayMs = Math.pow(2, retry) * 1000;
+                  console.log(`⏳ Retrying in ${delayMs}ms...`);
+                  await new Promise(resolve => setTimeout(resolve, delayMs));
+                }
+              }
+            }
+            
+            // If all retries failed, throw error (don't use blob URL fallback)
+            if (!uploadSuccess && lastError) {
+              throw new Error(`Failed to upload "${fileName}" after ${maxRetries + 1} attempts: ${lastError.message}`);
             }
           } else {
-            // Placeholder for name-only
+            // Placeholder for name-only documents
             fileUrl = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iODAwIiBoZWlnaHQ9IjYwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iODAwIiBoZWlnaHQ9IjYwMCIgZmlsbD0iI2VmZWZlZiIvPjx0ZXh0IHg9IjUwJSIgeT0iNTAlIiBmb250LXNpemU9IjI0IiBmaWxsPSIjYWFhIiBkb21pbmFudC1iYXNlbGluZT0ibWlkZGxlIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj5QbGFjZWhvbGRlcjwvdGV4dD48L3N2Zz4=';
           }
 
@@ -1133,8 +1155,10 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
         
         // PARALLEL: Send notifications to all shared users simultaneously
         const notificationPromises = uploadResults.map(async (result) => {
-          const doc = result.doc;
-          doc.id = result.createdDocId;
+          const doc: ProjectDocument = {
+            ...result.doc,
+            id: result.createdDocId
+          } as ProjectDocument;
 
           // Get recipients - admins and users in sharedWith
           const recipients: User[] = [];
@@ -1156,7 +1180,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
           if (uniqueRecipients.length > 0) {
             // Fire and forget - don't wait for email notifications
             sendDocumentUploadNotificationEmail(
-              doc as ProjectDocument,
+              doc,
               user.name,
               project.name,
               uniqueRecipients,
@@ -1177,7 +1201,16 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
         addNotification("Success", `${createdDocIds.length} document(s) uploaded successfully to "${project.name}"`, "success", undefined, project.id, project.name);
         // Real-time listener will fetch the new documents
       } catch (error: any) {
-        addNotification("Error", "Unable to upload document(s). Please check file size and try again.", "error", undefined, project.id, project.name);
+        console.error('Document upload error:', error);
+        const errorMsg = error?.message || 'Unknown error during upload';
+        addNotification(
+          "Error", 
+          `Upload failed: ${errorMsg}. Please ensure file permissions are correct and storage space is available.`, 
+          "error", 
+          undefined, 
+          project.id, 
+          project.name
+        );
       } finally {
         setIsUploadingDocument(false);
       }
