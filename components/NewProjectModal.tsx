@@ -194,6 +194,24 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
         await updateExistingProject(initialProject.id, updates);
         const updatedProject = { ...initialProject, ...updates } as Project;
         onSave(updatedProject);
+        // Clear form data after successful save
+        setFormData({
+          name: '',
+          tenantId: selectedFirmId || user?.tenantId || user?.id || '',
+          status: ProjectStatus.DISCOVERY,
+          type: ProjectType.DESIGNING,
+          category: ProjectCategory.COMMERCIAL,
+          description: '',
+          budget: undefined,
+          startDate: new Date().toISOString().split('T')[0],
+          deadline: new Date().toISOString().split('T')[0],
+          clientId: '',
+          clientIds: [],
+          leadDesignerId: ''
+        });
+        setCoverImageFile(null);
+        setUploadedDocuments([]);
+        setShowErrors(false);
         onClose();
         addNotification('Success', `Project "${formData.name}" has been updated successfully.`, 'success');
       } else {
@@ -320,8 +338,24 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
           documents: uploadedDocs 
         } as Project;
         
-        onSave(savedProject);
-        onClose();
+        onSave(savedProject);        // Clear form data after successful save
+        setFormData({
+          name: '',
+          tenantId: selectedFirmId || user?.tenantId || user?.id || '',
+          status: ProjectStatus.DISCOVERY,
+          type: ProjectType.DESIGNING,
+          category: ProjectCategory.COMMERCIAL,
+          description: '',
+          budget: undefined,
+          startDate: new Date().toISOString().split('T')[0],
+          deadline: new Date().toISOString().split('T')[0],
+          clientId: '',
+          clientIds: [],
+          leadDesignerId: ''
+        });
+        setCoverImageFile(null);
+        setUploadedDocuments([]);
+        setShowErrors(false);        onClose();
         addNotification('Success', `Project "${formData.name}" has been created with ${uploadedDocs.length} document(s).`, 'success');
       }
     } catch (error: any) {
@@ -397,6 +431,8 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
                 placeholder="e.g. House Renovation"
                 value={formData.name}
                 onChange={e => setFormData({...formData, name: e.target.value})}
+                onFocus={(e) => { e.placeholder = ''; }}
+                onBlur={(e) => { if (!formData.name) e.placeholder = 'e.g. House Renovation'; }}
               />
             </div>
             
@@ -407,6 +443,8 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
                 placeholder="Briefly describe the scope of work..."
                 value={formData.description}
                 onChange={e => setFormData({...formData, description: e.target.value})}
+                onFocus={(e) => { e.placeholder = ''; }}
+                onBlur={(e) => { if (!formData.description) e.placeholder = 'Briefly describe the scope of work...'; }}
               />
             </div>
           </div>

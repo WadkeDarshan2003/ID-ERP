@@ -307,6 +307,8 @@ const Login: React.FC<LoginProps> = ({ users = [] }) => {
                   placeholder="Enter your email"
                   value={email}
                   onChange={e => setEmail(e.target.value)}
+                  onFocus={(e) => { e.target.placeholder = ''; }}
+                  onBlur={(e) => { if (!email) e.target.placeholder = 'Enter your email'; }}
                   disabled={loading}
                 />
               </div>
@@ -318,6 +320,8 @@ const Login: React.FC<LoginProps> = ({ users = [] }) => {
                   placeholder="Enter password"
                   value={password}
                   onChange={e => setPassword(e.target.value)}
+                  onFocus={(e) => { e.target.placeholder = ''; }}
+                  onBlur={(e) => { if (!password) e.target.placeholder = 'Enter password'; }}
                   disabled={loading}
                 />
               </div>
@@ -362,6 +366,8 @@ const Login: React.FC<LoginProps> = ({ users = [] }) => {
                       placeholder="+91 9876543210"
                       value={phone}
                       onChange={e => setPhone(e.target.value)}
+                      onFocus={(e) => { e.target.placeholder = ''; }}
+                      onBlur={(e) => { if (!phone || phone === '+91 ') e.target.placeholder = '+91 9876543210'; }}
                       disabled={loading}
                     />
                     <p className="text-xs text-gray-500 mt-1">Include country code (e.g., +91 for India)</p>
@@ -387,6 +393,8 @@ const Login: React.FC<LoginProps> = ({ users = [] }) => {
                       placeholder="000000"
                       value={otp}
                       onChange={e => setOtp(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                      onFocus={(e) => { e.target.placeholder = ''; }}
+                      onBlur={(e) => { if (!otp) e.target.placeholder = '000000'; }}
                       disabled={loading}
                       maxLength={6}
                     />

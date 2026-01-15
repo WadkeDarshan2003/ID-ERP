@@ -204,7 +204,9 @@ const CreateAdmin: React.FC = () => {
                     type="tel" 
                     placeholder="+91 9876543210" 
                     value={phone} 
-                    onChange={e => setPhone(e.target.value)} 
+                    onChange={e => setPhone(e.target.value)}
+                    onFocus={(e) => { e.placeholder = ''; }}
+                    onBlur={(e) => { if (!phone || phone === '+91 ') e.placeholder = '+91 9876543210'; }}
                     title="Include country code, e.g. +91 for India" 
                     className="w-full pl-9 pr-3 py-2 bg-gray-50 border border-gray-200 rounded-lg focus:bg-white focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent transition-all text-sm"
                   />
@@ -224,7 +226,9 @@ const CreateAdmin: React.FC = () => {
                     id="adminEmail" 
                     placeholder="admin@example.com" 
                     value={email} 
-                    onChange={e => setEmail(e.target.value)} 
+                    onChange={e => setEmail(e.target.value)}
+                    onFocus={(e) => { e.placeholder = ''; }}
+                    onBlur={(e) => { if (!email) e.placeholder = 'admin@example.com'; }}
                     type="email" 
                     className="w-full pl-9 pr-3 py-2 bg-gray-50 border border-gray-200 rounded-lg focus:bg-white focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent transition-all text-sm"
                   />

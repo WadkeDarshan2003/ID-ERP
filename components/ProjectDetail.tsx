@@ -774,33 +774,42 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
 
   // Handle Deleting Comment from Meeting
   const handleDeleteMeetingComment = async (meetingId: string, commentId: string) => {
+    showLoading('Deleting comment...');
     try {
       await deleteCommentFromMeeting(project.id, meetingId, commentId);
       addNotification('Success', 'Comment deleted successfully', 'success');
     } catch (error: any) {
       addNotification('Error', 'Failed to delete comment', 'error');
+    } finally {
+      hideLoading();
     }
   };
 
   // Handle Deleting Meeting
   const handleDeleteMeeting = async (meetingId: string, meetingTitle: string) => {
+    showLoading(`Deleting meeting "${meetingTitle}"...`);
     try {
       await deleteMeeting(project.id, meetingId);
       addNotification('Success', `Meeting "${meetingTitle}" deleted successfully`, 'success');
     } catch (error: any) {
       addNotification('Error', 'Failed to delete meeting', 'error');
+    } finally {
+      hideLoading();
     }
   };
 
   // Handle Deleting Project
   const handleDeleteProject = async () => {
     setIsProjectDeleteConfirmOpen(false);
+    showLoading(`Deleting project "${project.name}"...`);
     try {
       await deleteExistingProject(project.id);
       addNotification('Success', 'Project deleted successfully', 'success');
+      hideLoading();
       onBack(); // Go back to project list
     } catch (error: any) {
       addNotification('Error', 'Failed to delete project', 'error');
+      hideLoading();
     }
   };
 
@@ -1235,6 +1244,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
     if (!deletingDoc) return;
     const doc = deletingDoc;
 
+    showLoading(`Deleting document "${doc.name}"...`);
     try {
       await deleteDocument(project.id, doc.id);
       
@@ -1274,6 +1284,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
     } catch (error) {
       addNotification("Error", "Failed to delete document", "error");
     } finally {
+      hideLoading();
       setIsDocDeleteConfirmOpen(false);
       setDeletingDoc(null);
     }
@@ -2358,6 +2369,7 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
       return;
     }
 
+    showLoading(`Deleting task "${deleteConfirmTask.title}"...`);
     try {
       // Remove from subcollection
       await deleteTask(project.id, deleteConfirmTask.id);
@@ -2383,6 +2395,8 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
       addNotification('Error', 'Unable to delete task. Please try again.', 'error', undefined, project.id, project.name);
       setIsDeleteConfirmOpen(false);
       setDeleteConfirmTask(null);
+    } finally {
+      hideLoading();
     }
   };
 
@@ -8574,6 +8588,7 @@ addNotification('Error', 'Failed to complete task', 'error');
               <button
                 onClick={async () => {
                   if (deleteConfirmTransactionId) {
+                    showLoading('Deleting transaction...');
                     try {
                       await deleteFinancialRecord(deleteConfirmTransactionId);
                       addNotification('Transaction Deleted', 'The transaction was deleted successfully.', 'success');
@@ -8581,6 +8596,8 @@ addNotification('Error', 'Failed to complete task', 'error');
                       setDeleteConfirmTransactionId(null);
                     } catch (err) {
                       addNotification('Error', 'Failed to delete transaction.', 'error');
+                    } finally {
+                      hideLoading();
                     }
                   }
                 }}

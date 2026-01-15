@@ -80,16 +80,14 @@ const MeetingForm: React.FC<MeetingFormProps> = ({
         await onSubmit(newMeeting);
       }
       
-      // Reset form only if creating new meeting
-      if (!editingMeeting) {
-        setNewMeeting({
-          date: new Date().toISOString().split('T')[0],
-          title: '',
-          type: '',
-          attendees: [],
-          notes: '',
-        });
-      }
+      // Reset form after successful save
+      setNewMeeting({
+        date: new Date().toISOString().split('T')[0],
+        title: '',
+        type: '',
+        attendees: [],
+        notes: '',
+      });
       setShowErrors(false);
       onClose();
     } catch (error) {
@@ -167,6 +165,8 @@ const MeetingForm: React.FC<MeetingFormProps> = ({
                 placeholder="e.g., Client Kickoff, Site Visit Review"
                 value={newMeeting.title}
                 onChange={(e) => setNewMeeting(prev => ({ ...prev, title: e.target.value }))}
+                onFocus={(e) => { e.target.placeholder = ''; }}
+                onBlur={(e) => { if (!newMeeting.title) e.target.placeholder = 'e.g., Client Kickoff, Site Visit Review'; }}
                 className={`w-full px-3 md:px-2 py-2 md:py-1.5 text-base md:text-sm border rounded-md focus:outline-none focus:ring-1 focus:border-gray-800
                   ${showErrors && !newMeeting.title ? 'border-red-500' : 'border-gray-200'}`}
               />
@@ -185,6 +185,8 @@ const MeetingForm: React.FC<MeetingFormProps> = ({
                 placeholder="e.g., Discovery, Progress Review, Site Visit, Vendor Meet, Design Presentation"
                 value={newMeeting.type}
                 onChange={(e) => setNewMeeting(prev => ({ ...prev, type: e.target.value }))}
+                onFocus={(e) => { e.target.placeholder = ''; }}
+                onBlur={(e) => { if (!newMeeting.type) e.target.placeholder = 'e.g., Discovery, Progress Review, Site Visit, Vendor Meet, Design Presentation'; }}
                 className={`w-full px-3 md:px-2 py-2 md:py-1.5 text-base md:text-sm border rounded-md focus:outline-none focus:ring-1 focus:border-gray-800
                   ${showErrors && !newMeeting.type ? 'border-red-500' : 'border-gray-200'}`}
               />
@@ -286,6 +288,8 @@ const MeetingForm: React.FC<MeetingFormProps> = ({
                 placeholder="Add any notes, decisions, or action items from the meeting"
                 value={newMeeting.notes}
                 onChange={(e) => setNewMeeting(prev => ({ ...prev, notes: e.target.value }))}
+                onFocus={(e) => { e.placeholder = ''; }}
+                onBlur={(e) => { if (!newMeeting.notes) e.placeholder = 'Add any notes, decisions, or action items from the meeting'; }}
                 rows={3}
                 className="w-full px-2 py-1.5 text-base md:text-sm border border-gray-200 rounded-md focus:outline-none focus:ring-1 focus:border-gray-800 resize-none"
               />
