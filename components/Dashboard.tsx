@@ -241,7 +241,7 @@ const Dashboard: React.FC<DashboardProps> = ({ projects, users, onSelectProject,
         if (doc.approvalStatus === 'pending') approvals.push({ label: `Doc: ${doc.name}`, type: 'doc', projectName: project.name, projectId: project.id });
       } else if (user.role === Role.CLIENT) {
         if (doc.approvalStatus === 'approved' && (doc.clientApprovalStatus === 'pending' || !doc.clientApprovalStatus)) {
-           const isSharedWithClient = Array.isArray(doc.sharedWith) && doc.sharedWith.includes(user.id);
+           const isSharedWithClient = Array.isArray(doc.sharedWith) && (doc.sharedWith.includes(user.id) || doc.sharedWith.includes(user.role));
            if (isSharedWithClient || project.clientId === user.id || (project.clientIds || []).includes(user.id)) {
              approvals.push({ label: `Doc: ${doc.name}`, type: 'doc', projectName: project.name, projectId: project.id });
            }

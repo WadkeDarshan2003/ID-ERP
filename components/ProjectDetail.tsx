@@ -4214,7 +4214,7 @@ addNotification('Error', 'Failed to complete task', 'error');
                       }
                       // Approved: show to shared users, client, vendor
                       if (doc.approvalStatus === 'approved') {
-                        return (Array.isArray(doc.sharedWith) && doc.sharedWith.includes(user.id)) || user.role === Role.ADMIN || doc.uploadedBy === user.id;
+                        return (Array.isArray(doc.sharedWith) && (doc.sharedWith.includes(user.id) || doc.sharedWith.includes(user.role))) || user.role === Role.ADMIN || doc.uploadedBy === user.id;
                       }
                       // Rejected: only show to admin/designer/uploader
                       if (doc.approvalStatus === 'rejected') {
@@ -8345,7 +8345,7 @@ addNotification('Error', 'Failed to complete task', 'error');
                       }
                       // Approved: show to shared users, client, vendor
                       if (doc.approvalStatus === 'approved') {
-                        return (Array.isArray(doc.sharedWith) && doc.sharedWith.includes(user.id)) || user.role === Role.ADMIN || doc.uploadedBy === user.id;
+                        return (Array.isArray(doc.sharedWith) && (doc.sharedWith.includes(user.id) || doc.sharedWith.includes(user.role))) || user.role === Role.ADMIN || doc.uploadedBy === user.id;
                       }
                       // Rejected: only show to admin/designer/uploader
                       if (doc.approvalStatus === 'rejected') {

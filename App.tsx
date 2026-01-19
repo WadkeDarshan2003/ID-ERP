@@ -643,7 +643,8 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
               {/* Hide Dashboard for clients; clients should see Projects directly */}
               {user.role !== Role.CLIENT && <SidebarItem view="dashboard" icon={LayoutDashboard} label="Dashboard" />}
               {canSeeProjects && <SidebarItem view="projects" icon={FolderKanban} label="Projects" />}
-              {user.role !== Role.CLIENT && <SidebarItem view="scheduler" icon={CalendarDays} label="Team Pulse" />}
+              {/* DISABLED FOR DEPLOYMENT: Team Pulse */}
+              {/* {user.role !== Role.CLIENT && <SidebarItem view="scheduler" icon={CalendarDays} label="Team Pulse" />} */}
             </div>
 
             {(canSeeClients || canSeeDesigners || canSeeVendors || canSeeAdmins) && (
