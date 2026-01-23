@@ -173,6 +173,8 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [selectedDocument, setSelectedDocument] = useState<ProjectDocument | null>(null);
   const [isDocDetailOpen, setIsDocDetailOpen] = useState(false);
+  const [isDocImageViewOpen, setIsDocImageViewOpen] = useState(false);
+  const [selectedImageDocument, setSelectedImageDocument] = useState<ProjectDocument | null>(null);
   const [documentCommentText, setDocumentCommentText] = useState('');
   const [isSendingDocumentComment, setIsSendingDocumentComment] = useState(false);
   // Admin: edit sharedWith for existing documents
@@ -899,10 +901,8 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
   };
 
   const getDocumentRecentTimestamp = (doc: ProjectDocument) => {
-    // ProjectDocument fields: uploadDate, approvalDate, clientApprovedDate, approvalDate, rejectionDate
-    return getSafeTimestamp(
-      (doc as any).approvalDate || (doc as any).clientApprovedDate || doc.uploadDate || (doc as any).approvalDate || (doc as any).rejectionDate || (doc as any).uploadDate
-    );
+    // Only use uploadDate to keep documents in their original position regardless of approval status
+    return getSafeTimestamp(doc.uploadDate);
   };
 
   // Replaced local getTaskProgress with imported utility
@@ -4241,7 +4241,10 @@ addNotification('Error', 'Failed to complete task', 'error');
                             <button 
                               className="p-2 bg-white rounded-full text-gray-900 hover:bg-gray-100" 
                               title="View"
-                              onClick={() => window.open(doc.url, '_blank')}
+                              onClick={() => {
+                                setSelectedImageDocument(doc);
+                                setIsDocImageViewOpen(true);
+                              }}
                             >
                                <Eye className="w-4 h-4" />
                             </button>
@@ -7313,7 +7316,7 @@ addNotification('Error', 'Failed to complete task', 'error');
 
       {/* Document Detail Modal with Comments */}
       {isDocDetailOpen && selectedDocument && createPortal(
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+        <div className="fixed inset-0 bg-black/50 z-[999] flex items-center justify-center p-4">
            <div className="bg-white rounded-xl shadow-xl w-full max-w-2xl h-[90vh] flex flex-col animate-fade-in overflow-hidden">
               {/* Modal Header */}
               <div className="p-4 border-b border-gray-100 flex justify-between items-center bg-gray-50">
@@ -7328,7 +7331,7 @@ addNotification('Error', 'Failed to complete task', 'error');
               </div>
 
               {/* Preview */}
-              <div className="flex-1 overflow-hidden bg-gray-50 flex items-center justify-center">
+              <div className="flex-1 max-h-[45%] overflow-hidden bg-gray-50 flex items-center justify-center">
                  {selectedDocument.type === 'image' ? (
                    <img src={selectedDocument.url || DEFAULT_AVATAR} alt={selectedDocument.name} className="max-h-full max-w-full object-contain" />
                  ) : selectedDocument.type === 'pdf' ? (
@@ -7408,6 +7411,47 @@ addNotification('Error', 'Failed to complete task', 'error');
                    </button>
                  </div>
               </div>
+           </div>
+        </div>,
+        document.body
+      )}
+
+      {/* Document Image View Modal - Simple Image Only */}
+      {isDocImageViewOpen && selectedImageDocument && createPortal(
+        <div className="fixed inset-0 bg-black/50 z-[999] flex items-center justify-center p-4" onClick={() => setIsDocImageViewOpen(false)}>
+           <div className="relative flex items-center justify-center animate-fade-in" onClick={e => e.stopPropagation()}>
+              {/* Close Button */}
+              <button 
+                onClick={() => setIsDocImageViewOpen(false)} 
+                className="absolute top-0 right-0 text-white hover:text-gray-300 transition-colors z-20 bg-black/70 rounded-full p-2 m-2" 
+                title="Close"
+              >
+                <X className="w-6 h-6" />
+              </button>
+
+              {/* Image Preview */}
+              {selectedImageDocument.type === 'image' ? (
+                <img 
+                  src={selectedImageDocument.url || DEFAULT_AVATAR} 
+                  alt={selectedImageDocument.name} 
+                  className="max-w-full max-h-[90vh] object-contain rounded-lg shadow-2xl" 
+                />
+              ) : (
+                <div className="bg-white rounded-lg shadow-2xl p-8 flex flex-col items-center justify-center">
+                  <div className="w-32 h-40 mx-auto bg-gradient-to-br from-gray-100 to-gray-200 rounded-lg flex flex-col items-center justify-center border-2 border-gray-300 mb-4">
+                    <FileText className="w-16 h-16 text-gray-500 mb-2" />
+                    <span className="text-sm font-bold text-gray-600 uppercase">{selectedImageDocument.type}</span>
+                  </div>
+                  <p className="text-gray-700 font-medium mb-2 text-center">{selectedImageDocument.name}</p>
+                  <p className="text-gray-500 text-sm mb-6 text-center">{selectedImageDocument.type.toUpperCase()} files cannot be previewed in-browser</p>
+                  <button 
+                    onClick={() => window.open(selectedImageDocument.url, '_blank')}
+                    className="px-6 py-2 bg-gray-900 text-white rounded-lg text-sm font-medium hover:bg-gray-800 transition-colors"
+                  >
+                    Open in New Tab
+                  </button>
+                </div>
+              )}
            </div>
         </div>,
         document.body

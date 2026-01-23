@@ -159,9 +159,9 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
-  // Load available tenants for admin users
+  // Load available tenants for admin and designer users
   useEffect(() => {
-    if (!user || user.role !== 'Admin') {
+    if (!user || (user.role !== 'Admin' && user.role !== 'Designer')) {
       setAvailableTenants([]);
       setCurrentTenant(null);
       return;
@@ -169,7 +169,27 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
     const loadTenants = async () => {
       try {
-        const tenants = await getTenantsByAdmin(user.id);
+        let tenants: Array<{ id: string; name: string }> = [];
+
+        if (user.role === 'Admin') {
+          tenants = await getTenantsByAdmin(user.id);
+        } else if (user.role === 'Designer') {
+          const tenantIds = (user as any).tenantIds || [];
+          if (tenantIds.length > 0) {
+             const results = await Promise.all(tenantIds.map((tid: string) => getTenantById(tid)));
+             tenants = results
+                .filter((t): t is any => t !== null)
+                .map(t => ({ id: t.id, name: t.name }));
+                
+             // Ensure primary tenant is in list
+             if (user.tenantId && !tenants.find(t => t.id === user.tenantId)) {
+                const primary = await getTenantById(user.tenantId);
+                if (primary) {
+                    tenants.push({ id: primary.id, name: primary.name });
+                }
+             }
+          }
+        }
         
         // If no tenants found, fetch tenant name from Firestore
         if (!tenants || tenants.length === 0) {

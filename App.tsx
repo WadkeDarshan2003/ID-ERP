@@ -351,11 +351,12 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
     // For multi-tenant designers/vendors, pass their tenantIds array so they see projects from all their firms
     const userTenantIds = (user as any).tenantIds || [];
     const isMultiTenantDesignerVendor = (user.role === Role.DESIGNER || user.role === Role.VENDOR) && userTenantIds.length > 0;
-    // Check if admin has multiple tenants via availableTenants (from AuthContext)
-    const isMultiTenantAdmin = user.role === Role.ADMIN && availableTenants.length > 1;
+    // Check if user (admin or designer) has multiple tenants via availableTenants (from AuthContext)
+    const isMultiTenantUser = (user.role === Role.ADMIN || user.role === Role.DESIGNER) && availableTenants.length > 1;
     
     // Determine which tenantId to use for data fetching
-    const effectiveTenantId = isMultiTenantAdmin && selectedFirmId ? selectedFirmId : user.tenantId;
+    // If user has switched tenant, use that.
+    const effectiveTenantId = isMultiTenantUser && selectedFirmId ? selectedFirmId : user.tenantId;
     
     unsubscribeProjects = subscribeToProjects((firebaseProjects) => {
       setProjects(firebaseProjects || []);
@@ -545,6 +546,10 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
 
   // Filter Projects for List View based on Role
   const visibleProjects = projects.filter(p => {
+    // If a firm is selected (via Firm Switcher), only show projects for that tenant
+    // This allows multi-tenant designers to filter their view while keeping all data loaded for notifications
+    if (selectedFirmId && p.tenantId !== selectedFirmId) return false;
+
     if (user.role === Role.ADMIN) return true;
     if (user.role === Role.DESIGNER) return p.leadDesignerId === user.id || (p.teamMembers || []).includes(user.id);
     if (user.role === Role.CLIENT) return p.clientId === user.id || (p.clientIds || []).includes(user.id);
@@ -796,7 +801,7 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
                  />
               ) : (
                 <>
-                  {currentView === 'dashboard' && <Dashboard projects={projects} users={users} onSelectProject={(project, opts) => {
+                  {currentView === 'dashboard' && <Dashboard projects={visibleProjects} users={users} onSelectProject={(project, opts) => {
                     setSelectedProject(project);
                     setSelectedTask(null);
                     setIsTaskOnlyView(false);
@@ -1045,7 +1050,7 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
                     </div>
                   )}
 
-                  {currentView === 'clients' && <PeopleList users={users} roleFilter={Role.CLIENT} onAddUser={handleAddUser} projects={projects} onSelectProject={(project) => {
+                  {currentView === 'clients' && <PeopleList users={users} roleFilter={Role.CLIENT} onAddUser={handleAddUser} projects={visibleProjects} onSelectProject={(project) => {
                     setSelectedProject(project);
                     setSelectedTask(null);
                     setIsTaskOnlyView(false);
@@ -1055,7 +1060,7 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
                     setSelectedTask(task);
                     setIsTaskOnlyView(true);
                   }} />}
-                  {currentView === 'vendors' && <PeopleList users={users} roleFilter={Role.VENDOR} onAddUser={handleAddUser} projects={projects} onSelectProject={(project) => {
+                  {currentView === 'vendors' && <PeopleList users={users} roleFilter={Role.VENDOR} onAddUser={handleAddUser} projects={visibleProjects} onSelectProject={(project) => {
                     setSelectedProject(project);
                     setSelectedTask(null);
                     setIsTaskOnlyView(false);
@@ -1065,7 +1070,7 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
                     setSelectedTask(task);
                     setIsTaskOnlyView(true);
                   }} />}
-                  {currentView === 'designers' && <PeopleList users={users} roleFilter={Role.DESIGNER} onAddUser={handleAddUser} projects={projects} onSelectProject={(project) => {
+                  {currentView === 'designers' && <PeopleList users={users} roleFilter={Role.DESIGNER} onAddUser={handleAddUser} projects={visibleProjects} onSelectProject={(project) => {
                     setSelectedProject(project);
                     setSelectedTask(null);
                     setIsTaskOnlyView(false);
@@ -1075,7 +1080,7 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
                     setSelectedTask(task);
                     setIsTaskOnlyView(true);
                   }} />}
-                  {currentView === 'admins' && <PeopleList users={users} roleFilter={Role.ADMIN} onAddUser={handleAddUser} projects={projects} onSelectProject={(project) => {
+                  {currentView === 'admins' && <PeopleList users={users} roleFilter={Role.ADMIN} onAddUser={handleAddUser} projects={visibleProjects} onSelectProject={(project) => {
                     setSelectedProject(project);
                     setSelectedTask(null);
                     setIsTaskOnlyView(false);
@@ -1125,59 +1130,57 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
 
                       {/* Branding Settings - Admin Only */}
                       {user.role === Role.ADMIN && (
-                        <>
-                          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-                            <div className="flex items-center justify-between mb-4">
-                              <div>
-                                <h3 className="text-lg font-bold text-gray-900">Company Branding</h3>
-                                <p className="text-sm text-gray-600">Customize your organization's brand name and logo</p>
-                              </div>
-                              <button
-                                onClick={() => setIsBrandingSettingsOpen(true)}
-                                className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition-colors flex items-center gap-2"
-                              >
-                                <Palette className="w-4 h-4" />
-                                Edit Branding
-                              </button>
+                        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+                          <div className="flex items-center justify-between mb-4">
+                            <div>
+                              <h3 className="text-lg font-bold text-gray-900">Company Branding</h3>
+                              <p className="text-sm text-gray-600">Customize your organization's brand name and logo</p>
                             </div>
-                            <div className="bg-gray-50 p-4 rounded-lg">
-                              <div className="flex items-center gap-3">
-                                <img src={logoUrl} alt={brandName} className="w-8 h-8 rounded" />
-                                <span className="font-medium text-gray-900">{brandName}</span>
+                            <button
+                              onClick={() => setIsBrandingSettingsOpen(true)}
+                              className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition-colors flex items-center gap-2"
+                            >
+                              <Palette className="w-4 h-4" />
+                              Edit Branding
+                            </button>
+                          </div>
+                          <div className="bg-gray-50 p-4 rounded-lg">
+                            <div className="flex items-center gap-3">
+                              <img src={logoUrl} alt={brandName} className="w-8 h-8 rounded" />
+                              <span className="font-medium text-gray-900">{brandName}</span>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Firm Settings - Admin & Designer */}
+                      {(user.role === Role.ADMIN || user.role === Role.DESIGNER) && availableTenants && availableTenants.length > 0 && (
+                        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+                          <div className="flex items-center justify-between mb-4">
+                            <div>
+                              <h3 className="text-lg font-bold text-gray-900">Firm Management</h3>
+                              <p className="text-sm text-gray-600">View and switch between your firms</p>
+                            </div>
+                            <button
+                              onClick={() => setIsFirmSettingsOpen(true)}
+                              className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition-colors flex items-center gap-2"
+                            >
+                              <Building2 className="w-4 h-4" />
+                              Manage Firms
+                            </button>
+                          </div>
+                          <div className="bg-gray-50 p-4 rounded-lg">
+                            <div className="flex items-center gap-3">
+                              <div className="w-8 h-8 bg-blue-600 text-white rounded flex items-center justify-center">
+                                <Building2 className="w-4 h-4" />
+                              </div>
+                              <div>
+                                <p className="text-xs text-gray-600">Current Firm</p>
+                                <span className="font-medium text-gray-900">{currentTenant?.name || 'Loading...'}</span>
                               </div>
                             </div>
                           </div>
-
-                          {/* Firm Settings - Admin Only */}
-                          {availableTenants && availableTenants.length > 0 && (
-                            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-                              <div className="flex items-center justify-between mb-4">
-                                <div>
-                                  <h3 className="text-lg font-bold text-gray-900">Firm Management</h3>
-                                  <p className="text-sm text-gray-600">View and switch between your firms</p>
-                                </div>
-                                <button
-                                  onClick={() => setIsFirmSettingsOpen(true)}
-                                  className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition-colors flex items-center gap-2"
-                                >
-                                  <Building2 className="w-4 h-4" />
-                                  Manage Firms
-                                </button>
-                              </div>
-                              <div className="bg-gray-50 p-4 rounded-lg">
-                                <div className="flex items-center gap-3">
-                                  <div className="w-8 h-8 bg-blue-600 text-white rounded flex items-center justify-center">
-                                    <Building2 className="w-4 h-4" />
-                                  </div>
-                                  <div>
-                                    <p className="text-xs text-gray-600">Current Firm</p>
-                                    <span className="font-medium text-gray-900">{currentTenant?.name || 'Loading...'}</span>
-                                  </div>
-                                </div>
-                              </div>
-                            </div>
-                          )}
-                        </>
+                        </div>
                       )}
 
                       {/* Remembered Devices */}

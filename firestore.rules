@@ -1,11 +1,26 @@
 rules_version = '3';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Helper function
+    // Helper functions
     function isAuth() { return request.auth != null; }
     
+    // Get current user document
+    function getCurrentUser() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+    
+    // Check if user has access to a specific tenant
+    // Supports both single tenantId and multiple tenantIds array
+    function hasAccessToTenant(tenantId) {
+      let userDoc = getCurrentUser();
+      return (
+        userDoc.tenantId == tenantId ||
+        (userDoc.tenantIds != null && tenantId in userDoc.tenantIds)
+      );
+    }
+    
     // -------- Users Collection --------
-    // Allow authenticated users to read all users in same tenant
+    // Allow authenticated users to read all users
     // Allow users to write their own document
     match /users/{userId} {
       allow read: if isAuth();
@@ -14,7 +29,7 @@ service cloud.firestore {
         request.auth.uid == userId || 
         request.auth.uid == resource.data.createdBy ||
         resource.data.tenantId == null ||
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.tenantId == resource.data.tenantId
+        hasAccessToTenant(resource.data.tenantId)
       );
     }
     
@@ -31,11 +46,20 @@ service cloud.firestore {
     }
     
     // -------- Projects Collection --------
+    // Multi-tenant support: User can read/write projects from their tenants
     match /projects/{projectId} {
-      allow read, write: if isAuth();
+      allow read, write: if isAuth() && (
+        resource.data.tenantId == null ||
+        hasAccessToTenant(resource.data.tenantId)
+      );
+      // Allow write for creation (no resource check yet)
+      allow create: if isAuth();
     }
     match /projects/{projectId}/{sub=**} {
-      allow read, write: if isAuth();
+      allow read, write: if isAuth() && (
+        get(/databases/$(database)/documents/projects/$(projectId)).data.tenantId == null ||
+        hasAccessToTenant(get(/databases/$(database)/documents/projects/$(projectId)).data.tenantId)
+      );
     }
     
     // -------- Role Collections --------
@@ -44,11 +68,9 @@ service cloud.firestore {
       allow read, write: if isAuth() && (
         request.auth.uid == docId ||
         request.auth.token.role == 'admin' ||
-        // Check if admin's tenantId is in vendor's tenantIds array
+        hasAccessToTenant(resource.data.tenantId) ||
         (resource.data.tenantIds != null && 
-         request.auth.token.tenantId in resource.data.tenantIds) ||
-        // Backward compatibility: check single tenantId field
-        request.auth.token.tenantId == resource.data.tenantId
+         hasAccessToTenant(resource.data.tenantIds[0]))
       );
     }
     
@@ -57,19 +79,24 @@ service cloud.firestore {
       allow read, write: if isAuth() && (
         request.auth.uid == docId ||
         request.auth.token.role == 'admin' ||
-        // Check if admin's tenantId is in designer's tenantIds array
+        hasAccessToTenant(resource.data.tenantId) ||
         (resource.data.tenantIds != null && 
-         request.auth.token.tenantId in resource.data.tenantIds) ||
-        // Backward compatibility: check single tenantId field
-        request.auth.token.tenantId == resource.data.tenantId
+         hasAccessToTenant(resource.data.tenantIds[0]))
       );
     }
     
     match /clients/{docId} {
-      allow read, write: if isAuth() && request.auth.token.tenantId == resource.data.tenantId;
+      allow read, write: if isAuth() && (
+        request.auth.uid == docId ||
+        hasAccessToTenant(resource.data.tenantId)
+      );
     }
+    
     match /admins/{docId} {
-      allow read, write: if isAuth() && request.auth.token.tenantId == resource.data.tenantId;
+      allow read, write: if isAuth() && (
+        request.auth.uid == docId ||
+        hasAccessToTenant(resource.data.tenantId)
+      );
     }
   }
 }
