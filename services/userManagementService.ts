@@ -2,10 +2,8 @@ import { createUserWithEmailAndPassword, signOut, signInWithEmailAndPassword, ge
 import { auth, db, firebaseConfig } from './firebaseConfig';
 import { setDoc, doc, updateDoc, getFirestore, collection, addDoc } from 'firebase/firestore';
 import { User, Role } from '../types';
-import { sendEmail } from './emailService';
 import { initializeApp, deleteApp, getApps } from 'firebase/app';
 import { uploadLogoToStorage } from './storageService';
-import { getTenantBranding } from './tenantService';
 
 /**
  * Update an existing user's profile in Firestore
@@ -176,118 +174,6 @@ export const createUserInFirebase = async (
     await setDoc(doc(secondaryDb, roleCollection, firebaseUid), userProfile);
     if (process.env.NODE_ENV !== 'production') console.log(`✅ Saved to '${roleCollection}' collection: ${user.email || user.phone}`);
     
-    // Step 4: Send welcome email with credentials
-    // Get tenant branding for email customization
-    const branding = await getTenantBranding(finalTenantId);
-    
-    if (user.authMethod === 'phone') {
-      // For phone users, send different email with OTP login instructions
-      try {
-        const htmlContent = `
-          <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 600px; margin: 0 auto; background-color: #f9fafb; padding: 20px;">
-            <div style="background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%); padding: 30px; border-radius: 8px 8px 0 0; text-align: center;">
-              <h2 style="color: #fff; margin: 0; font-size: 24px;"> Welcome to ${branding.brandName}!</h2>
-            </div>
-            
-            <div style="background-color: white; padding: 30px; border-radius: 0 0 8px 8px;">
-              <p style="color: #333; font-size: 16px;">Hi <strong>${user.name}</strong>,</p>
-              
-              <p style="color: #555; font-size: 14px;">Your account has been created on ${branding.brandName}. You can now log in using your phone number with OTP (One-Time Password).</p>
-              
-              <div style="background-color: #f3f4f6; padding: 20px; border-radius: 6px; margin: 20px 0; border-left: 4px solid #ef4444;">
-                <p style="margin: 0; color: #333; font-size: 14px;"><strong>Your Phone Number:</strong></p>
-                <p style="margin: 5px 0 15px 0; color: #1f2937; font-size: 16px; font-family: monospace; background: white; padding: 8px; border-radius: 4px;">${user.phone}</p>
-                
-                <p style="margin: 0; color: #333; font-size: 14px;"><strong>How to Login:</strong></p>
-                <ol style="margin: 5px 0 0 0; color: #1f2937; font-size: 14px;">
-                  <li>Go to the ${branding.brandName} login page</li>
-                  <li>Click the "Phone" tab</li>
-                  <li>Enter your phone number: ${user.phone}</li>
-                  <li>Click "Send OTP"</li>
-                  <li>You'll receive an SMS with a 6-digit OTP</li>
-                  <li>Enter the OTP and click "Verify OTP"</li>
-                </ol>
-              </div>
-              
-              <p style="color: #555; font-size: 14px;">
-                <strong>Important:</strong> Keep your phone number safe. You'll need it to log in.
-              </p>
-
-              
-              <div style="margin-top: 30px; text-align: center;">
-                <a href="https://btw-erp.web.app" style="background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%); color: white; padding: 12px 30px; border-radius: 6px; text-decoration: none; display: inline-block; font-weight: 600;">
-                  Go to ${branding.brandName}
-                </a>
-              </div>
-              
-              <p style="color: #9ca3af; font-size: 12px; margin-top: 30px; border-top: 1px solid #e5e7eb; padding-top: 20px;">
-                If you have any questions, please contact the administrator.
-              </p>
-            </div>
-          </div>
-        `;
-
-        await sendEmail({
-          to: user.email,
-          recipientName: user.name,
-          subject: `Welcome to ${branding.brandName} - Phone-Based Login Instructions`,
-          htmlContent: htmlContent
-        });
-        if (process.env.NODE_ENV !== 'production') console.log(`✅ Phone user welcome email sent to ${user.email}`);
-      } catch (emailError: any) {
-        console.error(`⚠️ Failed to send welcome email to ${user.email}:`, emailError.message);
-      }
-    } else {
-      // For email users, send credentials email
-      try {
-        const htmlContent = `
-          <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 600px; margin: 0 auto; background-color: #f9fafb; padding: 20px;">
-            <div style="background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%); padding: 30px; border-radius: 8px 8px 0 0; text-align: center;">
-              <h2 style="color: #fff; margin: 0; font-size: 24px;"> Welcome to ${branding.brandName}!</h2>
-            </div>
-            
-            <div style="background-color: white; padding: 30px; border-radius: 0 0 8px 8px;">
-              <p style="color: #333; font-size: 16px;">Hi <strong>${user.name}</strong>,</p>
-              
-              <p style="color: #555; font-size: 14px;">Your account has been created on ${branding.brandName}. Here are your login credentials:</p>
-              
-              <div style="background-color: #f3f4f6; padding: 20px; border-radius: 6px; margin: 20px 0; border-left: 4px solid #ef4444;">
-                <p style="margin: 0; color: #333; font-size: 14px;"><strong>Your ID (Email):</strong></p>
-                <p style="margin: 5px 0 15px 0; color: #1f2937; font-size: 16px; font-family: monospace; background: white; padding: 8px; border-radius: 4px;">${user.email}</p>
-                
-                <p style="margin: 0; color: #333; font-size: 14px;"><strong>Your Password:</strong></p>
-                <p style="margin: 5px 0 0 0; color: #1f2937; font-size: 16px; font-family: monospace; background: white; padding: 8px; border-radius: 4px;">${user.password}</p>
-              </div>
-              
-              <p style="color: #555; font-size: 14px;">
-                <strong>Keep these credentials safe!</strong> You can change your password after logging in for the first time.
-              </p>
-              
-              <div style="margin-top: 30px; text-align: center;">
-                <a href="https://btw-erp.web.app" style="background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%); color: white; padding: 12px 30px; border-radius: 6px; text-decoration: none; display: inline-block; font-weight: 600;">
-                  Go to ${branding.brandName}
-                </a>
-              </div>
-              
-              <p style="color: #9ca3af; font-size: 12px; margin-top: 30px; border-top: 1px solid #e5e7eb; padding-top: 20px;">
-                If you have any questions, please contact the administrator.
-              </p>
-            </div>
-          </div>
-        `;
-
-        await sendEmail({
-          to: user.email,
-          recipientName: user.name,
-          subject: `Welcome to ${branding.brandName} - Your Account Credentials`,
-          htmlContent: htmlContent
-        });
-        if (process.env.NODE_ENV !== 'production') console.log(`✅ Welcome email sent to ${user.email}`);
-      } catch (emailError: any) {
-        console.error(`⚠️ Failed to send welcome email to ${user.email}:`, emailError.message);
-        // Don't throw - user is created successfully, email is just a courtesy
-      }
-    }
     if (process.env.NODE_ENV !== 'production') console.log(`📊 User creation complete. Admin session should be intact.`);
     
     return firebaseUid;

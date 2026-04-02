@@ -6,7 +6,7 @@ import { CATEGORY_ORDER } from '../constants';
 import { useProjectCrud, useFinancialCrud } from '../hooks/useCrud';
 import { createMeeting, updateMeeting, deleteMeeting, createDocument, addCommentToDocument, deleteDocument, updateDocument, createTask, updateTask, deleteTask, subscribeToProjectMeetings, subscribeToProjectDocuments, subscribeToTimelines, subscribeToProjectTasks, logTimelineEvent, addTeamMember, addCommentToMeeting, deleteCommentFromMeeting, subscribeToMeetingComments } from '../services/projectDetailsService';
 import { subscribeToProjectFinancialRecords, updateProjectFinancialRecord, createProjectFinancialRecord } from '../services/financialService';
-import { sendTaskReminder, sendPaymentReminder } from '../services/emailService';
+
 import { sendProjectWelcomeEmail, sendDocumentApprovalEmail, sendTaskApprovalEmail, sendMeetingNotificationEmail, sendTaskAssignmentNotificationEmail, sendTaskStartApprovalNotificationEmail, sendTaskCompletionApprovalNotificationEmail, sendTaskCommentNotificationEmail, sendDocumentCommentNotificationEmail, sendDocumentAdminApprovalNotificationEmail, sendDocumentClientApprovalNotificationEmail, sendFinancialApprovalNotificationEmail, sendMeetingCommentNotificationEmail, sendDocumentUploadNotificationEmail } from '../services/emailTriggerService';
 import { syncAllVendorsEarnings } from '../services/firebaseService';
 import { doc, updateDoc } from 'firebase/firestore';
@@ -2536,34 +2536,6 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
       addNotification('Error', 'Failed to copy task link', 'error', user?.id, project.id, project.name);
     }
     document.body.removeChild(textarea);
-  };
-
-  const handleSendPaymentReminder = async (client: User) => {
-    if (!client.email || !client.email.trim()) {
-      addNotification('Error', `Email not found for ${client.name}`, 'error');
-      return;
-    }
-
-    showLoading('Sending payment reminder...');
-    try {
-      const result = await sendPaymentReminder(
-        client.email,
-        client.name,
-        project.name
-      );
-
-      if (result.success) {
-        addNotification('Success', `Payment reminder sent to ${client.name}`, 'success');
-      } else {
-        addNotification('Error', result.error || 'Failed to send email', 'error');
-      }
-    } catch (error) {
-      console.error('Error sending payment reminder:', error);
-      addNotification('Error', 'Failed to send payment reminder', 'error');
-    }
-      finally {
-        hideLoading();
-      }
   };
 
   const handleTaskCompletion = async (task: Task) => {
@@ -5356,13 +5328,6 @@ addNotification('Error', 'Failed to complete task', 'error');
                           </div>
                           {user.role === Role.ADMIN && (
                             <div className="flex items-center gap-1">
-                              <button 
-                                onClick={() => handleSendPaymentReminder(client)}
-                                className="text-gray-400 hover:text-green-600 p-2.5 rounded-full hover:bg-green-50 transition-colors"
-                                title="Send Payment Reminder Email"
-                              >
-                                <IndianRupee className="w-5 h-5" />
-                              </button>
                               <button
                                 onClick={() => {
                                   const projectLink = `${window.location.origin}${window.location.pathname}?projectId=${project.id}`;
