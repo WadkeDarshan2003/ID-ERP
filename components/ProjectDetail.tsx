@@ -26,6 +26,8 @@ import {
 } from 'lucide-react';
 import { useNotifications } from '../contexts/NotificationContext';
 import { useLoading } from '../contexts/LoadingContext';
+import { useUnsavedChanges } from '../hooks/useUnsavedChanges';
+import ConfirmDialog from './ConfirmDialog';
 
 interface ProjectDetailProps {
   project: Project;
@@ -125,6 +127,21 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
   const [isTaskModalOpen, setIsTaskModalOpen] = useState(!!initialTask);
   const [editingTask, setEditingTask] = useState<Partial<Task> | null>(initialTask || null);
   const [isProjectHeaderLoaded, setIsProjectHeaderLoaded] = useState(true);
+
+  // Store initial task data for unsaved changes detection
+  const initialTaskData = useRef<Partial<Task> | null>(editingTask);
+  useEffect(() => {
+    if (isTaskModalOpen) {
+      initialTaskData.current = editingTask;
+    }
+  }, [isTaskModalOpen]);
+
+  // Track unsaved changes in task modal
+  const { hasUnsavedChanges: hasUnsavedTaskChanges } = useUnsavedChanges(
+    initialTaskData.current || {},
+    editingTask || {}
+  );
+  const [showTaskConfirmDialog, setShowTaskConfirmDialog] = useState(false);
 
   // Handle closing task modal and returning to dashboard if needed
   const prevIsTaskModalOpen = useRef(isTaskModalOpen);
@@ -2171,6 +2188,30 @@ const ProjectDetail: React.FC<ProjectDetailProps> = ({ project, projects = [], u
      }
 
      setEditingTask({ ...editingTask, dependencies: currentDeps, startDate: newStartDate });
+  };
+
+  // Handle close task modal with unsaved changes check
+  const handleCloseTaskModal = () => {
+    if (hasUnsavedTaskChanges) {
+      setShowTaskConfirmDialog(true);
+    } else {
+      setIsTaskModalOpen(false);
+      setEditingTask(null);
+    }
+  };
+
+  // Handle save and exit for task
+  const handleSaveAndExitTask = async () => {
+    // First validate
+    if (!editingTask?.title || !editingTask.startDate || !editingTask.dueDate) {
+      setShowTaskErrors(true);
+      addNotification('Validation Error', `Please complete all required fields for "${project.name}"`, 'error', undefined, project.id, project.name);
+      setShowTaskConfirmDialog(false);
+      return;
+    }
+
+    // Save the task (this will close both dialogs and the modal)
+    await handleSaveTask();
   };
 
   const handleSaveTask = async () => {
@@ -6719,7 +6760,7 @@ addNotification('Error', 'Failed to complete task', 'error');
                      </div>
                    </div>
                 </div>
-                <button onClick={() => setIsTaskModalOpen(false)} className="text-gray-400 hover:text-gray-600" title="Close task modal"><X/></button>
+                <button onClick={handleCloseTaskModal} className="text-gray-400 hover:text-gray-600" title="Close task modal"><X/></button>
               </div>
 
               {/* Dependency Warning */}
@@ -8706,6 +8747,23 @@ addNotification('Error', 'Failed to complete task', 'error');
         </div>,
         document.body
       )}
+
+      {/* Confirmation Dialog for Unsaved Task Changes */}
+      <ConfirmDialog
+        isOpen={showTaskConfirmDialog}
+        onClose={() => setShowTaskConfirmDialog(false)}
+        onConfirm={handleSaveAndExitTask}
+        onDiscard={() => {
+          setShowTaskConfirmDialog(false);
+          setIsTaskModalOpen(false);
+          setEditingTask(null);
+        }}
+        title="Unsaved Changes"
+        message="You have unsaved changes in this task. Do you want to save before closing?"
+        confirmText="Save & Exit"
+        cancelText="Don't Save"
+        variant="warning"
+      />
     </div>
   );
 };

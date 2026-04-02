@@ -8,6 +8,8 @@ import { storage } from '../services/firebaseConfig';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { createDocument, logTimelineEvent } from '../services/projectDetailsService';
 import { formatDateToIndian, formatIndianToISO } from '../utils/taskUtils';
+import { useUnsavedChanges } from '../hooks/useUnsavedChanges';
+import ConfirmDialog from './ConfirmDialog';
 
 interface NewProjectModalProps {
   users: User[];
@@ -27,42 +29,47 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
   // Initialize dates with today's date in YYYY-MM-DD format
   const today = new Date().toISOString().split('T')[0];
   
-  const [formData, setFormData] = useState<Partial<Project>>(
-    initialProject ? {
-      name: initialProject.name,
-      tenantId: initialProject.tenantId,
-      status: initialProject.status,
-      type: initialProject.type,
-      category: initialProject.category,
-      description: initialProject.description,
-      budget: initialProject.budget,
-      startDate: initialProject.startDate,
-      deadline: initialProject.deadline,
-      clientId: initialProject.clientId,
-      clientIds: initialProject.clientIds || [initialProject.clientId],
-      leadDesignerId: initialProject.leadDesignerId
-    } : {
-      name: '',
-      // CRITICAL FIX: Use selectedFirmId if available (multi-tenant co-admin scenario)
-      // Fall back to user.tenantId (primary firm for this admin)
-      tenantId: selectedFirmId || user?.tenantId || user?.id || '',
-      status: ProjectStatus.DISCOVERY,
-      type: ProjectType.DESIGNING,
-      category: ProjectCategory.COMMERCIAL,
-      description: '',
-      budget: undefined,
-      startDate: today,
-      deadline: today,
-      clientId: '',
-      clientIds: [],
-      leadDesignerId: ''
-    }
-  );
+  const initialFormData: Partial<Project> = initialProject ? {
+    name: initialProject.name,
+    tenantId: initialProject.tenantId,
+    status: initialProject.status,
+    type: initialProject.type,
+    category: initialProject.category,
+    description: initialProject.description,
+    budget: initialProject.budget,
+    startDate: initialProject.startDate,
+    deadline: initialProject.deadline,
+    clientId: initialProject.clientId,
+    clientIds: initialProject.clientIds || [initialProject.clientId],
+    leadDesignerId: initialProject.leadDesignerId
+  } : {
+    name: '',
+    // CRITICAL FIX: Use selectedFirmId if available (multi-tenant co-admin scenario)
+    // Fall back to user.tenantId (primary firm for this admin)
+    tenantId: selectedFirmId || user?.tenantId || user?.id || '',
+    status: ProjectStatus.DISCOVERY,
+    type: ProjectType.DESIGNING,
+    category: ProjectCategory.COMMERCIAL,
+    description: '',
+    budget: undefined,
+    startDate: today,
+    deadline: today,
+    clientId: '',
+    clientIds: [],
+    leadDesignerId: ''
+  };
+  
+  const [formData, setFormData] = useState<Partial<Project>>(initialFormData);
   const [showErrors, setShowErrors] = useState(false);
   const [coverImageFile, setCoverImageFile] = useState<File | null>(null);
   const [uploadedDocuments, setUploadedDocuments] = useState<{file: File, name: string}[]>([]);
   const coverImageInputRef = useRef<HTMLInputElement>(null);
   const documentInputRef = useRef<HTMLInputElement>(null);
+
+  // Track unsaved changes
+  const { hasUnsavedChanges, resetChanges } = useUnsavedChanges(initialFormData, formData);
+  const [showConfirmDialog, setShowConfirmDialog] = useState(false);
+  const hasFileChanges = coverImageFile !== null || uploadedDocuments.length > 0;
 
   const validate = () => {
     // clientIds must have at least one client (use clientIds if available, otherwise check clientId)
@@ -106,6 +113,24 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
     }
     
     return true;
+  };
+
+  // Handle close with unsaved changes check
+  const handleClose = () => {
+    if (hasUnsavedChanges || hasFileChanges) {
+      setShowConfirmDialog(true);
+    } else {
+      onClose();
+    }
+  };
+
+  // Handle save and exit
+  const handleSaveAndExit = async () => {
+    if (!validate()) {
+      setShowConfirmDialog(false);
+      return;
+    }
+    await handleSubmit(new Event('submit') as any);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -264,8 +289,8 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
           `Project Created: ${formData.name}`,
           `Project initialized by ${user?.name || 'System'}. Category: ${formData.category}, Type: ${formData.type}. Budget: ₹${Number(formData.budget).toLocaleString()}`,
           'planned',
-          formatIndianToISO(formData.startDate),
-          formatIndianToISO(formData.deadline)
+          formatIndianToISO(formData.startDate!),
+          formatIndianToISO(formData.deadline!)
         ).catch((err: any) => {
           console.error('Failed to log project creation timeline:', err);
         });
@@ -410,14 +435,15 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
   `;
 
   return (
-    <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
-      <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto animate-fade-in">
-        <div className="flex justify-between items-center p-6 border-b border-gray-100 bg-white sticky top-0 z-10">
-          <h2 className="text-xl font-bold text-gray-900">{isEditMode ? 'Edit Project' : 'Create New Project'}</h2>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 transition-colors" title="Close modal">
-            <X className="w-6 h-6" />
-          </button>
-        </div>
+    <>
+      <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
+        <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto animate-fade-in">
+          <div className="flex justify-between items-center p-6 border-b border-gray-100 bg-white sticky top-0 z-10">
+            <h2 className="text-xl font-bold text-gray-900">{isEditMode ? 'Edit Project' : 'Create New Project'}</h2>
+            <button onClick={handleClose} className="text-gray-400 hover:text-gray-600 transition-colors" title="Close modal">
+              <X className="w-6 h-6" />
+            </button>
+          </div>
 
         <form onSubmit={handleSubmit} className="p-8 space-y-6 bg-white">
           
@@ -431,8 +457,8 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
                 placeholder="e.g. House Renovation"
                 value={formData.name}
                 onChange={e => setFormData({...formData, name: e.target.value})}
-                onFocus={(e) => { e.placeholder = ''; }}
-                onBlur={(e) => { if (!formData.name) e.placeholder = 'e.g. House Renovation'; }}
+                onFocus={(e) => { e.target.placeholder = ''; }}
+                onBlur={(e) => { if (!formData.name) e.target.placeholder = 'e.g. House Renovation'; }}
               />
             </div>
             
@@ -443,8 +469,8 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
                 placeholder="Briefly describe the scope of work..."
                 value={formData.description}
                 onChange={e => setFormData({...formData, description: e.target.value})}
-                onFocus={(e) => { e.placeholder = ''; }}
-                onBlur={(e) => { if (!formData.description) e.placeholder = 'Briefly describe the scope of work...'; }}
+                onFocus={(e) => { e.target.placeholder = ''; }}
+                onBlur={(e) => { if (!formData.description) e.target.placeholder = 'Briefly describe the scope of work...'; }}
               />
             </div>
           </div>
@@ -686,7 +712,7 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
             <div className="pt-2 border-t border-gray-100 flex justify-end gap-2">
             <button 
               type="button" 
-              onClick={onClose}
+              onClick={handleClose}
               disabled={isSubmitting}
               className="px-4 py-1.5 rounded-lg text-base md:text-sm font-medium text-gray-600 hover:bg-gray-100 transition-colors disabled:opacity-50"
             >
@@ -711,6 +737,20 @@ const NewProjectModal: React.FC<NewProjectModalProps> = ({ users, onClose, onSav
         </form>
       </div>
     </div>
+
+    {/* Confirmation Dialog for Unsaved Changes */}
+    <ConfirmDialog
+      isOpen={showConfirmDialog}
+      onClose={() => setShowConfirmDialog(false)}
+      onConfirm={handleSaveAndExit}
+      onDiscard={onClose}
+      title="Unsaved Changes"
+      message="You have unsaved changes. Do you want to save before closing?"
+      confirmText="Save & Exit"
+      cancelText="Don't Save"
+      variant="warning"
+    />
+    </>
   );
 };
 

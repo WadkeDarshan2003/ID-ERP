@@ -13,6 +13,8 @@ import { createUserInFirebase, updateUserInFirebase } from '../services/userMana
 import { updateProject, subscribeToAvailableTenants } from '../services/firebaseService'; // Project updates
 import { getProjectFinancialRecords } from '../services/financialService'; // Financial records
 import { AvatarCircle, getInitials } from '../utils/avatarUtils'; // Avatar utilities
+import { useUnsavedChanges } from '../hooks/useUnsavedChanges';
+import ConfirmDialog from './ConfirmDialog';
 
 interface PeopleListProps {
   users: User[];
@@ -38,11 +40,19 @@ const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, p
   const [isShareModalOpen, setIsShareModalOpen] = useState(false);
   const [shareMethod, setShareMethod] = useState<'email' | 'link'>('email');
   // Removed manual approvals state as it is now derived from project financials
-  const [newUser, setNewUser] = useState<Partial<User>>({
+  const initialNewUser: Partial<User> = {
     role: roleFilter === 'All' ? Role.CLIENT : roleFilter
-  });
+  };
+  const [newUser, setNewUser] = useState<Partial<User>>(initialNewUser);
   const [editingUser, setEditingUser] = useState<User | null>(null);
   const [showErrors, setShowErrors] = useState(false);
+  
+  // Track unsaved changes
+  const { hasUnsavedChanges, resetChanges } = useUnsavedChanges(
+    editingUser || initialNewUser,
+    newUser
+  );
+  const [showConfirmDialog, setShowConfirmDialog] = useState(false);
   
   // --- Assign to Project State ---
   const [isAssignModalOpen, setIsAssignModalOpen] = useState(false);
@@ -155,10 +165,8 @@ const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, p
 
     // If current user is a vendor viewing admins, filter to admins they can see
     if (currentUser?.role === Role.VENDOR && roleFilter === Role.ADMIN) {
-      const vendorTenantIds = (currentUser as any).tenantIds || [];
-      filtered = filtered.filter(u => 
-        vendorTenantIds.length === 0 || vendorTenantIds.includes(u.tenantId)
-      );
+      // Vendors should not see admins
+      filtered = [];
     }
 
     // If current user is a designer viewing clients, filter to clients related to their projects only
@@ -260,6 +268,28 @@ const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, p
       return false;
     }
     return true;
+  };
+
+  // Handle close with unsaved changes check
+  const handleCloseModal = () => {
+    if (hasUnsavedChanges) {
+      setShowConfirmDialog(true);
+    } else {
+      setIsModalOpen(false);
+      setSelectedTenantIds([]);
+      setNewUser(initialNewUser);
+      setEditingUser(null);
+      setShowErrors(false);
+    }
+  };
+
+  // Handle save and exit
+  const handleSaveAndExit = async () => {
+    if (!validateForm()) {
+      setShowConfirmDialog(false);
+      return;
+    }
+    await handleSubmit(new Event('submit') as any);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -565,7 +595,8 @@ const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, p
           {roleFilter === 'All' ? 'Directory' : `${roleFilter}s`}
         </h2>
         <div className="flex items-center gap-3">
-            {!(currentUser?.role === Role.DESIGNER && roleFilter === Role.CLIENT) && (
+            {!(currentUser?.role === Role.DESIGNER && roleFilter === Role.CLIENT) && 
+             !(currentUser?.role === Role.VENDOR && roleFilter === Role.ADMIN) && (
               <button 
                 onClick={() => {
                   setEditingUser(null);
@@ -649,10 +680,7 @@ const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, p
             <div className="flex justify-between items-center p-5 border-b border-gray-100 bg-gray-50 flex-shrink-0">
               <h3 className="text-lg font-bold text-gray-900">{editingUser ? 'Edit Profile' : `Add New ${roleFilter === 'All' ? 'Person' : roleFilter}`}</h3>
               <button 
-                onClick={() => {
-                  setIsModalOpen(false);
-                  setSelectedTenantIds([]); // Reset selected tenants
-                }} 
+                onClick={handleCloseModal}
                 className="text-gray-400 hover:text-gray-600" 
                 title="Close add person dialog"
               >
@@ -829,6 +857,26 @@ const PeopleList: React.FC<PeopleListProps> = ({ users, roleFilter, onAddUser, p
           </div>
         </div>
       )}
+
+      {/* Confirmation Dialog for Unsaved Changes */}
+      <ConfirmDialog
+        isOpen={showConfirmDialog}
+        onClose={() => setShowConfirmDialog(false)}
+        onConfirm={handleSaveAndExit}
+        onDiscard={() => {
+          setShowConfirmDialog(false);
+          setIsModalOpen(false);
+          setSelectedTenantIds([]);
+          setNewUser(initialNewUser);
+          setEditingUser(null);
+          setShowErrors(false);
+        }}
+        title="Unsaved Changes"
+        message="You have unsaved changes. Do you want to save before closing?"
+        confirmText="Save & Exit"
+        cancelText="Don't Save"
+        variant="warning"
+      />
 
       {/* Vendor Detail Modal */}
       {isVendorDetailOpen && selectedVendor && createPortal(

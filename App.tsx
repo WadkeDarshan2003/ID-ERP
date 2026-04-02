@@ -505,7 +505,7 @@ function AppContent({ projects, setProjects, users, setUsers }: AppContentProps)
   const canSeeClients = user.role === Role.ADMIN || user.role === Role.DESIGNER;
   const canSeeDesigners = user.role === Role.ADMIN;
   const canSeeVendors = user.role === Role.ADMIN || user.role === Role.DESIGNER;
-  const canSeeAdmins = user.role === Role.ADMIN || user.role === Role.VENDOR;
+  const canSeeAdmins = user.role === Role.ADMIN;
 
   // Handlers
   const handleUpdateProject = (updated: Project) => {

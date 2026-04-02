@@ -4,6 +4,8 @@ import { Meeting, User } from '../types';
 import { X, Plus, Users, Edit3 } from 'lucide-react';
 import { AvatarCircle } from '../utils/avatarUtils';
 import { formatDateToIndian, formatIndianToISO } from '../utils/taskUtils';
+import { useUnsavedChanges } from '../hooks/useUnsavedChanges';
+import ConfirmDialog from './ConfirmDialog';
 
 interface MeetingFormProps {
   isOpen: boolean;
@@ -24,15 +26,30 @@ const MeetingForm: React.FC<MeetingFormProps> = ({
   isLoading = false,
   editingMeeting = null,
 }) => {
-  const [newMeeting, setNewMeeting] = useState<Omit<Meeting, 'id'>>({
+  const initialMeetingData: Omit<Meeting, 'id'> = {
     date: new Date().toISOString().split('T')[0],
     title: '',
     type: '',
     attendees: [],
     notes: '',
-  });
+  };
+
+  const [newMeeting, setNewMeeting] = useState<Omit<Meeting, 'id'>>(initialMeetingData);
   const [showErrors, setShowErrors] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+
+  // Track unsaved changes
+  const { hasUnsavedChanges, resetChanges } = useUnsavedChanges(
+    editingMeeting ? {
+      date: editingMeeting.date,
+      title: editingMeeting.title,
+      type: editingMeeting.type,
+      attendees: editingMeeting.attendees,
+      notes: editingMeeting.notes,
+    } : initialMeetingData,
+    newMeeting
+  );
+  const [showConfirmDialog, setShowConfirmDialog] = useState(false);
 
   // Load existing meeting data when editing
   useEffect(() => {
@@ -55,6 +72,7 @@ const MeetingForm: React.FC<MeetingFormProps> = ({
       });
     }
     setShowErrors(false);
+    setShowConfirmDialog(false); // Reset confirmation dialog when modal opens/closes
   }, [editingMeeting, isOpen]);
 
   const validateForm = () => {
@@ -63,6 +81,24 @@ const MeetingForm: React.FC<MeetingFormProps> = ({
       return false;
     }
     return true;
+  };
+
+  // Handle close with unsaved changes check
+  const handleClose = () => {
+    if (hasUnsavedChanges) {
+      setShowConfirmDialog(true);
+    } else {
+      onClose();
+    }
+  };
+
+  // Handle save and exit
+  const handleSaveAndExit = async () => {
+    if (!validateForm()) {
+      setShowConfirmDialog(false);
+      return;
+    }
+    await handleSubmit(new Event('submit') as any);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -113,7 +149,7 @@ const MeetingForm: React.FC<MeetingFormProps> = ({
       {/* Backdrop */}
       <div
         className="fixed inset-0 bg-black bg-opacity-50 z-[90]"
-        onClick={onClose}
+        onClick={handleClose}
       />
 
       {/* Modal */}
@@ -126,7 +162,7 @@ const MeetingForm: React.FC<MeetingFormProps> = ({
               {editingMeeting ? 'Edit Meeting' : 'Add Meeting'}
             </h2>
             <button
-              onClick={onClose}
+              onClick={handleClose}
               title="Close modal"
               className="p-1 hover:bg-gray-100 rounded-md transition-colors flex-shrink-0"
             >
@@ -288,8 +324,8 @@ const MeetingForm: React.FC<MeetingFormProps> = ({
                 placeholder="Add any notes, decisions, or action items from the meeting"
                 value={newMeeting.notes}
                 onChange={(e) => setNewMeeting(prev => ({ ...prev, notes: e.target.value }))}
-                onFocus={(e) => { e.placeholder = ''; }}
-                onBlur={(e) => { if (!newMeeting.notes) e.placeholder = 'Add any notes, decisions, or action items from the meeting'; }}
+                onFocus={(e) => { e.target.placeholder = ''; }}
+                onBlur={(e) => { if (!newMeeting.notes) e.target.placeholder = 'Add any notes, decisions, or action items from the meeting'; }}
                 rows={3}
                 className="w-full px-2 py-1.5 text-base md:text-sm border border-gray-200 rounded-md focus:outline-none focus:ring-1 focus:border-gray-800 resize-none"
               />
@@ -299,7 +335,7 @@ const MeetingForm: React.FC<MeetingFormProps> = ({
             <div className="flex gap-2 justify-end pt-3 border-t border-gray-200">
               <button
                 type="button"
-                onClick={onClose}
+                onClick={handleClose}
                 disabled={isSaving || isLoading}
                 className="px-3 py-1.5 border border-gray-300 rounded-md text-gray-700 font-medium text-base md:text-xs hover:bg-gray-50 transition-colors disabled:opacity-50 focus:outline-none focus:ring-1 focus:ring-gray-800"
               >
@@ -322,6 +358,19 @@ const MeetingForm: React.FC<MeetingFormProps> = ({
           </form>
         </div>
       </div>
+
+      {/* Confirmation Dialog for Unsaved Changes */}
+      <ConfirmDialog
+        isOpen={showConfirmDialog}
+        onClose={() => setShowConfirmDialog(false)}
+        onConfirm={handleSaveAndExit}
+        onDiscard={onClose}
+        title="Unsaved Changes"
+        message="You have unsaved changes. Do you want to save before closing?"
+        confirmText="Save & Exit"
+        cancelText="Don't Save"
+        variant="warning"
+      />
     </>,
     document.body
   );
