@@ -1,0 +1,12 @@
+rules_version = '2';
+
+// Firebase Storage Security Rules - Simplified
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Allow authenticated users to read and write to all files
+    // Security will be handled at application level
+    match /{allPaths=**} {
+      allow read, write: if request.auth != null;
+    }
+  }
+}

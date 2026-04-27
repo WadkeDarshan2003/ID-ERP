@@ -1,0 +1,102 @@
+rules_version = '3';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper functions
+    function isAuth() { return request.auth != null; }
+    
+    // Get current user document
+    function getCurrentUser() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+    
+    // Check if user has access to a specific tenant
+    // Supports both single tenantId and multiple tenantIds array
+    function hasAccessToTenant(tenantId) {
+      let userDoc = getCurrentUser();
+      return (
+        userDoc.tenantId == tenantId ||
+        (userDoc.tenantIds != null && tenantId in userDoc.tenantIds)
+      );
+    }
+    
+    // -------- Users Collection --------
+    // Allow authenticated users to read all users
+    // Allow users to write their own document
+    match /users/{userId} {
+      allow read: if isAuth();
+      allow create: if isAuth();
+      allow update, delete: if isAuth() && (
+        request.auth.uid == userId || 
+        request.auth.uid == resource.data.createdBy ||
+        resource.data.tenantId == null ||
+        hasAccessToTenant(resource.data.tenantId)
+      );
+    }
+    
+    // -------- Tenants Collection --------
+    match /tenants/{tenantId} {
+      allow create: if isAuth();
+      allow read: if isAuth();
+      allow update, delete: if isAuth();
+    }
+    
+    // -------- Tenant Subcollections --------
+    match /tenants/{tenantId}/{doc=**} {
+      allow read, write: if isAuth();
+    }
+    
+    // -------- Projects Collection --------
+    // Multi-tenant support: User can read/write projects from their tenants
+    match /projects/{projectId} {
+      allow read, write: if isAuth() && (
+        resource.data.tenantId == null ||
+        hasAccessToTenant(resource.data.tenantId)
+      );
+      // Allow write for creation (no resource check yet)
+      allow create: if isAuth();
+    }
+    match /projects/{projectId}/{sub=**} {
+      allow read, write: if isAuth() && (
+        get(/databases/$(database)/documents/projects/$(projectId)).data.tenantId == null ||
+        hasAccessToTenant(get(/databases/$(database)/documents/projects/$(projectId)).data.tenantId)
+      );
+    }
+    
+    // -------- Role Collections --------
+    // Vendors with multi-tenant support (tenantIds array)
+    match /vendors/{docId} {
+      allow read, write: if isAuth() && (
+        request.auth.uid == docId ||
+        request.auth.token.role == 'admin' ||
+        hasAccessToTenant(resource.data.tenantId) ||
+        (resource.data.tenantIds != null && 
+         hasAccessToTenant(resource.data.tenantIds[0]))
+      );
+    }
+    
+    // Designers with multi-tenant support (tenantIds array)
+    match /designers/{docId} {
+      allow read, write: if isAuth() && (
+        request.auth.uid == docId ||
+        request.auth.token.role == 'admin' ||
+        hasAccessToTenant(resource.data.tenantId) ||
+        (resource.data.tenantIds != null && 
+         hasAccessToTenant(resource.data.tenantIds[0]))
+      );
+    }
+    
+    match /clients/{docId} {
+      allow read, write: if isAuth() && (
+        request.auth.uid == docId ||
+        hasAccessToTenant(resource.data.tenantId)
+      );
+    }
+    
+    match /admins/{docId} {
+      allow read, write: if isAuth() && (
+        request.auth.uid == docId ||
+        hasAccessToTenant(resource.data.tenantId)
+      );
+    }
+  }
+}
